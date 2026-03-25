@@ -1,0 +1,83 @@
+# Backend - Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv
+*.venv
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+.project
+.pydevproject
+.settings/
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Backend - Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# OS Files
+.DS_Store
+Thumbs.db
+.trashes
+ehthumbs.db
+
+# Temporary Files
+*.tmp
+*.bak
+*.swp
+*~
+.#*
+
+# Database Files (if used)
+*.db
+*.sqlite
+*.sqlite3
+backend/data/
+
+# Logs
+logs/
+*.log
+
+# Runtime Data
+pids/
+*.pid
+*.seed
+*.pid.lock
