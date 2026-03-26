@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+.python-version
 build/
 develop-eggs/
 dist/
@@ -25,7 +26,7 @@ pip-delete-this-directory.txt
 venv/
 ENV/
 env/
-.venv
+.venv/
 *.venv
 
 # IDEs and Editors
@@ -48,13 +49,14 @@ env/
 
 # Backend - Testing & Coverage
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 .tox/
 .hypothesis/
 
 # OS Files
-.DS_Store
 Thumbs.db
 .trashes
 ehthumbs.db
@@ -70,7 +72,15 @@ ehthumbs.db
 *.db
 *.sqlite
 *.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+.agent_data.sqlite3
+.agent_memory.sqlite3
+.chroma/
+chroma/
 backend/data/
+
+.traces/
 
 # Logs
 logs/
