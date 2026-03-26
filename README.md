@@ -92,7 +92,7 @@ demo_workspace/
 
 详细使用手册见：
 
-- [docs/usage_guide.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/usage_guide.md)
+- [docs/usage_guide.md](docs/usage_guide.md)
 
 其中包含：
 
