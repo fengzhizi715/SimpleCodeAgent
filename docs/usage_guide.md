@@ -95,10 +95,10 @@ python -m app.main "你好，介绍一下你自己" --version v1
 
 当前内置文档包括：
 
-- [agent_runtime.md](docs/agent_runtime.md)
-- [coding_workflow.md](docs/coding_workflow.md)
-- [rag_usage.md](docs/rag_usage.md)
-- [tooling.md](docs/tooling.md)
+- [agent_runtime.md](agent_runtime.md)
+- [coding_workflow.md](coding_workflow.md)
+- [rag_usage.md](rag_usage.md)
+- [tooling.md](tooling.md)
 
 ## 5. FastAPI 服务
 
