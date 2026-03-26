@@ -58,73 +58,22 @@ LLM_MODEL=your-model
 
 ```text
 app/
-  core/
-    config.py
-    constants.py
-    exceptions.py
-    logger.py
-  contracts/
-    message.py
-    tool.py
-    run.py
-    trace.py
-    planner.py
-    memory.py
-  llm/
-    client.py
-    parser.py
-    schemas.py
-  db/
-    sqlite.py
-    migrations.py
-  trace/
-    events.py
-    recorder.py
-    repository.py
-    viewer.py
   api/
-    deps.py
-    server.py
-    routes/
-      agent.py
-      debug.py
+  contracts/
+  core/
+  db/
+  llm/
+  trace/
   v1/
-    runtime/
-      context.py
-      state.py
-      executor.py
-      loop.py
     memory/
-      base.py
-      session_memory.py
-      summary_memory.py
-      repository.py
     planner/
-      base.py
-      simple_planner.py
-    tools/
-      base.py
-      registry.py
-      read_file.py
-      file_search.py
-      write_file.py
-      shell_run.py
-      list_dir.py
-      replace_in_file.py
-      append_file.py
-      retrieve_docs.py
     rag/
-      chunking.py
-      embeddings.py
-      vector_store.py
-      ingest.py
-      retriever.py
+    runtime/
+    tools/
   v2/
-  main.py
-requirements.txt
-pyproject.toml
-.env.example
-README.md
+docs/
+scripts/
+demo_workspace/
 ```
 
 ## 版本说明
@@ -137,131 +86,21 @@ README.md
 - CLI：`--version v1|v2`
 - API：请求体中的 `"version": "v1" | "v2"`
 
-目前传 `v2` 会返回“已预留但尚未实现”的明确错误，不会静默回退到 `v1`
+目前传 `v2` 会返回“已预留但尚未实现”的明确错误，不会静默回退到 `v1`。
 
 ## 使用说明
 
-推荐按下面顺序体验项目：
+详细使用手册见：
 
-1. 用 CLI 跑一个最小问答任务
-2. 导入 docs 文档，体验 RAG 检索
-3. 运行 API 服务，用 Swagger 或 curl 调用
-4. 查看某次 run 的 trace
-5. 生成 coding demo，做编程任务演示
+- [docs/usage_guide.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/usage_guide.md)
 
-### 1. CLI 使用
+其中包含：
 
-最小调用：
-
-```bash
-.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
-  --version v1 \
-  --model your-model \
-  --base-url http://localhost:8000/v1 \
-  --api-key your-key
-```
-
-带 session 连续提问：
-
-```bash
-.venv/bin/python scripts/run_cli.py "第一问" \
-  --version v1 \
-  --session-id demo-session
-
-.venv/bin/python scripts/run_cli.py "第二问，继续刚才的话题" \
-  --version v1 \
-  --session-id demo-session
-```
-
-打印简版 trace：
-
-```bash
-.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
-  --version v1 \
-  --trace
-```
-
-### 2. RAG 文档导入与检索
-
-先导入 `docs/` 下的示例文档：
-
-```bash
-.venv/bin/python scripts/ingest_docs.py --docs-dir docs
-```
-
-导入后，Agent 在执行时可以通过 `retrieve_docs` 工具检索文档片段。
-
-仓库内置的示例文档包括：
-
-- [docs/agent_runtime.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/agent_runtime.md)
-- [docs/coding_workflow.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/coding_workflow.md)
-- [docs/rag_usage.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/rag_usage.md)
-- [docs/tooling.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/tooling.md)
-
-### 3. 生成演示工作区
-
-```bash
-.venv/bin/python scripts/setup_coding_demo.py
-```
-
-然后可以让 Agent 执行类似任务：
-
-- 新建 `StringUtils`
-- 为 `TodoService` 增加 CRUD 方法
-- 参考 `OrderService` 仿写 `ProductService`
-- 修复简单测试
-
-验证命令示例：
-
-```bash
-.venv/bin/pytest demo_workspace/tests/test_string_utils.py
-.venv/bin/pytest demo_workspace/tests/test_todo_service.py
-.venv/bin/pytest demo_workspace/tests/test_product_service.py
-.venv/bin/pytest demo_workspace/tests/test_math_utils.py
-```
-
-### 4. FastAPI 服务
-
-启动服务：
-
-```bash
-.venv/bin/uvicorn app.api.server:app --host 127.0.0.1 --port 8000
-```
-
-Swagger 文档：
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-运行 Agent：
-
-```bash
-curl -s http://127.0.0.1:8000/agent/run \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "task": "解释一下这个类的作用",
-    "version": "v1",
-    "model": "your-model",
-    "base_url": "http://localhost:8000/v1",
-    "api_key": "your-key",
-    "include_trace": true
-  }'
-```
-
-查询 trace：
-
-```bash
-curl -s http://127.0.0.1:8000/debug/traces/<run_id>
-```
-
-### 5. 查看 Trace 时间线
-
-除了 API，还可以直接用脚本查看 trace：
-
-```bash
-.venv/bin/python scripts/view_trace.py <run_id>
-```
+- CLI 用法
+- RAG 文档导入
+- FastAPI 调用方式
+- Trace 查看
+- Coding demo 演示流程
 
 ## 启动方式
 
@@ -287,25 +126,11 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LLM_MODEL`：模型名
 - `LLM_TIMEOUT`：请求超时时间，单位秒
 
-## LLM CLI
-
-支持通过参数覆盖 `.env` 中的配置：
-
-```bash
-python -m app.main "写一句话介绍上海" \
-  --version v1 \
-  --base-url http://localhost:8000/v1 \
-  --model local-model \
-  --api-key test-key \
-  --session-id demo-session
-```
-
 ## 当前限制
 
 - `v2` 入口只预留，还没有多 Agent 实现
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入
-- 目前 README 主要面向本地开发与演示，不是生产部署文档
 
 ## 验收
 

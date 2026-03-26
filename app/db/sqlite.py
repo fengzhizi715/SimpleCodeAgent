@@ -15,7 +15,7 @@ class SQLiteDB:
     """带自动建表能力的 SQLite 封装。"""
 
     def __init__(self, db_path: str | Path | None = None) -> None:
-        self.db_path = Path(db_path) if db_path else BASE_DIR / ".agent_data.sqlite3"
+        self.db_path = Path(db_path) if db_path else BASE_DIR / ".simple_code_agent.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
