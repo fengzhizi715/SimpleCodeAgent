@@ -11,7 +11,11 @@ requires-python = ">=3.10"
 dependencies = [
     "python-dotenv>=1.0.1,<2.0.0",
     "pydantic>=2,<3",
+    "chromadb>=1.5.5,<2",
+    "pytest>=9,<10",
+    "fastapi>=0.116,<1",
+    "uvicorn>=0.35,<1",
 ]
 
 [tool.setuptools]
-packages = ["app", "app.contracts", "app.core", "app.db", "app.llm", "app.memory", "app.runtime", "app.tools"]
+packages = ["app", "app.api", "app.api.routes", "app.contracts", "app.core", "app.db", "app.llm", "app.trace", "app.v1", "app.v1.memory", "app.v1.planner", "app.v1.rag", "app.v1.runtime", "app.v1.tools", "app.v2"]

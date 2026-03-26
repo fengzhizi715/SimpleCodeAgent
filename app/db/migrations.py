@@ -56,4 +56,16 @@ SCHEMA_STATEMENTS = [
         FOREIGN KEY(session_id) REFERENCES sessions(id)
     )
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_messages_session_id_id
+    ON messages(session_id, id)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_runs_session_id_created_at
+    ON runs(session_id, created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_trace_index_run_id_created_at
+    ON trace_index(run_id, created_at)
+    """,
 ]

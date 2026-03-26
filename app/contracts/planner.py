@@ -19,6 +19,8 @@ class PlanStep(BaseModel):
     title: str
     description: str = ""
     status: PlanStepStatus = "pending"
+    retry_count: int = 0
+    max_retries: int = 0
     tool_name: str | None = None
     input_summary: str | None = None
     output_summary: str | None = None

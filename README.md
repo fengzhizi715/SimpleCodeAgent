@@ -32,31 +32,136 @@ app/
   db/
     sqlite.py
     migrations.py
-  runtime/
-    context.py
-    state.py
-    executor.py
-    loop.py
-  memory/
-    base.py
-    session_memory.py
-    summary_memory.py
+  trace/
+    events.py
+    recorder.py
     repository.py
-  tools/
-    base.py
-    registry.py
-    read_file.py
-    file_search.py
-    write_file.py
-    shell_run.py
-    list_dir.py
-    replace_in_file.py
-    append_file.py
+    viewer.py
+  api/
+    deps.py
+    server.py
+    routes/
+      agent.py
+      debug.py
+  v1/
+    runtime/
+      context.py
+      state.py
+      executor.py
+      loop.py
+    memory/
+      base.py
+      session_memory.py
+      summary_memory.py
+      repository.py
+    planner/
+      base.py
+      simple_planner.py
+    tools/
+      base.py
+      registry.py
+      read_file.py
+      file_search.py
+      write_file.py
+      shell_run.py
+      list_dir.py
+      replace_in_file.py
+      append_file.py
+      retrieve_docs.py
+    rag/
+      chunking.py
+      embeddings.py
+      vector_store.py
+      ingest.py
+      retriever.py
+  v2/
   main.py
 requirements.txt
 pyproject.toml
 .env.example
 README.md
+```
+
+## 编程 Demo
+
+可以用下面的脚本生成一套“小范围编程任务”演示工作区：
+
+```bash
+.venv/bin/python scripts/setup_coding_demo.py
+```
+
+生成后会得到 `demo_workspace/`，其中包含几类典型任务：
+
+- 新建 `StringUtils`
+- 为 `TodoService` 新增 CRUD 方法
+- 参考 `OrderService` 仿写 `ProductService`
+- 修复一个简单单元测试
+
+验证命令示例：
+
+```bash
+.venv/bin/pytest demo_workspace/tests/test_string_utils.py
+.venv/bin/pytest demo_workspace/tests/test_todo_service.py
+.venv/bin/pytest demo_workspace/tests/test_product_service.py
+.venv/bin/pytest demo_workspace/tests/test_math_utils.py
+```
+
+## 演示 CLI
+
+可以直接用下面的命令跑一次完整任务：
+
+```bash
+.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
+  --version v1 \
+  --model your-model \
+  --base-url http://localhost:8000/v1 \
+  --api-key your-key
+```
+
+如果要查看简版 trace：
+
+```bash
+.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
+  --version v1 \
+  --model your-model \
+  --base-url http://localhost:8000/v1 \
+  --api-key your-key \
+  --trace
+```
+
+## FastAPI 服务
+
+启动服务：
+
+```bash
+.venv/bin/uvicorn app.api.server:app --host 127.0.0.1 --port 8000
+```
+
+Swagger 文档：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+运行 Agent：
+
+```bash
+curl -s http://127.0.0.1:8000/agent/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "task": "解释一下这个类的作用",
+    "version": "v1",
+    "model": "your-model",
+    "base_url": "http://localhost:8000/v1",
+    "api_key": "your-key",
+    "include_trace": true
+  }'
+```
+
+查询 Trace：
+
+```bash
+curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 ```
 
 ## 启动方式
@@ -129,3 +234,4 @@ python -m app.main "写一句话介绍上海" \
 - 统一约定工具错误处理：收到 `ok=false` 后先诊断再决定是否重试
 - 支持基于 SQLite 的 session memory
 - 提供统一 SQLite 持久化层，保存 session / run / trace metadata
+- 支持简单 Planner：拆解复杂任务并顺序执行步骤

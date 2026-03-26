@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts.message import Message
+from app.contracts.planner import PlanStep
 from app.contracts.tool import ToolDefinition
 from app.contracts.trace import TraceEvent
 
@@ -70,4 +71,5 @@ class RunResult(BaseModel):
     step_count: int = 0
     status: Literal["completed", "failed", "max_steps_exceeded"] | None = None
     final_output: str = ""
+    plan: list[PlanStep] = Field(default_factory=list)
     trace: list[TraceEvent] = Field(default_factory=list)
