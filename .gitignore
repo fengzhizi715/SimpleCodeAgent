@@ -82,7 +82,6 @@ backend/data/
 
 .traces/
 demo_workspace/
-scripts/
 
 # Logs
 logs/
