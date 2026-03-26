@@ -1,4 +1,0 @@
-class RenamedTool:
-    pass
-
-# appended
