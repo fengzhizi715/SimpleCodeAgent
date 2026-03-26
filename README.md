@@ -58,38 +58,22 @@ LLM_MODEL=your-model
 
 ```text
 app/
-  # HTTP 服务入口与路由
-  api/
-  # 跨模块共享的数据协议
-  contracts/
-  # 配置、日志、异常等基础能力
-  core/
-  # SQLite 连接与迁移
-  db/
-  # LLM Provider 抽象与适配
-  llm/
-  # Trace 记录、存储与展示
-  trace/
-  # 当前单 Agent 版本实现
-  v1/
-    # 会话记忆与摘要记忆
-    memory/
-    # 任务拆解与步骤规划
-    planner/
-    # 文档切分、向量化与检索
-    rag/
-    # Agent 主循环、执行器与上下文
-    runtime/
-    # 工具定义、注册与代码操作工具
-    tools/
-  # 后续多 Agent 版本预留
-  v2/
-docs/
-  # 项目文档与使用手册
-scripts/
-  # 本地运行、导入和调试脚本
-demo_workspace/
-  # 编程任务演示工作区
+  api/          # HTTP 服务入口与路由
+  contracts/    # 跨模块共享的数据协议
+  core/         # 配置、日志、异常等基础能力
+  db/           # SQLite 连接与迁移
+  llm/          # LLM Provider 抽象与适配
+  trace/        # Trace 记录、存储与展示
+  v1/           # 当前单 Agent 版本实现
+    memory/     # 会话记忆与摘要记忆
+    planner/    # 任务拆解与步骤规划
+    rag/        # 文档切分、向量化与检索
+    runtime/    # Agent 主循环、执行器与上下文
+    tools/      # 工具定义、注册与代码操作工具
+  v2/           # 后续多 Agent 版本预留
+docs/           # 项目文档与使用手册
+scripts/        # 本地运行、导入和调试脚本
+demo_workspace/ # 编程任务演示工作区
 ```
 
 ## 版本说明
