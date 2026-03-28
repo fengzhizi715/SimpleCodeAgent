@@ -42,8 +42,9 @@ cp .env.example .env
 4. 填写至少这几个配置
 
 ```env
-LLM_BASE_URL=http://localhost:8000/v1
-LLM_API_KEY=your-key
+LLM_BASE_URL=http://127.0.0.1:8000/v1
+LLM_AUTH_MODE=service_token
+LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
 ```
 
@@ -122,7 +123,9 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LOG_LEVEL`：日志级别，例如 `INFO`
 - `DEBUG`：是否开启调试，`true` 或 `false`
 - `LLM_BASE_URL`：OpenAI-compatible 服务地址
+- `LLM_AUTH_MODE`：鉴权方式，支持 `auto`、`bearer`、`service_token`、`none`
 - `LLM_API_KEY`：调用模型的 API Key
+- `LLM_SERVICE_TOKEN`：用于 `X-Service-Token` 的服务令牌
 - `LLM_MODEL`：模型名
 - `LLM_TIMEOUT`：请求超时时间，单位秒
 

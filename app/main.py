@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", dest="model", default=settings.llm_model)
     parser.add_argument("--base-url", dest="base_url", default=settings.llm_base_url)
     parser.add_argument("--api-key", dest="api_key", default=settings.llm_api_key)
+    parser.add_argument("--service-token", dest="service_token", default=settings.llm_service_token)
     parser.add_argument(
         "--system",
         dest="system_prompt",
@@ -65,15 +66,17 @@ def run_chat(args: argparse.Namespace) -> RunResult:
     """执行一次 Agent 运行并返回标准化结果。"""
     if not args.prompt:
         raise AppError("Prompt is required. Example: python -m app.main 'Hello'")
-    if not args.api_key:
-        raise AppError("Missing API key. Set LLM_API_KEY or pass --api-key.")
     if not args.model:
         raise AppError("Missing model. Set LLM_MODEL or pass --model.")
+    if not (args.api_key or args.service_token):
+        raise AppError("Missing auth credentials. Set LLM_API_KEY / LLM_SERVICE_TOKEN or pass --api-key / --service-token.")
     _ensure_supported_version(args.version)
 
     provider = OpenAICompatibleProvider(
         base_url=args.base_url,
         api_key=args.api_key,
+        service_token=args.service_token,
+        auth_mode=settings.llm_auth_mode,
         model=args.model,
         timeout=settings.llm_timeout,
     )

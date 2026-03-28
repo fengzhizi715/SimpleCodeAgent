@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", default=settings.llm_model, help="模型名称。")
     parser.add_argument("--base-url", default=settings.llm_base_url, help="LLM 服务地址。")
     parser.add_argument("--api-key", default=settings.llm_api_key, help="LLM API Key。")
+    parser.add_argument("--service-token", default=settings.llm_service_token, help="Service Token。")
     parser.add_argument(
         "--system",
         dest="system_prompt",
@@ -70,15 +71,17 @@ def _ensure_supported_version(version: str) -> Literal["v1"]:
 
 def run_task(args: argparse.Namespace) -> tuple[str, str, list[str], str]:
     """执行任务并返回答案、run_id、简版 trace 和版本。"""
-    if not args.api_key:
-        raise AppError("缺少 API Key，请设置 LLM_API_KEY 或传入 --api-key。")
     if not args.model:
         raise AppError("缺少模型名，请设置 LLM_MODEL 或传入 --model。")
+    if not (args.api_key or args.service_token):
+        raise AppError("缺少鉴权信息，请设置 LLM_API_KEY / LLM_SERVICE_TOKEN，或传入 --api-key / --service-token。")
     version = _ensure_supported_version(args.version)
 
     provider = OpenAICompatibleProvider(
         base_url=args.base_url,
         api_key=args.api_key,
+        service_token=args.service_token,
+        auth_mode=settings.llm_auth_mode,
         model=args.model,
         timeout=settings.llm_timeout,
     )

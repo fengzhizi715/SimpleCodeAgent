@@ -35,6 +35,7 @@ class AgentRunRequest(BaseModel):
     model: str | None = Field(default=None, description="可覆盖的模型名。")
     base_url: str | None = Field(default=None, description="可覆盖的 LLM Base URL。")
     api_key: str | None = Field(default=None, description="可覆盖的 LLM API Key。")
+    service_token: str | None = Field(default=None, description="可覆盖的 Service Token。")
     system_prompt: str = Field(default="You are a helpful assistant.", description="系统提示词。")
     temperature: float = Field(default=0.0, description="采样温度。")
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
@@ -64,11 +65,13 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     if request.version != "v1":
         raise HTTPException(status_code=400, detail=f"不支持的 Agent 版本：{request.version}")
     resolved_model = request.model or settings.llm_model
-    resolved_api_key = request.api_key or settings.llm_api_key
     if not resolved_model:
         raise HTTPException(status_code=400, detail="缺少模型名，请在请求中传入 model 或配置 LLM_MODEL。")
-    if not resolved_api_key:
-        raise HTTPException(status_code=400, detail="缺少 API Key，请在请求中传入 api_key 或配置 LLM_API_KEY。")
+    if not (request.api_key or request.service_token or settings.llm_api_key or settings.llm_service_token):
+        raise HTTPException(
+            status_code=400,
+            detail="缺少鉴权信息，请传入 api_key / service_token，或配置 LLM_API_KEY / LLM_SERVICE_TOKEN。",
+        )
 
     session_id = request.session_id or str(uuid4())
 
@@ -76,6 +79,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         provider = get_provider(
             base_url=request.base_url,
             api_key=request.api_key,
+            service_token=request.service_token,
             model=request.model,
         )
         loop = get_agent_loop()

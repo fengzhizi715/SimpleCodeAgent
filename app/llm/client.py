@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 from abc import ABC, abstractmethod
+from typing import Mapping
 from urllib import error, request
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -79,11 +80,17 @@ class OpenAICompatibleProvider(LLMProvider):
         base_url: str,
         api_key: str,
         model: str,
+        service_token: str = "",
+        auth_mode: str = "auto",
+        extra_headers: Mapping[str, str] | None = None,
         timeout: int = 60,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.service_token = service_token
+        self.auth_mode = auth_mode.lower()
+        self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
 
     def chat(self, chat_request: RunRequest) -> RunResult:
@@ -93,10 +100,7 @@ class OpenAICompatibleProvider(LLMProvider):
         http_request = request.Request(
             endpoint,
             data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._build_headers(),
             method="POST",
         )
 
@@ -119,6 +123,36 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMProviderError("Provider returned invalid JSON") from exc
 
         return self._parse_response(data)
+
+    def _build_headers(self) -> dict[str, str]:
+        """构造请求头，兼容 Bearer 与 Service Token 两种鉴权方式。"""
+        headers = {
+            "Content-Type": "application/json",
+            **self.extra_headers,
+        }
+        headers.update(self._build_auth_headers())
+        return headers
+
+    def _build_auth_headers(self) -> dict[str, str]:
+        """按鉴权模式生成认证头。"""
+        if self.auth_mode == "service_token":
+            if not self.service_token:
+                raise LLMProviderError("Auth mode 'service_token' requires a service token.")
+            return {"X-Service-Token": self.service_token}
+
+        if self.auth_mode == "bearer":
+            if not self.api_key:
+                raise LLMProviderError("Auth mode 'bearer' requires an API key.")
+            return {"Authorization": f"Bearer {self.api_key}"}
+
+        if self.auth_mode == "none":
+            return {}
+
+        if self.service_token:
+            return {"X-Service-Token": self.service_token}
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
 
     def _parse_response(self, payload: dict[str, object]) -> RunResult:
         try:

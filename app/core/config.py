@@ -45,7 +45,9 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
     llm_base_url: str = os.getenv("LLM_BASE_URL", DEFAULT_OPENAI_BASE_URL)
+    llm_auth_mode: str = os.getenv("LLM_AUTH_MODE", "auto").lower()
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
+    llm_service_token: str = os.getenv("LLM_SERVICE_TOKEN", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_timeout: int = int(os.getenv("LLM_TIMEOUT", str(DEFAULT_OPENAI_TIMEOUT)))
 

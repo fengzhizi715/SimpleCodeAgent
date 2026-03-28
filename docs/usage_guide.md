@@ -26,10 +26,13 @@ cp .env.example .env
 至少配置以下变量：
 
 ```env
-LLM_BASE_URL=http://localhost:8000/v1
-LLM_API_KEY=your-key
+LLM_BASE_URL=http://127.0.0.1:8000/v1
+LLM_AUTH_MODE=service_token
+LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
 ```
+
+如果你接的是 `local_ai_inference_platform`，推荐直接使用 `service token` 鉴权，而不是 Bearer API Key。
 
 ## 2. CLI 使用
 
@@ -39,8 +42,8 @@ LLM_MODEL=your-model
 .venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
   --version v1 \
   --model your-model \
-  --base-url http://localhost:8000/v1 \
-  --api-key your-key
+  --base-url http://127.0.0.1:8000/v1 \
+  --service-token your-service-token
 ```
 
 带 session 连续提问：
@@ -123,8 +126,8 @@ curl -s http://127.0.0.1:8000/agent/run \
     "task": "解释一下这个类的作用",
     "version": "v1",
     "model": "your-model",
-    "base_url": "http://localhost:8000/v1",
-    "api_key": "your-key",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "service_token": "your-service-token",
     "include_trace": true
   }'
 ```

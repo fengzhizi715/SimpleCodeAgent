@@ -56,14 +56,23 @@ def get_trace_repository() -> SQLiteTraceRepository:
     return SQLiteTraceRepository(get_memory_repository().db)
 
 
-def get_provider(*, base_url: str | None = None, api_key: str | None = None, model: str | None = None) -> OpenAICompatibleProvider:
+def get_provider(
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    service_token: str | None = None,
+    model: str | None = None,
+) -> OpenAICompatibleProvider:
     """按请求参数构造 Provider。"""
     resolved_base_url = base_url or settings.llm_base_url
     resolved_api_key = api_key or settings.llm_api_key
+    resolved_service_token = service_token or settings.llm_service_token
     resolved_model = model or settings.llm_model
     return OpenAICompatibleProvider(
         base_url=resolved_base_url,
         api_key=resolved_api_key,
+        service_token=resolved_service_token,
+        auth_mode=settings.llm_auth_mode,
         model=resolved_model,
         timeout=settings.llm_timeout,
     )
