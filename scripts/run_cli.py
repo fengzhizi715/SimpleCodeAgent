@@ -35,7 +35,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="v1",
         help="选择 Agent 版本。",
     )
-    parser.add_argument("--session-id", default="", help="可选会话 ID，用于连续对话。")
+    parser.add_argument(
+        "--session-id",
+        default=settings.session_id,
+        help="可选会话 ID，用于连续对话。未传时默认读取 SESSION_ID。",
+    )
+    parser.add_argument(
+        "--project-root",
+        default=settings.workspace_root,
+        help="目标项目根目录。未传时默认使用当前仓库；设置 WORKSPACE_ROOT 也可生效。",
+    )
     parser.add_argument("--model", default=settings.llm_model, help="模型名称。")
     parser.add_argument("--base-url", default=settings.llm_base_url, help="LLM 服务地址。")
     parser.add_argument("--api-key", default=settings.llm_api_key, help="LLM API Key。")
@@ -69,8 +78,8 @@ def _ensure_supported_version(version: str) -> Literal["v1"]:
     raise UnsupportedAgentVersionError(f"不支持的 Agent 版本：{version}")
 
 
-def run_task(args: argparse.Namespace) -> tuple[str, str, list[str], str]:
-    """执行任务并返回答案、run_id、简版 trace 和版本。"""
+def run_task(args: argparse.Namespace) -> tuple[str, str, str, list[str], str]:
+    """执行任务并返回答案、run_id、session_id、简版 trace 和版本。"""
     if not args.model:
         raise AppError("缺少模型名，请设置 LLM_MODEL 或传入 --model。")
     if not (args.api_key or args.service_token):
@@ -89,7 +98,7 @@ def run_task(args: argparse.Namespace) -> tuple[str, str, list[str], str]:
     repository = SQLiteMemoryRepository()
     session_memory = SessionMemory(repository)
     summary_memory = SummaryMemory(repository)
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(workspace_root=args.project_root or None)
     tool_registry.register_default_tools()
     planner = SimplePlanner()
     loop = AgentLoop()
@@ -129,7 +138,7 @@ def run_task(args: argparse.Namespace) -> tuple[str, str, list[str], str]:
             for event in events
         ]
 
-    return result.final_output, result.run_id or "", trace_lines, version
+    return result.final_output, result.run_id or "", result.session_id or session_id, trace_lines, version
 
 
 def main() -> None:
@@ -138,7 +147,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        answer, run_id, trace_lines, version = run_task(args)
+        answer, run_id, session_id, trace_lines, version = run_task(args)
     except (AppError, LLMProviderError) as exc:
         print(f"错误: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -149,6 +158,7 @@ def main() -> None:
     print(f"Version: {version}")
     print()
     print(f"Run ID: {run_id}")
+    print(f"Session ID: {session_id}")
 
     if trace_lines:
         print()

@@ -56,6 +56,7 @@ class AgentLoop:
         trace_repository = SQLiteTraceRepository(session_store.repository.db)
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         history_messages = session_store.load(session_id)
+        # RunContext 集中持有本次执行依赖，避免 loop 中散落太多环境判断。
         context = RunContext(
             run_id=run_id,
             session_id=session_id,
@@ -77,6 +78,7 @@ class AgentLoop:
             session_id=session_id,
             task=task,
             messages=[
+                # 每次运行都重新注入增强后的 system prompt，确保工具约束和编程规则生效。
                 Message(role="system", content=context.effective_system_prompt),
                 *history_messages,
                 Message(role="user", content=task),
@@ -93,6 +95,8 @@ class AgentLoop:
         )
 
         while state.step_count < context.max_steps:
+            # 这里控制的是“整次运行”的总时长。
+            # 单次 LLM 请求的超时由 Provider 层处理，Runtime 只负责全局兜底停止。
             if monotonic() - started_at >= context.run_timeout_seconds:
                 return self._build_fallback_final_result(
                     context=context,
@@ -140,6 +144,7 @@ class AgentLoop:
 
             tool_calls = extract_tool_calls(result)
             if tool_calls:
+                # 先记录 assistant 的 tool-call 消息，再把工具结果回填给下一轮模型。
                 assistant_message = result.choices[0].message
                 state.messages.append(assistant_message)
                 self._handle_tool_calls(
@@ -271,6 +276,7 @@ class AgentLoop:
             summary_memory=summary_memory,
             persist_session_memory=False,
         )
+        # 规划步骤和汇总步骤不直接写入会话记忆，避免把中间推理污染成长期上下文。
         if session_memory is not None and summary_result.status == "completed":
             session_memory.append(
                 session_id,
@@ -337,6 +343,7 @@ class AgentLoop:
         if not context.persist_session_memory:
             return
         start_index = 1 + state.history_message_count
+        # 这里只保存本轮新增消息，避免把已加载的历史重复写回数据库。
         new_messages = [
             message
             for message in state.messages[start_index:]
@@ -388,6 +395,8 @@ class AgentLoop:
         total_attempts = max(1, step.max_retries + 1)
 
         for attempt_index in range(total_attempts):
+            # 每个规划步骤都作为独立 run 执行，方便追踪和重试；
+            # 但它们仍然共享同一个 session，保证同任务上下文不被切碎。
             step.status = "in_progress"
             step.retry_count = attempt_index
             step_prompt = self._build_step_prompt(
@@ -502,6 +511,8 @@ class AgentLoop:
                 },
             )
             tool_result = context.tool_registry.execute_tool_call(tool_call)
+            # 无论工具成功还是失败，都统一转成 tool 消息回填给模型。
+            # 这样模型可以自己决定是重试、换工具，还是直接向用户解释问题。
             state.messages.append(tool_result.to_message())
             self._append_trace_event(
                 context=context,

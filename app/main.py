@@ -47,8 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--session-id",
         dest="session_id",
-        default="",
-        help="Optional session identifier for conversation memory.",
+        default=settings.session_id,
+        help="Optional session identifier for conversation memory. Defaults to SESSION_ID when set.",
+    )
+    parser.add_argument(
+        "--project-root",
+        dest="project_root",
+        default=settings.workspace_root,
+        help="Target project root for tool execution. Defaults to current repo or WORKSPACE_ROOT when set.",
     )
     return parser
 
@@ -81,7 +87,7 @@ def run_chat(args: argparse.Namespace) -> RunResult:
         timeout=settings.llm_timeout,
     )
     session_id = args.session_id or str(uuid4())
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(workspace_root=args.project_root or None)
     tool_registry.register_default_tools()
     memory_repository = SQLiteMemoryRepository()
     session_memory = SessionMemory(memory_repository)
@@ -137,7 +143,13 @@ def main() -> None:
         result.session_id,
         result.step_count,
     )
+    print("Answer:")
     print(result.final_output)
+    print()
+    print(f"Version: {args.version}")
+    print()
+    print(f"Run ID: {result.run_id or ''}")
+    print(f"Session ID: {result.session_id or args.session_id or ''}")
 
 
 if __name__ == "__main__":

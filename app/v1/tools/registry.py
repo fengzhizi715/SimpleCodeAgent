@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from app.contracts.tool import ToolCall, ToolDefinition, ToolResult
@@ -20,8 +21,9 @@ from app.v1.tools.write_file import WriteFileTool
 class ToolRegistry:
     """用于工具定义注册和调用路由的注册表。"""
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_root: str | Path | None = None) -> None:
         self._tools: dict[str, Tool] = {}
+        self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
 
     def register(self, tool: Tool) -> None:
         """按工具定义中的名称注册工具实例。"""
@@ -29,19 +31,21 @@ class ToolRegistry:
 
     def register_dummy_tool(self) -> None:
         """注册默认 dummy 工具。"""
-        self.register(DummyTool())
+        self.register(DummyTool(workspace_root=self.workspace_root))
 
     def register_default_tools(self) -> None:
         """注册标准工作区工具集。"""
+        # v1 默认工具集强调“小范围可验证编程任务”：
+        # 先观察，再修改，最后验证，而不是直接做高风险外部动作。
         self.register_dummy_tool()
-        self.register(ReadFileTool())
-        self.register(FileSearchTool())
-        self.register(WriteFileTool())
-        self.register(ShellRunTool())
-        self.register(ListDirTool())
-        self.register(ReplaceInFileTool())
-        self.register(AppendFileTool())
-        self.register(RetrieveDocsTool())
+        self.register(ReadFileTool(workspace_root=self.workspace_root))
+        self.register(FileSearchTool(workspace_root=self.workspace_root))
+        self.register(WriteFileTool(workspace_root=self.workspace_root))
+        self.register(ShellRunTool(workspace_root=self.workspace_root))
+        self.register(ListDirTool(workspace_root=self.workspace_root))
+        self.register(ReplaceInFileTool(workspace_root=self.workspace_root))
+        self.register(AppendFileTool(workspace_root=self.workspace_root))
+        self.register(RetrieveDocsTool(workspace_root=self.workspace_root))
 
     def get_tool_definitions(self) -> list[ToolDefinition]:
         """返回暴露给 LLM 的全部工具定义。"""
@@ -58,6 +62,8 @@ class ToolRegistry:
             )
 
         try:
+            # 模型输出的 arguments 以 JSON 字符串形式进入 runtime，
+            # 这里统一做解析和错误收口，避免每个工具各自重复处理。
             arguments = json.loads(tool_call.function.arguments or "{}")
         except json.JSONDecodeError:
             return self._error_result(
@@ -75,6 +81,7 @@ class ToolRegistry:
         try:
             return tool.execute(arguments=arguments, tool_call_id=tool_call.id)
         except Exception as exc:
+            # 工具异常不直接打崩整个 loop，而是回填结构化错误结果给模型下一轮处理。
             return self._error_result(
                 tool_call=tool_call,
                 message=f"Tool execution failed for {tool_name}: {exc}",

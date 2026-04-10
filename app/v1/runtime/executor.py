@@ -14,6 +14,8 @@ class RuntimeExecutor:
 
     def execute(self, context: RunContext, state: AgentState) -> RunResult:
         """针对当前状态调用已配置的 LLM Provider。"""
+        # Runtime 只负责把当前状态整理成一次标准化请求。
+        # 真正的协议适配、鉴权和网络调用都留在 Provider 层处理。
         request = RunRequest(
             messages=state.messages,
             model=context.model,
@@ -65,6 +67,7 @@ class RuntimeExecutor:
         message: str,
     ) -> RunResult:
         """在模型返回异常时构造可继续消费的回退结果。"""
+        # 回退结果仍然保持和正常结果同构，这样上层 loop 不需要分叉大量异常逻辑。
         return RunResult(
             id=f"fallback-{context.run_id}-{state.step_count}",
             model=context.model,

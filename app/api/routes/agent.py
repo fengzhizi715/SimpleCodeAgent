@@ -14,12 +14,12 @@ from app.api.deps import (
     get_provider,
     get_session_memory,
     get_summary_memory,
-    get_tool_registry,
     get_trace_repository,
 )
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
 from app.llm.client import LLMProviderError
+from app.v1.tools.registry import ToolRegistry
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -32,6 +32,10 @@ class AgentRunRequest(BaseModel):
     task: str = Field(min_length=1, description="要执行的任务描述。")
     version: Literal["v1", "v2"] = Field(default="v1", description="选择 Agent 版本。")
     session_id: str | None = Field(default=None, description="可选会话 ID。")
+    project_root: str | None = Field(
+        default=None,
+        description="目标项目根目录。未传时默认使用当前仓库或 WORKSPACE_ROOT。",
+    )
     model: str | None = Field(default=None, description="可覆盖的模型名。")
     base_url: str | None = Field(default=None, description="可覆盖的 LLM Base URL。")
     api_key: str | None = Field(default=None, description="可覆盖的 LLM API Key。")
@@ -76,6 +80,8 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     session_id = request.session_id or str(uuid4())
 
     try:
+        # Provider、memory、planner 仍然是共享底座；
+        # 具体工具工作区则允许按请求覆盖，便于分析其他本地项目。
         provider = get_provider(
             base_url=request.base_url,
             api_key=request.api_key,
@@ -86,8 +92,10 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         planner = get_planner()
         session_memory = get_session_memory()
         summary_memory = get_summary_memory()
-        tool_registry = get_tool_registry()
+        tool_registry = ToolRegistry(workspace_root=request.project_root or settings.workspace_root or None)
+        tool_registry.register_default_tools()
 
+        # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
         if planner.should_plan(request.task):
             result = loop.run_with_plan(
                 provider=provider,

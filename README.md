@@ -46,6 +46,8 @@ LLM_BASE_URL=http://127.0.0.1:8000/v1
 LLM_AUTH_MODE=service_token
 LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
+SESSION_ID=demo-session
+WORKSPACE_ROOT=/absolute/path/to/your/project
 ```
 
 5. 运行一个最小任务
@@ -54,6 +56,8 @@ LLM_MODEL=your-model
 .venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
   --version v1
 ```
+
+如果你在 `.env` 里配置了 `SESSION_ID`，连续运行时会默认落到同一个会话。
 
 ## 目录结构
 
@@ -98,10 +102,17 @@ demo_workspace/ # 编程任务演示工作区
 其中包含：
 
 - CLI 用法
+- `SESSION_ID` 默认会话行为
+- `WORKSPACE_ROOT` / `--project-root` 用法
 - RAG 文档导入
+- `local_ai_inference_platform` 接入建议
 - FastAPI 调用方式
 - Trace 查看
 - Coding demo 演示流程
+
+开发者架构说明见：
+
+- [docs/architecture.md](docs/architecture.md)
 
 ## 启动方式
 
@@ -128,6 +139,8 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LLM_SERVICE_TOKEN`：用于 `X-Service-Token` 的服务令牌
 - `LLM_MODEL`：模型名
 - `LLM_TIMEOUT`：请求超时时间，单位秒
+- `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
+- `WORKSPACE_ROOT`：默认目标项目根目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
 
 ## 当前限制
 

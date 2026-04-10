@@ -15,6 +15,9 @@ from app.core.exceptions import AppError
 class Tool(ABC):
     """所有工具的抽象基类。"""
 
+    def __init__(self, workspace_root: str | Path | None = None) -> None:
+        self._workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else BASE_DIR.resolve()
+
     @property
     @abstractmethod
     def definition(self) -> ToolDefinition:
@@ -27,7 +30,7 @@ class Tool(ABC):
     @property
     def workspace_root(self) -> Path:
         """返回工具允许操作的工作区根目录。"""
-        return BASE_DIR
+        return self._workspace_root
 
     def resolve_path(self, raw_path: str) -> Path:
         """解析路径并确保其位于工作区内。"""

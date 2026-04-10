@@ -50,6 +50,8 @@ class Settings:
     llm_service_token: str = os.getenv("LLM_SERVICE_TOKEN", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_timeout: int = int(os.getenv("LLM_TIMEOUT", str(DEFAULT_OPENAI_TIMEOUT)))
+    session_id: str = os.getenv("SESSION_ID", "")
+    workspace_root: str = os.getenv("WORKSPACE_ROOT", "")
 
 
 settings = Settings()
