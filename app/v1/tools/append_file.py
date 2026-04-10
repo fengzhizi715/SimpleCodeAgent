@@ -36,6 +36,10 @@ class AppendFileTool(Tool):
         content = str(arguments.get("content", ""))
         dry_run = bool(arguments.get("dry_run", False))
         path = self.resolve_path(raw_path)
+        existed_before = path.exists()
+        previous_content = path.read_text(encoding="utf-8", errors="replace") if existed_before and path.is_file() else ""
+        updated_content = f"{previous_content}{content}"
+        diff_payload = self.build_diff_preview(path=path, before=previous_content, after=updated_content)
         if dry_run:
             return self.success(
                 tool_call_id=tool_call_id,
@@ -43,7 +47,9 @@ class AppendFileTool(Tool):
                     "ok": True,
                     "path": str(path),
                     "dry_run": True,
+                    "created": not existed_before,
                     "bytes": len(content.encode("utf-8")),
+                    **diff_payload,
                 },
             )
 
@@ -56,6 +62,8 @@ class AppendFileTool(Tool):
                 "ok": True,
                 "path": str(path),
                 "dry_run": False,
+                "created": not existed_before,
                 "bytes": len(content.encode("utf-8")),
+                **diff_payload,
             },
         )

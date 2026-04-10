@@ -42,6 +42,7 @@ class RunContext(BaseModel):
     session_id: str
     provider: LLMProvider
     model: str
+    reasoning_mode: str = "default"
     tool_registry: ToolRegistry
     session_memory: SessionMemory
     summary_memory: SummaryMemory

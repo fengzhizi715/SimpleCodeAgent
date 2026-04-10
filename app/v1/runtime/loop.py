@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from app.contracts.message import Message
 from app.contracts.planner import PlanStep
-from app.contracts.run import RunChoice, RunResult
+from app.contracts.run import RunChoice, RunMetrics, RunResult, RunUsage
 from app.contracts.trace import TraceEvent
 from app.core.exceptions import AppError, RuntimeMaxStepsError, RuntimeTimeoutError
 from app.core.logger import get_logger, log_context
@@ -42,6 +42,7 @@ class AgentLoop:
         task: str,
         system_prompt: str,
         session_id: str,
+        reasoning_mode: str = "default",
         temperature: float = 0.0,
         max_steps: int = 3,
         run_timeout_seconds: int = 120,
@@ -66,6 +67,7 @@ class AgentLoop:
                 session_id=session_id,
                 provider=provider,
                 model=model,
+                reasoning_mode=reasoning_mode,
                 tool_registry=registry,
                 session_memory=session_store,
                 summary_memory=summary_store,
@@ -112,6 +114,7 @@ class AgentLoop:
                     return self._build_fallback_final_result(
                         context=context,
                         state=state,
+                        started_at=started_at,
                         status="failed",
                         message=f"运行超时，已在 {context.run_timeout_seconds} 秒后停止。",
                         event_type="run_timeout",
@@ -137,11 +140,13 @@ class AgentLoop:
                     message="LLM called.",
                     payload={"step_count": state.step_count, "model": context.model},
                 )
+                state.llm_call_count += 1
                 result = self.executor.execute(context, state)
                 if not result.choices:
                     return self._build_fallback_final_result(
                         context=context,
                         state=state,
+                        started_at=started_at,
                         status="failed",
                         message="模型返回空结果，系统已结束本次运行。",
                         event_type="llm_empty_result",
@@ -184,6 +189,7 @@ class AgentLoop:
                     return self._build_fallback_final_result(
                         context=context,
                         state=state,
+                        started_at=started_at,
                         status="failed",
                         message=result.final_output or "模型执行失败，系统已返回回退结果。",
                         event_type="llm_fallback_result",
@@ -216,6 +222,8 @@ class AgentLoop:
                             "step_count": state.step_count,
                             "status": state.status,
                             "final_output": final_output,
+                            "reasoning_mode": reasoning_mode,
+                            "metrics": self._build_metrics(state, started_at),
                             "trace": list(state.trace_events),
                         }
                     )
@@ -225,6 +233,7 @@ class AgentLoop:
             return self._build_fallback_final_result(
                 context=context,
                 state=state,
+                started_at=started_at,
                 status="max_steps_exceeded",
                 message="已达到最大执行步数，系统主动停止以避免死循环。",
                 event_type="run_stopped",
@@ -238,6 +247,7 @@ class AgentLoop:
         task: str,
         system_prompt: str,
         session_id: str,
+        reasoning_mode: str = "default",
         temperature: float = 0.0,
         max_steps: int = 3,
         run_timeout_seconds: int = 120,
@@ -255,6 +265,7 @@ class AgentLoop:
                 task=task,
                 system_prompt=system_prompt,
                 session_id=session_id,
+                reasoning_mode=reasoning_mode,
                 temperature=temperature,
                 max_steps=max_steps,
                 run_timeout_seconds=run_timeout_seconds,
@@ -264,6 +275,7 @@ class AgentLoop:
             )
 
         step_outputs: list[str] = []
+        step_results: list[RunResult] = []
         total_step_count = 0
         plan_failed = False
 
@@ -274,6 +286,7 @@ class AgentLoop:
                 task=task,
                 system_prompt=system_prompt,
                 session_id=session_id,
+                reasoning_mode=reasoning_mode,
                 temperature=temperature,
                 max_steps=max_steps,
                 run_timeout_seconds=run_timeout_seconds,
@@ -286,6 +299,7 @@ class AgentLoop:
                 previous_outputs=step_outputs,
             )
             step_outputs.append(step_result.final_output)
+            step_results.append(step_result)
             total_step_count += step_result.step_count
             if step.status == "failed":
                 plan_failed = True
@@ -298,6 +312,7 @@ class AgentLoop:
             task=summary_prompt,
             system_prompt=system_prompt,
             session_id=session_id,
+            reasoning_mode=reasoning_mode,
             temperature=temperature,
             max_steps=max_steps,
             run_timeout_seconds=run_timeout_seconds,
@@ -315,12 +330,21 @@ class AgentLoop:
                     Message(role="assistant", content=summary_result.final_output),
                 ],
             )
+            if summary_result.metrics is not None:
+                summary_result.metrics.memory_write_count += 1
+        aggregated_metrics = self._merge_metrics(
+            [step_result.metrics for step_result in step_results] + [summary_result.metrics]
+        )
         return summary_result.model_copy(
             update={
                 "session_id": session_id,
                 "step_count": total_step_count + summary_result.step_count,
                 "plan": plan,
                 "status": "failed" if plan_failed else summary_result.status,
+                "usage": self._merge_usage(
+                    [step_result.usage for step_result in step_results] + [summary_result.usage]
+                ),
+                "metrics": aggregated_metrics,
             }
         )
 
@@ -329,6 +353,7 @@ class AgentLoop:
         *,
         context: RunContext,
         state: AgentState,
+        started_at: float,
         status: str,
         message: str,
         event_type: str,
@@ -336,6 +361,7 @@ class AgentLoop:
         """构造统一的回退最终结果，避免整个系统崩溃。"""
         state.status = status
         state.final_output = message
+        state.fallback_count += 1
         self._append_trace_event(
             context=context,
             state=state,
@@ -351,6 +377,7 @@ class AgentLoop:
         fallback_result = RunResult(
             id=f"fallback-final-{context.run_id}",
             model=context.model,
+            reasoning_mode=context.reasoning_mode,
             choices=[
                 RunChoice(
                     index=0,
@@ -363,6 +390,7 @@ class AgentLoop:
             step_count=state.step_count,
             status=status,
             final_output=message,
+            metrics=self._build_metrics(state, started_at),
             trace=list(state.trace_events),
         )
         self._persist_run_metadata(context, state, fallback_result)
@@ -380,6 +408,7 @@ class AgentLoop:
             if message.role in {"user", "assistant", "tool"}
         ]
         context.session_memory.append(context.session_id, new_messages)
+        state.memory_write_count += 1
         self._append_trace_event(
             context=context,
             state=state,
@@ -409,6 +438,7 @@ class AgentLoop:
         task: str,
         system_prompt: str,
         session_id: str,
+        reasoning_mode: str,
         temperature: float,
         max_steps: int,
         run_timeout_seconds: int,
@@ -442,6 +472,7 @@ class AgentLoop:
                 task=step_prompt,
                 system_prompt=system_prompt,
                 session_id=session_id,
+                reasoning_mode=reasoning_mode,
                 temperature=temperature,
                 max_steps=max_steps,
                 run_timeout_seconds=run_timeout_seconds,
@@ -459,6 +490,7 @@ class AgentLoop:
         return last_result or RunResult(
             id="planner-step-fallback",
             model=model,
+            reasoning_mode=reasoning_mode,
             choices=[],
             session_id=session_id,
             status="failed",
@@ -529,6 +561,7 @@ class AgentLoop:
     ) -> None:
         """执行工具调用，并将工具结果追加到状态消息中。"""
         for tool_call in tool_calls:
+            state.tool_call_count += 1
             logger.info(
                 "Executing tool call: step=%s tool=%s tool_call_id=%s",
                 state.step_count,
@@ -551,6 +584,7 @@ class AgentLoop:
             # 这样模型可以自己决定是重试、换工具，还是直接向用户解释问题。
             state.messages.append(tool_result.to_message())
             if tool_result.is_error:
+                state.tool_error_count += 1
                 logger.error(
                     "Tool call failed: step=%s tool=%s tool_call_id=%s",
                     state.step_count,
@@ -596,3 +630,41 @@ class AgentLoop:
         )
         state.trace_events.append(event)
         context.trace_recorder.record(event)
+
+    def _build_metrics(self, state: AgentState, started_at: float) -> RunMetrics:
+        """根据当前状态构造运行指标。"""
+        return RunMetrics(
+            duration_seconds=max(monotonic() - started_at, 0.0),
+            llm_call_count=state.llm_call_count,
+            tool_call_count=state.tool_call_count,
+            tool_error_count=state.tool_error_count,
+            memory_write_count=state.memory_write_count,
+            fallback_count=state.fallback_count,
+        )
+
+    def _merge_metrics(self, metrics_list: list[RunMetrics | None]) -> RunMetrics:
+        """合并多次运行结果的指标，用于 planner 汇总场景。"""
+        merged = RunMetrics()
+        for metrics in metrics_list:
+            if metrics is None:
+                continue
+            merged.duration_seconds += metrics.duration_seconds
+            merged.llm_call_count += metrics.llm_call_count
+            merged.tool_call_count += metrics.tool_call_count
+            merged.tool_error_count += metrics.tool_error_count
+            merged.memory_write_count += metrics.memory_write_count
+            merged.fallback_count += metrics.fallback_count
+        return merged
+
+    def _merge_usage(self, usage_list: list[RunUsage | None]) -> RunUsage | None:
+        """合并多次运行的 token usage，用于 planner 汇总场景。"""
+        merged = RunUsage()
+        has_usage = False
+        for usage in usage_list:
+            if usage is None:
+                continue
+            has_usage = True
+            merged.prompt_tokens += usage.prompt_tokens
+            merged.completion_tokens += usage.completion_tokens
+            merged.total_tokens += usage.total_tokens
+        return merged if has_usage else None

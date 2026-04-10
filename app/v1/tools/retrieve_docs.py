@@ -28,6 +28,11 @@ class RetrieveDocsTool(Tool):
                         "description": "返回的片段数量。",
                         "default": 3,
                     },
+                    "min_score": {
+                        "type": "number",
+                        "description": "最小相似度分数阈值，范围建议 0.0 到 1.0。",
+                        "default": 0.0,
+                    },
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -38,16 +43,19 @@ class RetrieveDocsTool(Tool):
     def execute(self, arguments: dict[str, object], tool_call_id: str) -> ToolResult:
         query = str(arguments.get("query", "")).strip()
         top_k = int(arguments.get("top_k", 3))
+        min_score = float(arguments.get("min_score", 0.0))
         if not query:
             return self.error(tool_call_id=tool_call_id, message="Query must not be empty.")
 
-        results = self.retriever.retrieve(query=query, top_k=top_k)
+        results = self.retriever.retrieve(query=query, top_k=top_k, min_score=min_score)
         return self.success(
             tool_call_id=tool_call_id,
             content={
                 "ok": True,
                 "query": query,
                 "top_k": top_k,
+                "min_score": min_score,
+                "match_count": len(results),
                 "matches": results,
             },
         )

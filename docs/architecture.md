@@ -79,7 +79,13 @@ Runtime 不直接操作文件系统，也不直接执行 shell。所有外部动
 - 工具失败可以统一回填给模型处理
 - 后续 `v2` 可以复用相同的工具协议
 
-当前 `ToolRegistry` 还支持配置 `workspace_root`，用于分析指定本地项目目录，而不是只分析当前仓库。
+当前 `ToolRegistry` 还支持配置工作目录，用于分析指定本地项目目录，而不是只分析当前仓库。
+
+在顶层输入语义上，项目现在统一使用 `workdir`：
+
+- CLI / 模块入口使用 `--workdir`
+- API 使用 `workdir`
+- `project_root` 与 `WORKSPACE_ROOT` 仅作为历史兼容名保留
 
 ## 5. Memory 与 Session 的边界
 

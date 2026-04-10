@@ -101,13 +101,14 @@ class OpenAICompatibleProvider(LLMProvider):
 
         endpoint = f"{self.base_url}/chat/completions"
         logger.info(
-            "Sending LLM request: model=%s endpoint=%s message_count=%s tool_count=%s timeout=%ss auth_mode=%s",
+            "Sending LLM request: model=%s endpoint=%s message_count=%s tool_count=%s timeout=%ss auth_mode=%s reasoning_mode=%s",
             payload.get("model", self.model),
             endpoint,
             len(chat_request.messages),
             len(chat_request.tools),
             self.timeout,
             self.auth_mode,
+            chat_request.reasoning_mode,
         )
         http_request = request.Request(
             endpoint,

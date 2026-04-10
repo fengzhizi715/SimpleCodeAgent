@@ -36,6 +36,9 @@ class WriteFileTool(Tool):
         content = str(arguments.get("content", ""))
         dry_run = bool(arguments.get("dry_run", False))
         path = self.resolve_path(raw_path)
+        existed_before = path.exists()
+        previous_content = path.read_text(encoding="utf-8", errors="replace") if existed_before and path.is_file() else ""
+        diff_payload = self.build_diff_preview(path=path, before=previous_content, after=content)
 
         if dry_run:
             return self.success(
@@ -44,7 +47,9 @@ class WriteFileTool(Tool):
                     "ok": True,
                     "dry_run": True,
                     "path": str(path),
+                    "created": not existed_before,
                     "bytes": len(content.encode("utf-8")),
+                    **diff_payload,
                 },
             )
 
@@ -56,6 +61,8 @@ class WriteFileTool(Tool):
                 "ok": True,
                 "dry_run": False,
                 "path": str(path),
+                "created": not existed_before,
                 "bytes": len(content.encode("utf-8")),
+                **diff_payload,
             },
         )

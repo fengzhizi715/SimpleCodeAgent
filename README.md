@@ -48,7 +48,7 @@ LLM_AUTH_MODE=service_token
 LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
 SESSION_ID=demo-session
-WORKSPACE_ROOT=/absolute/path/to/your/project
+WORKDIR=/absolute/path/to/your/project
 ```
 
 5. 运行一个最小任务
@@ -104,7 +104,7 @@ demo_workspace/ # 编程任务演示工作区
 
 - CLI 用法
 - `SESSION_ID` 默认会话行为
-- `WORKSPACE_ROOT` / `--project-root` 用法
+- `WORKDIR` / `--workdir` 用法
 - RAG 文档导入
 - `local_ai_inference_platform` 接入建议
 - FastAPI 调用方式
@@ -142,7 +142,8 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LLM_MODEL`：模型名
 - `LLM_TIMEOUT`：请求超时时间，单位秒
 - `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
-- `WORKSPACE_ROOT`：默认目标项目根目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
+- `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
+- `WORKSPACE_ROOT`：历史兼容变量，效果等同于 `WORKDIR`
 
 ## 日志说明
 

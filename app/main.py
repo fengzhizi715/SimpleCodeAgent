@@ -29,6 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="?", help="Prompt sent to the model.")
     parser.add_argument("--version", dest="version", choices=["v1", "v2"], default="v1")
     parser.add_argument("--model", dest="model", default=settings.llm_model)
+    parser.add_argument(
+        "--reasoning-mode",
+        dest="reasoning_mode",
+        choices=["default", "low", "medium", "high"],
+        default="default",
+        help="Reasoning mode marker.",
+    )
     parser.add_argument("--base-url", dest="base_url", default=settings.llm_base_url)
     parser.add_argument("--api-key", dest="api_key", default=settings.llm_api_key)
     parser.add_argument("--service-token", dest="service_token", default=settings.llm_service_token)
@@ -52,10 +59,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional session identifier for conversation memory. Defaults to SESSION_ID when set.",
     )
     parser.add_argument(
+        "--workdir",
         "--project-root",
-        dest="project_root",
-        default=settings.workspace_root,
-        help="Target project root for tool execution. Defaults to current repo or WORKSPACE_ROOT when set.",
+        dest="workdir",
+        default=settings.workdir,
+        help="Target workdir for tool execution. Defaults to current repo or WORKDIR/WORKSPACE_ROOT when set.",
+    )
+    parser.add_argument(
+        "--max-steps",
+        dest="max_steps",
+        type=int,
+        default=3,
+        help="Maximum execution steps.",
     )
     return parser
 
@@ -90,12 +105,14 @@ def run_chat(args: argparse.Namespace) -> RunResult:
     session_id = args.session_id or str(uuid4())
     with log_context(session_id=session_id):
         logger.info(
-            "Preparing agent run: version=%s model=%s project_root=%s",
+            "Preparing agent run: version=%s model=%s workdir=%s max_steps=%s reasoning_mode=%s",
             args.version,
             args.model,
-            args.project_root or "<current-repo>",
+            args.workdir or "<current-repo>",
+            args.max_steps,
+            args.reasoning_mode,
         )
-        tool_registry = ToolRegistry(workspace_root=args.project_root or None)
+        tool_registry = ToolRegistry(workspace_root=args.workdir or None)
         tool_registry.register_default_tools()
         memory_repository = SQLiteMemoryRepository()
         session_memory = SessionMemory(memory_repository)
@@ -109,7 +126,9 @@ def run_chat(args: argparse.Namespace) -> RunResult:
                 task=args.prompt,
                 system_prompt=args.system_prompt,
                 session_id=session_id,
+                reasoning_mode=args.reasoning_mode,
                 temperature=args.temperature,
+                max_steps=args.max_steps,
                 tool_registry=tool_registry,
                 session_memory=session_memory,
                 summary_memory=summary_memory,
@@ -121,7 +140,9 @@ def run_chat(args: argparse.Namespace) -> RunResult:
             task=args.prompt,
             system_prompt=args.system_prompt,
             session_id=session_id,
+            reasoning_mode=args.reasoning_mode,
             temperature=args.temperature,
+            max_steps=args.max_steps,
             tool_registry=tool_registry,
             session_memory=session_memory,
             summary_memory=summary_memory,
@@ -154,9 +175,25 @@ def main() -> None:
     print(result.final_output)
     print()
     print(f"Version: {args.version}")
+    print(f"Reasoning Mode: {result.reasoning_mode}")
     print()
     print(f"Run ID: {result.run_id or ''}")
     print(f"Session ID: {result.session_id or args.session_id or ''}")
+    if result.usage is not None:
+        print(
+            "Usage: "
+            f"prompt={result.usage.prompt_tokens} completion={result.usage.completion_tokens} total={result.usage.total_tokens}"
+        )
+    if result.metrics is not None:
+        print(
+            "Metrics: "
+            f"duration={result.metrics.duration_seconds:.2f}s "
+            f"llm_calls={result.metrics.llm_call_count} "
+            f"tool_calls={result.metrics.tool_call_count} "
+            f"tool_errors={result.metrics.tool_error_count} "
+            f"memory_writes={result.metrics.memory_write_count} "
+            f"fallbacks={result.metrics.fallback_count}"
+        )
 
 
 if __name__ == "__main__":

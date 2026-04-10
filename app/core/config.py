@@ -51,7 +51,8 @@ class Settings:
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_timeout: int = int(os.getenv("LLM_TIMEOUT", str(DEFAULT_OPENAI_TIMEOUT)))
     session_id: str = os.getenv("SESSION_ID", "")
-    workspace_root: str = os.getenv("WORKSPACE_ROOT", "")
+    # 顶层统一使用 workdir 语义，同时兼容历史的 WORKSPACE_ROOT 配置。
+    workdir: str = os.getenv("WORKDIR", os.getenv("WORKSPACE_ROOT", ""))
 
 
 settings = Settings()

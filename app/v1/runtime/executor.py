@@ -19,6 +19,7 @@ class RuntimeExecutor:
         request = RunRequest(
             messages=state.messages,
             model=context.model,
+            reasoning_mode=context.reasoning_mode,
             temperature=context.temperature,
             tools=context.tool_registry.get_tool_definitions(),
         )
@@ -56,6 +57,7 @@ class RuntimeExecutor:
             update={
                 "run_id": context.run_id,
                 "step_count": state.step_count,
+                "reasoning_mode": context.reasoning_mode,
             }
         )
 
@@ -71,6 +73,7 @@ class RuntimeExecutor:
         return RunResult(
             id=f"fallback-{context.run_id}-{state.step_count}",
             model=context.model,
+            reasoning_mode=context.reasoning_mode,
             choices=[
                 RunChoice(
                     index=0,

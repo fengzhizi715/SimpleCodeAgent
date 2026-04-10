@@ -16,6 +16,7 @@ from app.api.deps import (
     get_summary_memory,
     get_trace_repository,
 )
+from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
 from app.core.logger import get_logger, log_context
@@ -35,11 +36,19 @@ class AgentRunRequest(BaseModel):
     task: str = Field(min_length=1, description="要执行的任务描述。")
     version: Literal["v1", "v2"] = Field(default="v1", description="选择 Agent 版本。")
     session_id: str | None = Field(default=None, description="可选会话 ID。")
+    workdir: str | None = Field(
+        default=None,
+        description="目标工作目录。未传时默认使用当前仓库或 WORKDIR/WORKSPACE_ROOT。",
+    )
     project_root: str | None = Field(
         default=None,
-        description="目标项目根目录。未传时默认使用当前仓库或 WORKSPACE_ROOT。",
+        description="历史兼容字段，等价于 workdir。优先使用 workdir。",
     )
     model: str | None = Field(default=None, description="可覆盖的模型名。")
+    reasoning_mode: Literal["default", "low", "medium", "high"] = Field(
+        default="default",
+        description="运行时的 reasoning 模式标记。",
+    )
     base_url: str | None = Field(default=None, description="可覆盖的 LLM Base URL。")
     api_key: str | None = Field(default=None, description="可覆盖的 LLM API Key。")
     service_token: str | None = Field(default=None, description="可覆盖的 Service Token。")
@@ -59,8 +68,11 @@ class AgentRunResponse(BaseModel):
     version: Literal["v1", "v2"]
     run_id: str
     session_id: str
+    reasoning_mode: Literal["default", "low", "medium", "high"] = "default"
     status: str | None = None
     step_count: int = 0
+    usage: RunUsage | None = None
+    metrics: RunMetrics | None = None
     trace: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -81,13 +93,15 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         )
 
     session_id = request.session_id or str(uuid4())
+    resolved_workdir = request.workdir or request.project_root or settings.workdir or None
 
     with log_context(session_id=session_id):
         logger.info(
-            "Received API run request: version=%s model=%s project_root=%s include_trace=%s",
+            "Received API run request: version=%s model=%s workdir=%s reasoning_mode=%s include_trace=%s",
             request.version,
             request.model or settings.llm_model or "<missing>",
-            request.project_root or settings.workspace_root or "<current-repo>",
+            resolved_workdir or "<current-repo>",
+            request.reasoning_mode,
             request.include_trace,
         )
         try:
@@ -103,7 +117,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
             planner = get_planner()
             session_memory = get_session_memory()
             summary_memory = get_summary_memory()
-            tool_registry = ToolRegistry(workspace_root=request.project_root or settings.workspace_root or None)
+            tool_registry = ToolRegistry(workspace_root=resolved_workdir)
             tool_registry.register_default_tools()
 
             # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
@@ -114,6 +128,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                     task=request.task,
                     system_prompt=request.system_prompt,
                     session_id=session_id,
+                    reasoning_mode=request.reasoning_mode,
                     temperature=request.temperature,
                     max_steps=request.max_steps,
                     run_timeout_seconds=request.run_timeout_seconds,
@@ -129,6 +144,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                     task=request.task,
                     system_prompt=request.system_prompt,
                     session_id=session_id,
+                    reasoning_mode=request.reasoning_mode,
                     temperature=request.temperature,
                     max_steps=request.max_steps,
                     run_timeout_seconds=request.run_timeout_seconds,
@@ -161,7 +177,10 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
             version=request.version,
             run_id=result.run_id or "",
             session_id=result.session_id or session_id,
+            reasoning_mode=result.reasoning_mode,
             status=result.status,
             step_count=result.step_count,
+            usage=result.usage,
+            metrics=result.metrics,
             trace=trace,
         )

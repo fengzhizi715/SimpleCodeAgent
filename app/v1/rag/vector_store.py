@@ -54,6 +54,7 @@ class ChromaVectorStore:
 
         rows: list[dict[str, Any]] = []
         for document, metadata, distance in zip(documents, metadatas, distances):
+            score = 1.0 / (1.0 + float(distance))
             rows.append(
                 {
                     "source": metadata.get("source", ""),
@@ -61,6 +62,7 @@ class ChromaVectorStore:
                     "end_index": metadata.get("end_index", 0),
                     "content": document,
                     "distance": distance,
+                    "score": score,
                 }
             )
         return rows

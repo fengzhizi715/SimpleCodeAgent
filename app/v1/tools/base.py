@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -60,6 +61,36 @@ class Tool(ABC):
             content=json.dumps(payload, ensure_ascii=False, indent=2),
             is_error=True,
         )
+
+    def build_diff_preview(
+        self,
+        *,
+        path: Path,
+        before: str,
+        after: str,
+        max_lines: int = 200,
+    ) -> dict[str, Any]:
+        """构造统一 diff 预览，便于编程执行场景查看改动。"""
+        try:
+            display_path = str(path.relative_to(self.workspace_root))
+        except ValueError:
+            display_path = str(path)
+        diff_lines = list(
+            difflib.unified_diff(
+                before.splitlines(),
+                after.splitlines(),
+                fromfile=f"a/{display_path}",
+                tofile=f"b/{display_path}",
+                lineterm="",
+            )
+        )
+        truncated = len(diff_lines) > max_lines
+        preview_lines = diff_lines[:max_lines]
+        return {
+            "diff_preview": "\n".join(preview_lines),
+            "diff_line_count": len(diff_lines),
+            "diff_truncated": truncated,
+        }
 
 
 class DummyTool(Tool):

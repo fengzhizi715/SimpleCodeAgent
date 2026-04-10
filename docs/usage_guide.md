@@ -36,7 +36,7 @@ LLM_AUTH_MODE=service_token
 LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
 SESSION_ID=demo-session
-WORKSPACE_ROOT=/absolute/path/to/your/project
+WORKDIR=/absolute/path/to/your/project
 ```
 
 如果你接的是 `local_ai_inference_platform`，推荐直接使用 `service token` 鉴权，而不是 Bearer API Key。
@@ -47,7 +47,8 @@ WORKSPACE_ROOT=/absolute/path/to/your/project
 - `LLM_AUTH_MODE` 使用 `service_token`
 - `LLM_SERVICE_TOKEN` 使用你申请好的服务令牌
 - `SESSION_ID` 可以固定成一个演示会话名，方便连续提问
-- `WORKSPACE_ROOT` 可以固定成你要分析的本地项目根目录
+- `WORKDIR` 可以固定成你要分析的本地项目根目录
+- `WORKSPACE_ROOT` 仍然兼容，但后续推荐统一使用 `WORKDIR`
 
 ## 2. CLI 使用
 
@@ -56,6 +57,7 @@ WORKSPACE_ROOT=/absolute/path/to/your/project
 ```bash
 .venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
   --version v1 \
+  --reasoning-mode medium \
   --model your-model \
   --base-url http://127.0.0.1:8000/v1 \
   --service-token your-service-token
@@ -66,7 +68,7 @@ WORKSPACE_ROOT=/absolute/path/to/your/project
 ```bash
 .venv/bin/python scripts/run_cli.py "帮我分析这个项目的目录结构" \
   --version v1 \
-  --project-root /Users/tony/PycharmProjects/local_ai_inference_platform
+  --workdir /Users/tony/PycharmProjects/local_ai_inference_platform
 ```
 
 带 session 连续提问：
@@ -98,6 +100,22 @@ export SESSION_ID=demo-session
 
 `./start.sh` 和 CLI 都遵循这个规则。
 
+限制最大执行步数：
+
+```bash
+.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
+  --version v1 \
+  --max-steps 5
+```
+
+指定 reasoning 模式标记：
+
+```bash
+.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
+  --version v1 \
+  --reasoning-mode high
+```
+
 打印简版 trace：
 
 ```bash
@@ -111,6 +129,12 @@ export SESSION_ID=demo-session
 ```bash
 .venv/bin/python scripts/run_cli.py "hello" --version v2
 ```
+
+CLI 运行完成后还会额外输出：
+
+- `Reasoning Mode`
+- `Usage`
+- `Metrics`
 
 ## 3. 模块入口
 
@@ -137,6 +161,8 @@ python -m app.main "你好，介绍一下你自己" --version v1
 ```
 
 导入完成后，Agent 在执行过程中可以通过 `retrieve_docs` 工具检索这些文档片段。
+
+`retrieve_docs` 当前除了 `top_k`，还支持 `min_score` 最小分数过滤。
 
 当前内置文档包括：
 
@@ -167,9 +193,12 @@ curl -s http://127.0.0.1:8000/agent/run \
   -d '{
     "task": "解释一下这个类的作用",
     "version": "v1",
+    "workdir": "/Users/tony/PycharmProjects/local_ai_inference_platform",
+    "reasoning_mode": "medium",
     "model": "your-model",
     "base_url": "http://127.0.0.1:8000/v1",
     "service_token": "your-service-token",
+    "max_steps": 5,
     "include_trace": true
   }'
 ```

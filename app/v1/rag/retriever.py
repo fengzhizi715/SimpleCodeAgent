@@ -19,7 +19,12 @@ class DocumentRetriever:
         self.vector_store = vector_store or ChromaVectorStore()
         self.embedding_provider = embedding_provider or build_embedding_provider()
 
-    def retrieve(self, query: str, top_k: int = 3) -> list[dict[str, object]]:
+    def retrieve(self, query: str, top_k: int = 3, min_score: float = 0.0) -> list[dict[str, object]]:
         """返回与查询最相关的文档片段。"""
         query_embedding = self.embedding_provider.embed_texts([query])[0]
-        return self.vector_store.query(query_embedding=query_embedding, top_k=top_k)
+        matches = self.vector_store.query(query_embedding=query_embedding, top_k=top_k)
+        return [
+            match
+            for match in matches
+            if float(match.get("score", 0.0)) >= min_score
+        ]

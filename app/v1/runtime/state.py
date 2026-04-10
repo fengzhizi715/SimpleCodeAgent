@@ -25,4 +25,9 @@ class AgentState(BaseModel):
     step_count: int = 0
     status: AgentStatus = "running"
     final_output: str = ""
+    llm_call_count: int = 0
+    tool_call_count: int = 0
+    tool_error_count: int = 0
+    memory_write_count: int = 0
+    fallback_count: int = 0
     trace_events: list[TraceEvent] = Field(default_factory=list)

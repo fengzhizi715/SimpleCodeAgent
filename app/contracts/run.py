@@ -19,6 +19,7 @@ class RunRequest(BaseModel):
 
     messages: list[Message]
     model: str
+    reasoning_mode: Literal["default", "low", "medium", "high"] = "default"
     temperature: float = 0.0
     max_tokens: int | None = None
     tools: list[ToolDefinition] = Field(default_factory=list)
@@ -57,6 +58,19 @@ class RunUsage(BaseModel):
     total_tokens: int = 0
 
 
+class RunMetrics(BaseModel):
+    """单次运行的基础循环指标。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    duration_seconds: float = 0.0
+    llm_call_count: int = 0
+    tool_call_count: int = 0
+    tool_error_count: int = 0
+    memory_write_count: int = 0
+    fallback_count: int = 0
+
+
 class RunResult(BaseModel):
     """单次模型调用的标准结果。"""
 
@@ -64,8 +78,10 @@ class RunResult(BaseModel):
 
     id: str
     model: str
+    reasoning_mode: Literal["default", "low", "medium", "high"] = "default"
     choices: list[RunChoice]
     usage: RunUsage | None = None
+    metrics: RunMetrics | None = None
     run_id: str | None = None
     session_id: str | None = None
     step_count: int = 0

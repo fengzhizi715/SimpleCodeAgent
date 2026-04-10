@@ -55,6 +55,7 @@ class ReplaceInFileTool(Tool):
             )
 
         updated = content.replace(old_text, new_text)
+        diff_payload = self.build_diff_preview(path=path, before=content, after=updated)
         if not dry_run:
             path.write_text(updated, encoding="utf-8")
         return self.success(
@@ -64,5 +65,6 @@ class ReplaceInFileTool(Tool):
                 "path": str(path),
                 "replacements": occurrences,
                 "dry_run": dry_run,
+                **diff_payload,
             },
         )
