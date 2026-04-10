@@ -221,14 +221,64 @@ curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 - 向量库：[.chroma/chroma.sqlite3](/Users/tony/PycharmProjects/SimpleCodeAgent/.chroma/chroma.sqlite3)
   - 保存 RAG 检索所需的向量数据
 
-## 9. 当前限制
+## 9. 日志说明
+
+项目默认输出统一的控制台日志，格式包含：
+
+- 时间
+- 级别
+- 模块名
+- `run_id`
+- `session_id`
+- 日志消息
+
+同时，日志会写入项目根目录下的：
+
+```text
+logs/app.log
+```
+
+文件日志按天切分，并默认保留最近 30 天。
+
+示例：
+
+```text
+2026-04-10 21:00:00 | INFO | app.v1.runtime.loop | run_id=... | session_id=demo-session | Starting agent loop: model=...
+2026-04-10 21:00:01 | INFO | app.llm.client | run_id=... | session_id=demo-session | Sending LLM request: model=... endpoint=...
+2026-04-10 21:00:30 | ERROR | app.llm.client | run_id=... | session_id=demo-session | LLM provider connection failed: error=timed out
+```
+
+推荐关注的模块：
+
+- `app.main`
+  - CLI 入口与整体运行结果
+- `app.api.routes.agent`
+  - API 请求入口与响应结果
+- `app.llm.client`
+  - 模型请求、响应、超时、鉴权与解析问题
+- `app.v1.runtime.loop`
+  - step 推进、tool call、运行结束或失败
+- `app.v1.tools.registry`
+  - 工具路由、参数解析、工具异常
+- `app.v1.tools.shell_run`
+  - shell 命令执行与超时
+- `app.v1.memory.repository`
+  - session/run/trace 的 SQLite 持久化
+
+你可以通过 `LOG_LEVEL` 控制输出详细程度，例如：
+
+```env
+LOG_LEVEL=INFO
+```
+
+## 10. 当前限制
 
 - `v2` 还没有正式实现
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入
 - 当前文档以本地开发与演示为主，不是生产部署手册
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### 1. 为什么连续两次 CLI 运行，`run_id` 不一样？
 
