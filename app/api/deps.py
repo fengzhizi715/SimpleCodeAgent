@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import settings
+from app.core.logger import get_logger
 from app.llm.client import OpenAICompatibleProvider
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.memory.repository import SQLiteMemoryRepository
@@ -13,6 +14,8 @@ from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
 from app.v1.tools.registry import ToolRegistry
+
+logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -68,6 +71,14 @@ def get_provider(
     resolved_api_key = api_key or settings.llm_api_key
     resolved_service_token = service_token or settings.llm_service_token
     resolved_model = model or settings.llm_model
+    logger.info(
+        "Building provider: base_url=%s model=%s auth_mode=%s has_api_key=%s has_service_token=%s",
+        resolved_base_url,
+        resolved_model,
+        settings.llm_auth_mode,
+        bool(resolved_api_key),
+        bool(resolved_service_token),
+    )
     return OpenAICompatibleProvider(
         base_url=resolved_base_url,
         api_key=resolved_api_key,

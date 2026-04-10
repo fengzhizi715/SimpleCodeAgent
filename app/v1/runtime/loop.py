@@ -10,6 +10,7 @@ from app.contracts.planner import PlanStep
 from app.contracts.run import RunChoice, RunResult
 from app.contracts.trace import TraceEvent
 from app.core.exceptions import AppError, RuntimeMaxStepsError, RuntimeTimeoutError
+from app.core.logger import get_logger, log_context
 from app.llm.client import LLMProvider
 from app.llm.parser import extract_final_text, extract_tool_calls
 from app.trace.events import make_trace_event
@@ -23,6 +24,8 @@ from app.v1.runtime.context import RunContext
 from app.v1.runtime.executor import RuntimeExecutor
 from app.v1.runtime.state import AgentState
 from app.v1.tools.registry import ToolRegistry
+
+logger = get_logger(__name__)
 
 
 class AgentLoop:
@@ -49,156 +52,183 @@ class AgentLoop:
     ) -> RunResult:
         """执行最小 Agent 循环并返回标准化结果。"""
         run_id = str(uuid4())
-        started_at = monotonic()
-        registry = tool_registry or ToolRegistry()
-        session_store = session_memory or SessionMemory(SQLiteMemoryRepository())
-        summary_store = summary_memory or SummaryMemory(session_store.repository)
-        trace_repository = SQLiteTraceRepository(session_store.repository.db)
-        trace_recorder = JsonlTraceRecorder(run_id=run_id)
-        history_messages = session_store.load(session_id)
-        # RunContext 集中持有本次执行依赖，避免 loop 中散落太多环境判断。
-        context = RunContext(
-            run_id=run_id,
-            session_id=session_id,
-            provider=provider,
-            model=model,
-            tool_registry=registry,
-            session_memory=session_store,
-            summary_memory=summary_store,
-            trace_recorder=trace_recorder,
-            trace_repository=trace_repository,
-            system_prompt=system_prompt,
-            temperature=temperature,
-            max_steps=max_steps,
-            run_timeout_seconds=run_timeout_seconds,
-            persist_session_memory=persist_session_memory,
-        )
-        state = AgentState(
-            run_id=run_id,
-            session_id=session_id,
-            task=task,
-            messages=[
-                # 每次运行都重新注入增强后的 system prompt，确保工具约束和编程规则生效。
-                Message(role="system", content=context.effective_system_prompt),
-                *history_messages,
-                Message(role="user", content=task),
-            ],
-            history_message_count=len(history_messages),
-            trace_events=[],
-        )
-        self._append_trace_event(
-            context=context,
-            state=state,
-            event_type="run_started",
-            message="Agent run started.",
-            payload={"task": task},
-        )
-
-        while state.step_count < context.max_steps:
-            # 这里控制的是“整次运行”的总时长。
-            # 单次 LLM 请求的超时由 Provider 层处理，Runtime 只负责全局兜底停止。
-            if monotonic() - started_at >= context.run_timeout_seconds:
-                return self._build_fallback_final_result(
-                    context=context,
-                    state=state,
-                    status="failed",
-                    message=f"运行超时，已在 {context.run_timeout_seconds} 秒后停止。",
-                    event_type="run_timeout",
-                )
-
-            state.step_count += 1
-            self._append_trace_event(
-                context=context,
-                state=state,
-                event_type="step_started",
-                message="Executor step started.",
-                payload={"step_count": state.step_count},
+        with log_context(run_id=run_id, session_id=session_id):
+            started_at = monotonic()
+            registry = tool_registry or ToolRegistry()
+            session_store = session_memory or SessionMemory(SQLiteMemoryRepository())
+            summary_store = summary_memory or SummaryMemory(session_store.repository)
+            trace_repository = SQLiteTraceRepository(session_store.repository.db)
+            trace_recorder = JsonlTraceRecorder(run_id=run_id)
+            history_messages = session_store.load(session_id)
+            # RunContext 集中持有本次执行依赖，避免 loop 中散落太多环境判断。
+            context = RunContext(
+                run_id=run_id,
+                session_id=session_id,
+                provider=provider,
+                model=model,
+                tool_registry=registry,
+                session_memory=session_store,
+                summary_memory=summary_store,
+                trace_recorder=trace_recorder,
+                trace_repository=trace_repository,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_steps=max_steps,
+                run_timeout_seconds=run_timeout_seconds,
+                persist_session_memory=persist_session_memory,
+            )
+            state = AgentState(
+                run_id=run_id,
+                session_id=session_id,
+                task=task,
+                messages=[
+                    # 每次运行都重新注入增强后的 system prompt，确保工具约束和编程规则生效。
+                    Message(role="system", content=context.effective_system_prompt),
+                    *history_messages,
+                    Message(role="user", content=task),
+                ],
+                history_message_count=len(history_messages),
+                trace_events=[],
             )
             self._append_trace_event(
                 context=context,
                 state=state,
-                event_type="llm_called",
-                message="LLM called.",
-                payload={"step_count": state.step_count, "model": context.model},
+                event_type="run_started",
+                message="Agent run started.",
+                payload={"task": task},
             )
-            result = self.executor.execute(context, state)
-            if not result.choices:
-                return self._build_fallback_final_result(
-                    context=context,
-                    state=state,
-                    status="failed",
-                    message="模型返回空结果，系统已结束本次运行。",
-                    event_type="llm_empty_result",
-                )
-
-            self._append_trace_event(
-                context=context,
-                state=state,
-                event_type="llm_responded",
-                message="LLM responded.",
-                payload={
-                    "step_count": state.step_count,
-                    "finish_reason": result.choices[0].finish_reason,
-                },
+            logger.info(
+                "Starting agent loop: model=%s max_steps=%s timeout=%ss history_messages=%s",
+                model,
+                max_steps,
+                run_timeout_seconds,
+                len(history_messages),
             )
 
-            tool_calls = extract_tool_calls(result)
-            if tool_calls:
-                # 先记录 assistant 的 tool-call 消息，再把工具结果回填给下一轮模型。
-                assistant_message = result.choices[0].message
-                state.messages.append(assistant_message)
-                self._handle_tool_calls(
-                    tool_calls=tool_calls,
-                    context=context,
-                    state=state,
-                )
-                continue
+            while state.step_count < context.max_steps:
+                # 这里控制的是“整次运行”的总时长。
+                # 单次 LLM 请求的超时由 Provider 层处理，Runtime 只负责全局兜底停止。
+                if monotonic() - started_at >= context.run_timeout_seconds:
+                    return self._build_fallback_final_result(
+                        context=context,
+                        state=state,
+                        status="failed",
+                        message=f"运行超时，已在 {context.run_timeout_seconds} 秒后停止。",
+                        event_type="run_timeout",
+                    )
 
-            if result.status == "failed":
-                return self._build_fallback_final_result(
-                    context=context,
-                    state=state,
-                    status="failed",
-                    message=result.final_output or "模型执行失败，系统已返回回退结果。",
-                    event_type="llm_fallback_result",
+                state.step_count += 1
+                logger.info(
+                    "Running agent step: step=%s/%s",
+                    state.step_count,
+                    context.max_steps,
                 )
-
-            if self._is_final_answer(result):
-                assistant_message = result.choices[0].message
-                state.messages.append(assistant_message)
-                final_output = extract_final_text(result)
-                if not final_output:
-                    final_output = "模型未返回可解析的最终答案，系统已使用回退结果结束。"
-                state.status = "completed"
-                state.final_output = final_output
                 self._append_trace_event(
                     context=context,
                     state=state,
-                    event_type="run_finished",
-                    message="Agent run finished.",
+                    event_type="step_started",
+                    message="Executor step started.",
                     payload={"step_count": state.step_count},
                 )
-                self._persist_session_messages(context, state)
-                final_result = result.model_copy(
-                    update={
-                        "run_id": run_id,
-                        "session_id": session_id,
-                        "step_count": state.step_count,
-                        "status": state.status,
-                        "final_output": final_output,
-                        "trace": list(state.trace_events),
-                    }
+                self._append_trace_event(
+                    context=context,
+                    state=state,
+                    event_type="llm_called",
+                    message="LLM called.",
+                    payload={"step_count": state.step_count, "model": context.model},
                 )
-                self._persist_run_metadata(context, state, final_result)
-                return final_result
+                result = self.executor.execute(context, state)
+                if not result.choices:
+                    return self._build_fallback_final_result(
+                        context=context,
+                        state=state,
+                        status="failed",
+                        message="模型返回空结果，系统已结束本次运行。",
+                        event_type="llm_empty_result",
+                    )
 
-        return self._build_fallback_final_result(
-            context=context,
-            state=state,
-            status="max_steps_exceeded",
-            message="已达到最大执行步数，系统主动停止以避免死循环。",
-            event_type="run_stopped",
-        )
+                self._append_trace_event(
+                    context=context,
+                    state=state,
+                    event_type="llm_responded",
+                    message="LLM responded.",
+                    payload={
+                        "step_count": state.step_count,
+                        "finish_reason": result.choices[0].finish_reason,
+                    },
+                )
+
+                tool_calls = extract_tool_calls(result)
+                if tool_calls:
+                    logger.info(
+                        "LLM requested tool calls: step=%s tool_count=%s",
+                        state.step_count,
+                        len(tool_calls),
+                    )
+                    # 先记录 assistant 的 tool-call 消息，再把工具结果回填给下一轮模型。
+                    assistant_message = result.choices[0].message
+                    state.messages.append(assistant_message)
+                    self._handle_tool_calls(
+                        tool_calls=tool_calls,
+                        context=context,
+                        state=state,
+                    )
+                    continue
+
+                if result.status == "failed":
+                    logger.error(
+                        "Agent step returned fallback result: step=%s message=%s",
+                        state.step_count,
+                        result.final_output,
+                    )
+                    return self._build_fallback_final_result(
+                        context=context,
+                        state=state,
+                        status="failed",
+                        message=result.final_output or "模型执行失败，系统已返回回退结果。",
+                        event_type="llm_fallback_result",
+                    )
+
+                if self._is_final_answer(result):
+                    assistant_message = result.choices[0].message
+                    state.messages.append(assistant_message)
+                    final_output = extract_final_text(result)
+                    if not final_output:
+                        final_output = "模型未返回可解析的最终答案，系统已使用回退结果结束。"
+                    state.status = "completed"
+                    state.final_output = final_output
+                    logger.info(
+                        "Agent loop completed: step_count=%s",
+                        state.step_count,
+                    )
+                    self._append_trace_event(
+                        context=context,
+                        state=state,
+                        event_type="run_finished",
+                        message="Agent run finished.",
+                        payload={"step_count": state.step_count},
+                    )
+                    self._persist_session_messages(context, state)
+                    final_result = result.model_copy(
+                        update={
+                            "run_id": run_id,
+                            "session_id": session_id,
+                            "step_count": state.step_count,
+                            "status": state.status,
+                            "final_output": final_output,
+                            "trace": list(state.trace_events),
+                        }
+                    )
+                    self._persist_run_metadata(context, state, final_result)
+                    return final_result
+
+            return self._build_fallback_final_result(
+                context=context,
+                state=state,
+                status="max_steps_exceeded",
+                message="已达到最大执行步数，系统主动停止以避免死循环。",
+                event_type="run_stopped",
+            )
 
     def run_with_plan(
         self,
@@ -499,6 +529,12 @@ class AgentLoop:
     ) -> None:
         """执行工具调用，并将工具结果追加到状态消息中。"""
         for tool_call in tool_calls:
+            logger.info(
+                "Executing tool call: step=%s tool=%s tool_call_id=%s",
+                state.step_count,
+                tool_call.function.name,
+                tool_call.id,
+            )
             self._append_trace_event(
                 context=context,
                 state=state,
@@ -514,6 +550,20 @@ class AgentLoop:
             # 无论工具成功还是失败，都统一转成 tool 消息回填给模型。
             # 这样模型可以自己决定是重试、换工具，还是直接向用户解释问题。
             state.messages.append(tool_result.to_message())
+            if tool_result.is_error:
+                logger.error(
+                    "Tool call failed: step=%s tool=%s tool_call_id=%s",
+                    state.step_count,
+                    tool_result.name,
+                    tool_result.tool_call_id,
+                )
+            else:
+                logger.info(
+                    "Tool call completed: step=%s tool=%s tool_call_id=%s",
+                    state.step_count,
+                    tool_result.name,
+                    tool_result.tool_call_id,
+                )
             self._append_trace_event(
                 context=context,
                 state=state,

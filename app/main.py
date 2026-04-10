@@ -10,7 +10,7 @@ from uuid import uuid4
 from app.contracts.run import RunResult
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
-from app.core.logger import setup_logger
+from app.core.logger import configure_logging, get_logger, log_context
 from app.llm.client import LLMProviderError, OpenAICompatibleProvider
 from app.v1.memory.repository import SQLiteMemoryRepository
 from app.v1.memory.session_memory import SessionMemory
@@ -19,7 +19,8 @@ from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
 from app.v1.tools.registry import ToolRegistry
 
-logger = setup_logger(settings.app_name, settings.log_level)
+configure_logging(settings.log_level)
+logger = get_logger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -87,15 +88,34 @@ def run_chat(args: argparse.Namespace) -> RunResult:
         timeout=settings.llm_timeout,
     )
     session_id = args.session_id or str(uuid4())
-    tool_registry = ToolRegistry(workspace_root=args.project_root or None)
-    tool_registry.register_default_tools()
-    memory_repository = SQLiteMemoryRepository()
-    session_memory = SessionMemory(memory_repository)
-    summary_memory = SummaryMemory(memory_repository)
-    loop = AgentLoop()
-    planner = SimplePlanner()
-    if planner.should_plan(args.prompt):
-        return loop.run_with_plan(
+    with log_context(session_id=session_id):
+        logger.info(
+            "Preparing agent run: version=%s model=%s project_root=%s",
+            args.version,
+            args.model,
+            args.project_root or "<current-repo>",
+        )
+        tool_registry = ToolRegistry(workspace_root=args.project_root or None)
+        tool_registry.register_default_tools()
+        memory_repository = SQLiteMemoryRepository()
+        session_memory = SessionMemory(memory_repository)
+        summary_memory = SummaryMemory(memory_repository)
+        loop = AgentLoop()
+        planner = SimplePlanner()
+        if planner.should_plan(args.prompt):
+            return loop.run_with_plan(
+                provider=provider,
+                model=args.model,
+                task=args.prompt,
+                system_prompt=args.system_prompt,
+                session_id=session_id,
+                temperature=args.temperature,
+                tool_registry=tool_registry,
+                session_memory=session_memory,
+                summary_memory=summary_memory,
+                planner=planner,
+            )
+        return loop.run(
             provider=provider,
             model=args.model,
             task=args.prompt,
@@ -105,35 +125,22 @@ def run_chat(args: argparse.Namespace) -> RunResult:
             tool_registry=tool_registry,
             session_memory=session_memory,
             summary_memory=summary_memory,
-            planner=planner,
         )
-    return loop.run(
-        provider=provider,
-        model=args.model,
-        task=args.prompt,
-        system_prompt=args.system_prompt,
-        session_id=session_id,
-        temperature=args.temperature,
-        tool_registry=tool_registry,
-        session_memory=session_memory,
-        summary_memory=summary_memory,
-    )
 
 
 def main() -> None:
     """启动命令行应用。"""
     args = build_parser().parse_args()
     logger.info(
-        "Application started",
-        extra={
-            "app_env": settings.app_env,
-            "debug": settings.debug,
-        },
+        "Application started: app_env=%s debug=%s log_level=%s",
+        settings.app_env,
+        settings.debug,
+        settings.log_level,
     )
     try:
         result = run_chat(args)
     except (AppError, LLMProviderError) as exc:
-        logger.error(str(exc))
+        logger.exception("Application failed: %s", exc)
         sys.exit(1)
 
     logger.info(

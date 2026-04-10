@@ -14,6 +14,9 @@ from app.contracts.message import Message
 from app.contracts.run import RunRequest, RunResult, RunUsage
 from app.contracts.tool import ToolCall, ToolFunction
 from app.core.exceptions import AppError
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ProviderMessagePayload(BaseModel):
@@ -97,6 +100,15 @@ class OpenAICompatibleProvider(LLMProvider):
         payload = chat_request.to_provider_payload(fallback_model=self.model)
 
         endpoint = f"{self.base_url}/chat/completions"
+        logger.info(
+            "Sending LLM request: model=%s endpoint=%s message_count=%s tool_count=%s timeout=%ss auth_mode=%s",
+            payload.get("model", self.model),
+            endpoint,
+            len(chat_request.messages),
+            len(chat_request.tools),
+            self.timeout,
+            self.auth_mode,
+        )
         http_request = request.Request(
             endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -109,17 +121,21 @@ class OpenAICompatibleProvider(LLMProvider):
                 response_body = response.read().decode("utf-8")
         except error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            logger.error("LLM provider returned HTTP error: status=%s body=%s", exc.code, body)
             raise LLMProviderError(
                 f"Provider returned HTTP {exc.code}: {body}"
             ) from exc
         except error.URLError as exc:
+            logger.error("LLM provider request failed: reason=%s", exc.reason)
             raise LLMProviderError(f"Provider request failed: {exc.reason}") from exc
         except (http.client.HTTPException, OSError) as exc:
+            logger.error("LLM provider connection failed: error=%s", exc)
             raise LLMProviderError(f"Provider connection failed: {exc}") from exc
 
         try:
             data = json.loads(response_body)
         except json.JSONDecodeError as exc:
+            logger.error("LLM provider returned invalid JSON response.")
             raise LLMProviderError("Provider returned invalid JSON") from exc
 
         return self._parse_response(data)
@@ -158,7 +174,15 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             parsed = ProviderResponsePayload.model_validate(payload)
         except ValidationError as exc:
+            logger.error("LLM provider response validation failed: %s", exc)
             raise LLMProviderError(f"Provider response validation failed: {exc}") from exc
+
+        logger.info(
+            "Received LLM response: model=%s choices=%s usage_total_tokens=%s",
+            parsed.model or self.model,
+            len(parsed.choices),
+            parsed.usage.total_tokens if parsed.usage is not None else 0,
+        )
 
         usage = None
         if parsed.usage is not None:

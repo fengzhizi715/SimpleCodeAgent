@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.contracts.tool import ToolCall, ToolDefinition, ToolResult
+from app.core.logger import get_logger
 from app.v1.tools.append_file import AppendFileTool
 from app.v1.tools.base import DummyTool, Tool
 from app.v1.tools.file_search import FileSearchTool
@@ -16,6 +17,8 @@ from app.v1.tools.retrieve_docs import RetrieveDocsTool
 from app.v1.tools.replace_in_file import ReplaceInFileTool
 from app.v1.tools.shell_run import ShellRunTool
 from app.v1.tools.write_file import WriteFileTool
+
+logger = get_logger(__name__)
 
 
 class ToolRegistry:
@@ -28,6 +31,7 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         """按工具定义中的名称注册工具实例。"""
         self._tools[tool.definition.name] = tool
+        logger.info("Registered tool: tool=%s workspace_root=%s", tool.definition.name, self.workspace_root or "<current-repo>")
 
     def register_dummy_tool(self) -> None:
         """注册默认 dummy 工具。"""
@@ -56,6 +60,7 @@ class ToolRegistry:
         tool_name = tool_call.function.name
         tool = self._tools.get(tool_name)
         if tool is None:
+            logger.error("Tool routing failed: tool=%s reason=not_found", tool_name)
             return self._error_result(
                 tool_call=tool_call,
                 message=f"Tool not found: {tool_name}",
@@ -66,6 +71,7 @@ class ToolRegistry:
             # 这里统一做解析和错误收口，避免每个工具各自重复处理。
             arguments = json.loads(tool_call.function.arguments or "{}")
         except json.JSONDecodeError:
+            logger.error("Tool routing failed: tool=%s reason=invalid_json_arguments", tool_name)
             return self._error_result(
                 tool_call=tool_call,
                 message=f"Invalid tool arguments for {tool_name}",
@@ -73,6 +79,7 @@ class ToolRegistry:
             )
 
         if not isinstance(arguments, dict):
+            logger.error("Tool routing failed: tool=%s reason=arguments_not_object", tool_name)
             return self._error_result(
                 tool_call=tool_call,
                 message=f"Tool arguments must be a JSON object for {tool_name}",
@@ -82,6 +89,7 @@ class ToolRegistry:
             return tool.execute(arguments=arguments, tool_call_id=tool_call.id)
         except Exception as exc:
             # 工具异常不直接打崩整个 loop，而是回填结构化错误结果给模型下一轮处理。
+            logger.exception("Tool execution failed: tool=%s error=%s", tool_name, exc)
             return self._error_result(
                 tool_call=tool_call,
                 message=f"Tool execution failed for {tool_name}: {exc}",

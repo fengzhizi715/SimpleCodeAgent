@@ -17,6 +17,7 @@
 - RAG 文档导入与检索
 - Trace 记录、查看与 API 查询
 - CLI 与 FastAPI 服务入口
+- 统一日志输出
 
 ## 快速开始
 
@@ -113,6 +114,7 @@ demo_workspace/ # 编程任务演示工作区
 开发者架构说明见：
 
 - [docs/architecture.md](docs/architecture.md)
+- [docs/roadmap.md](docs/roadmap.md)
 
 ## 启动方式
 
@@ -141,6 +143,45 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LLM_TIMEOUT`：请求超时时间，单位秒
 - `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
 - `WORKSPACE_ROOT`：默认目标项目根目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
+
+## 日志说明
+
+项目当前同时输出控制台日志和文件日志。
+
+日志文件默认保存在项目根目录下的 `logs/`：
+
+```text
+logs/app.log
+```
+
+文件日志按天滚动，并默认只保留最近 30 天，避免日志长期无限增长。
+
+日志格式如下：
+
+```text
+2026-04-10 21:00:00 | INFO | app.llm.client | run_id=... | session_id=... | Sending LLM request: model=...
+```
+
+日志至少包含：
+
+- 时间
+- 级别
+- 模块名
+- `run_id`
+- `session_id`
+- 明确消息
+
+因此排查时可以很快判断：
+
+- 是哪一层输出的日志
+- 是 `INFO` 还是 `ERROR`
+- 是配置装配问题、模型调用问题，还是工具执行问题
+
+可以通过 `LOG_LEVEL` 控制日志级别，例如：
+
+```env
+LOG_LEVEL=INFO
+```
 
 ## 当前限制
 

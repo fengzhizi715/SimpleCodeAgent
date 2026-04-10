@@ -5,7 +5,10 @@ from __future__ import annotations
 import subprocess
 
 from app.contracts.tool import ToolDefinition, ToolResult
+from app.core.logger import get_logger
 from app.v1.tools.base import Tool
+
+logger = get_logger(__name__)
 
 
 class ShellRunTool(Tool):
@@ -52,6 +55,12 @@ class ShellRunTool(Tool):
             )
 
         try:
+            logger.info(
+                "Running shell command: command=%s workdir=%s timeout=%ss",
+                command,
+                workdir,
+                timeout,
+            )
             completed = subprocess.run(
                 command,
                 cwd=workdir,
@@ -60,6 +69,10 @@ class ShellRunTool(Tool):
                 capture_output=True,
                 timeout=timeout,
             )
+            if completed.returncode == 0:
+                logger.info("Shell command completed: exit_code=%s command=%s", completed.returncode, command)
+            else:
+                logger.error("Shell command failed: exit_code=%s command=%s", completed.returncode, command)
             return self.success(
                 tool_call_id=tool_call_id,
                 content={
@@ -73,6 +86,7 @@ class ShellRunTool(Tool):
                 },
             )
         except subprocess.TimeoutExpired as exc:
+            logger.error("Shell command timed out: timeout=%ss command=%s", timeout, command)
             return self.error(
                 tool_call_id=tool_call_id,
                 message=f"Command timed out after {timeout} seconds.",

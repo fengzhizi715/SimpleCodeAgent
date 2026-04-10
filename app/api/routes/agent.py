@@ -18,8 +18,11 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
+from app.core.logger import get_logger, log_context
 from app.llm.client import LLMProviderError
 from app.v1.tools.registry import ToolRegistry
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -79,70 +82,86 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
 
     session_id = request.session_id or str(uuid4())
 
-    try:
-        # Provider、memory、planner 仍然是共享底座；
-        # 具体工具工作区则允许按请求覆盖，便于分析其他本地项目。
-        provider = get_provider(
-            base_url=request.base_url,
-            api_key=request.api_key,
-            service_token=request.service_token,
-            model=request.model,
+    with log_context(session_id=session_id):
+        logger.info(
+            "Received API run request: version=%s model=%s project_root=%s include_trace=%s",
+            request.version,
+            request.model or settings.llm_model or "<missing>",
+            request.project_root or settings.workspace_root or "<current-repo>",
+            request.include_trace,
         )
-        loop = get_agent_loop()
-        planner = get_planner()
-        session_memory = get_session_memory()
-        summary_memory = get_summary_memory()
-        tool_registry = ToolRegistry(workspace_root=request.project_root or settings.workspace_root or None)
-        tool_registry.register_default_tools()
-
-        # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
-        if planner.should_plan(request.task):
-            result = loop.run_with_plan(
-                provider=provider,
-                model=resolved_model,
-                task=request.task,
-                system_prompt=request.system_prompt,
-                session_id=session_id,
-                temperature=request.temperature,
-                max_steps=request.max_steps,
-                run_timeout_seconds=request.run_timeout_seconds,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-                planner=planner,
+        try:
+            # Provider、memory、planner 仍然是共享底座；
+            # 具体工具工作区则允许按请求覆盖，便于分析其他本地项目。
+            provider = get_provider(
+                base_url=request.base_url,
+                api_key=request.api_key,
+                service_token=request.service_token,
+                model=request.model,
             )
-        else:
-            result = loop.run(
-                provider=provider,
-                model=resolved_model,
-                task=request.task,
-                system_prompt=request.system_prompt,
-                session_id=session_id,
-                temperature=request.temperature,
-                max_steps=request.max_steps,
-                run_timeout_seconds=request.run_timeout_seconds,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-            )
-    except UnsupportedAgentVersionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except (AppError, LLMProviderError) as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+            loop = get_agent_loop()
+            planner = get_planner()
+            session_memory = get_session_memory()
+            summary_memory = get_summary_memory()
+            tool_registry = ToolRegistry(workspace_root=request.project_root or settings.workspace_root or None)
+            tool_registry.register_default_tools()
 
-    trace: list[dict[str, object]] = []
-    if request.include_trace and result.run_id:
-        trace = [
-            event.model_dump()
-            for event in get_trace_repository().query_timeline(result.run_id)
-        ]
+            # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
+            if planner.should_plan(request.task):
+                result = loop.run_with_plan(
+                    provider=provider,
+                    model=resolved_model,
+                    task=request.task,
+                    system_prompt=request.system_prompt,
+                    session_id=session_id,
+                    temperature=request.temperature,
+                    max_steps=request.max_steps,
+                    run_timeout_seconds=request.run_timeout_seconds,
+                    tool_registry=tool_registry,
+                    session_memory=session_memory,
+                    summary_memory=summary_memory,
+                    planner=planner,
+                )
+            else:
+                result = loop.run(
+                    provider=provider,
+                    model=resolved_model,
+                    task=request.task,
+                    system_prompt=request.system_prompt,
+                    session_id=session_id,
+                    temperature=request.temperature,
+                    max_steps=request.max_steps,
+                    run_timeout_seconds=request.run_timeout_seconds,
+                    tool_registry=tool_registry,
+                    session_memory=session_memory,
+                    summary_memory=summary_memory,
+                )
+        except UnsupportedAgentVersionError as exc:
+            logger.error("Unsupported agent version in API request: %s", exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (AppError, LLMProviderError) as exc:
+            logger.exception("API agent run failed: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return AgentRunResponse(
-        answer=result.final_output,
-        version=request.version,
-        run_id=result.run_id or "",
-        session_id=result.session_id or session_id,
-        status=result.status,
-        step_count=result.step_count,
-        trace=trace,
-    )
+        trace: list[dict[str, object]] = []
+        if request.include_trace and result.run_id:
+            trace = [
+                event.model_dump()
+                for event in get_trace_repository().query_timeline(result.run_id)
+            ]
+
+        logger.info(
+            "Completed API run request: status=%s step_count=%s run_id=%s",
+            result.status,
+            result.step_count,
+            result.run_id or "",
+        )
+        return AgentRunResponse(
+            answer=result.final_output,
+            version=request.version,
+            run_id=result.run_id or "",
+            session_id=result.session_id or session_id,
+            status=result.status,
+            step_count=result.step_count,
+            trace=trace,
+        )
