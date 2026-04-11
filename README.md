@@ -108,11 +108,17 @@ demo_workspace/ # 编程任务演示工作区
 - `SESSION_ID` 默认会话行为
 - 项目级 session 自动派生
 - `WORKDIR` / `--workdir` 用法
-- RAG 文档导入
+- RAG 文档导入与单文件导入
 - `local_ai_inference_platform` 接入建议
 - FastAPI 调用方式
 - Trace 查看
 - Coding demo 演示流程
+
+单文件导入示例：
+
+```bash
+.venv/bin/python scripts/ingest_docs.py --file /absolute/path/to/file.docx
+```
 
 开发者架构说明见：
 

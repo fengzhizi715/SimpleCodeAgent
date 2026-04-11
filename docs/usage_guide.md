@@ -191,6 +191,12 @@ python -m app.main "你好，介绍一下你自己" --version v1
 .venv/bin/python scripts/ingest_docs.py --docs-dir docs
 ```
 
+如果只想导入单个文件，也可以直接指定绝对路径：
+
+```bash
+.venv/bin/python scripts/ingest_docs.py --file /absolute/path/to/file.pdf
+```
+
 导入完成后，Agent 在执行过程中可以通过 `retrieve_docs` 工具检索这些文档片段。
 
 `retrieve_docs` 当前除了 `top_k`，还支持：
@@ -198,6 +204,14 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `min_score` 最小分数过滤
 - `rerank` 轻量重排
 - `fetch_k` 重排前的候选召回数量
+
+当前导入支持的文件类型：
+
+- `.txt`
+- `.md`
+- `.py`
+- `.pdf`
+- `.docx`
 
 当前内置文档包括：
 
