@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root",
         dest="workdir",
         default=settings.workdir,
-        help="Target workdir for tool execution. Defaults to current repo or WORKDIR/WORKSPACE_ROOT when set.",
+        help="Target workdir for tool execution. Defaults to current repo or WORKDIR when set.",
     )
     parser.add_argument(
         "--max-steps",

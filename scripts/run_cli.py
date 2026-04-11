@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--project-root",
         dest="workdir",
         default=settings.workdir,
-        help="目标工作目录。未传时默认使用当前仓库；设置 WORKDIR 或历史兼容变量 WORKSPACE_ROOT 也可生效。",
+        help="目标工作目录。未传时默认使用当前仓库；设置 WORKDIR 也可生效。",
     )
     parser.add_argument("--model", default=settings.llm_model, help="模型名称。")
     parser.add_argument(

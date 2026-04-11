@@ -38,7 +38,7 @@ class AgentRunRequest(BaseModel):
     session_id: str | None = Field(default=None, description="可选会话 ID。")
     workdir: str | None = Field(
         default=None,
-        description="目标工作目录。未传时默认使用当前仓库或 WORKDIR/WORKSPACE_ROOT。",
+        description="目标工作目录。未传时默认使用当前仓库或 WORKDIR。",
     )
     project_root: str | None = Field(
         default=None,

@@ -6,6 +6,7 @@
 
 - [architecture.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/architecture.md)
 - [AGENTS.md](/Users/tony/PycharmProjects/SimpleCodeAgent/AGENTS.md)
+- [demo_scenarios.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/demo_scenarios.md)
 
 ## 1. 环境准备
 
@@ -48,7 +49,6 @@ WORKDIR=/absolute/path/to/your/project
 - `LLM_SERVICE_TOKEN` 使用你申请好的服务令牌
 - `SESSION_ID` 可以固定成一个演示会话名，方便连续提问
 - `WORKDIR` 可以固定成你要分析的本地项目根目录
-- `WORKSPACE_ROOT` 仍然兼容，但后续推荐统一使用 `WORKDIR`
 
 ## 2. CLI 使用
 
@@ -162,7 +162,11 @@ python -m app.main "你好，介绍一下你自己" --version v1
 
 导入完成后，Agent 在执行过程中可以通过 `retrieve_docs` 工具检索这些文档片段。
 
-`retrieve_docs` 当前除了 `top_k`，还支持 `min_score` 最小分数过滤。
+`retrieve_docs` 当前除了 `top_k`，还支持：
+
+- `min_score` 最小分数过滤
+- `rerank` 轻量重排
+- `fetch_k` 重排前的候选召回数量
 
 当前内置文档包括：
 
@@ -240,6 +244,16 @@ curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 .venv/bin/pytest demo_workspace/tests/test_product_service.py
 .venv/bin/pytest demo_workspace/tests/test_math_utils.py
 ```
+
+如果你想按固定场景做能力演示，而不是自由提问，推荐阅读：
+
+- [demo_scenarios.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/demo_scenarios.md)
+
+其中整理了 3 个适合当前 `v1` 的演示脚本：
+
+- 搜索 TODO 并总结
+- 根据 docs 写简单工具类
+- 运行测试并修复一个小问题
 
 ## 8. 存储说明
 

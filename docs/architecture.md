@@ -85,7 +85,7 @@ Runtime 不直接操作文件系统，也不直接执行 shell。所有外部动
 
 - CLI / 模块入口使用 `--workdir`
 - API 使用 `workdir`
-- `project_root` 与 `WORKSPACE_ROOT` 仅作为历史兼容名保留
+- `project_root` 仅作为历史兼容输入名保留
 
 ## 5. Memory 与 Session 的边界
 
