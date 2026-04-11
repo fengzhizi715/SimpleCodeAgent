@@ -106,6 +106,7 @@ demo_workspace/ # 编程任务演示工作区
 - CLI 用法
 - Demo 演示脚本与推荐提示词
 - `SESSION_ID` 默认会话行为
+- 项目级 session 自动派生
 - `WORKDIR` / `--workdir` 用法
 - RAG 文档导入
 - `local_ai_inference_platform` 接入建议
@@ -152,6 +153,12 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
 
 当同时使用 `SESSION_ID` 和 `WORKDIR` 时，系统会自动派生项目级 session id，避免同一个会话在不同项目之间串上下文。
+
+CLI 和模块入口还会输出：
+
+- `Direct Tool Execution Used`
+
+该字段表示当前运行是否使用了 planner 的确定性工具执行路径，而不是完全依赖模型主动发起 `tool_calls`。
 
 ## 日志说明
 

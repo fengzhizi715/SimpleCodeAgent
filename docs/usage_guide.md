@@ -155,8 +155,17 @@ LLM_REASONING_PARAM_STYLE=none
 CLI 运行完成后还会额外输出：
 
 - `Reasoning Mode`
+- `Direct Tool Execution Used`
 - `Usage`
 - `Metrics`
+
+其中：
+
+- `Direct Tool Execution Used: yes`
+  - 表示本次运行中，planner 的某些步骤没有完全依赖模型主动发起 `tool_calls`
+  - runtime 直接执行了明确的工具步骤，例如 `list_dir`、`read_file`、`file_search`，或在生成结构化 JSON 后补执行了 `write_file`
+- `Direct Tool Execution Used: no`
+  - 表示本次运行仍然主要依赖模型驱动的普通执行路径
 
 ## 3. 模块入口
 
@@ -276,6 +285,16 @@ curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 - 搜索 TODO 并总结
 - 根据 docs 写简单工具类
 - 运行测试并修复一个小问题
+
+当前 `v1` 对“新增函数 / 工具类”这类任务，已经具备一条更稳的落盘路径：
+
+1. 先查看项目结构
+2. 再搜索现有代码模式
+3. 让模型输出严格的 `{"path","content"}` JSON
+4. runtime 再直接调用 `write_file` 落盘
+
+这条链路的目标是减少“模型只输出代码文本，但没有真正写文件”的情况。
+如果模型没有给出可解析的 `path/content`，则仍可能停留在文本建议阶段。
 
 ## 8. 存储说明
 
