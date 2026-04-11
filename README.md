@@ -109,6 +109,7 @@ demo_workspace/ # 编程任务演示工作区
 - 项目级 session 自动派生
 - `WORKDIR` / `--workdir` 用法
 - RAG 文档导入与单文件导入
+- 如何触发 RAG 检索
 - `local_ai_inference_platform` 接入建议
 - FastAPI 调用方式
 - Trace 查看
