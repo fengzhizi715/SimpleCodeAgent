@@ -10,7 +10,7 @@ from urllib import error, request
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.contracts.message import Message
+from app.contracts.message import ChatMessage
 from app.contracts.run import RunRequest, RunResult, RunUsage
 from app.contracts.tool import ToolCall, ToolFunction
 from app.core.exceptions import AppError
@@ -227,7 +227,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 "choices": [
                     {
                         "index": choice.index,
-                        "message": Message.model_validate(choice.message.model_dump()),
+                        "message": ChatMessage.model_validate(choice.message.model_dump()),
                         "finish_reason": choice.finish_reason,
                     }
                     for choice in parsed.choices

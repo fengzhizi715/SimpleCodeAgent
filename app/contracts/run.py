@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.contracts.message import Message
+from app.contracts.message import ChatMessage
 from app.contracts.planner import PlanStep
 from app.contracts.tool import ToolDefinition
 from app.contracts.trace import TraceEvent
@@ -17,7 +17,7 @@ class RunRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    messages: list[Message]
+    messages: list[ChatMessage]
     model: str
     reasoning_mode: Literal["default", "low", "medium", "high"] = "default"
     temperature: float = 0.0
@@ -44,7 +44,7 @@ class RunChoice(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     index: int
-    message: Message
+    message: ChatMessage
     finish_reason: str | None = None
 
 

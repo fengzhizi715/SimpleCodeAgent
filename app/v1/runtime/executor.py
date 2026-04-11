@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.contracts.message import Message
+from app.contracts.message import ChatMessage
 from app.contracts.run import RunChoice, RunRequest, RunResult
 from app.llm.client import LLMProviderError
 from app.v1.runtime.context import RunContext
@@ -77,7 +77,7 @@ class RuntimeExecutor:
             choices=[
                 RunChoice(
                     index=0,
-                    message=Message(role="assistant", content=message),
+                    message=ChatMessage(role="assistant", content=message),
                     finish_reason="stop",
                 )
             ],

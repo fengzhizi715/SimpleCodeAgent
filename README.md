@@ -143,6 +143,11 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `LLM_SERVICE_TOKEN`：用于 `X-Service-Token` 的服务令牌
 - `LLM_MODEL`：模型名
 - `LLM_TIMEOUT`：请求超时时间，单位秒
+- `LLM_REASONING_PARAM_STYLE`：控制 `reasoning_mode` 如何映射到 Provider 请求参数
+  - `none`：不映射，只作为运行元数据保留
+  - `reasoning_effort`：映射为 `reasoning_effort=<mode>`
+  - `reasoning_object`：映射为 `reasoning={"effort": "<mode>"}`
+  - 具体使用哪一种，取决于你接入的 OpenAI-compatible 服务支持哪种字段风格
 - `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
 - `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
 

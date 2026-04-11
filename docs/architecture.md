@@ -9,7 +9,7 @@
 - `app/core`
   - 配置、日志、异常等基础能力
 - `app/contracts`
-  - 跨模块共享的数据结构，例如 `Message`、`RunResult`、`ToolResult`
+  - 跨模块共享的数据结构，例如 `ChatMessage`、`RunResult`、`ToolResult`
 - `app/db`
   - SQLite 连接、建表与基础仓储能力
 - `app/llm`

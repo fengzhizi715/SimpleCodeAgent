@@ -116,6 +116,25 @@ export SESSION_ID=demo-session
   --reasoning-mode high
 ```
 
+如果你希望把 `reasoning_mode` 真正传给底层 Provider，而不仅仅作为运行元数据记录，需要额外配置环境变量：
+
+```env
+LLM_REASONING_PARAM_STYLE=none
+```
+
+可选值说明：
+
+- `none`
+  - 不向 Provider 额外传递 reasoning 参数
+  - `reasoning_mode` 仅保留在运行结果、日志和观测信息中
+- `reasoning_effort`
+  - 将 `reasoning_mode` 映射为 `reasoning_effort=<mode>`
+- `reasoning_object`
+  - 将 `reasoning_mode` 映射为 `reasoning={"effort": "<mode>"}`
+
+应该选择哪一种，取决于你当前接入的 OpenAI-compatible 服务支持哪种请求字段风格。
+如果不确定，建议先用 `none`，确认服务协议后再切换。
+
 打印简版 trace：
 
 ```bash

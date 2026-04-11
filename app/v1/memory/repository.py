@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.contracts.message import Message
+from app.contracts.message import ChatMessage
 from app.contracts.run import RunResult
 from app.contracts.trace import TraceEvent
 from app.core.logger import get_logger
@@ -23,7 +23,7 @@ class SQLiteMemoryRepository(MemoryRepository):
         self.db = SQLiteDB(db_path)
         logger.info("Initialized SQLite memory repository: db_path=%s", self.db.db_path)
 
-    def get_session_messages(self, session_id: str, limit: int) -> list[Message]:
+    def get_session_messages(self, session_id: str, limit: int) -> list[ChatMessage]:
         rows = self.db.fetchall(
             """
             SELECT role, content, name, tool_call_id, tool_calls_json
@@ -35,11 +35,11 @@ class SQLiteMemoryRepository(MemoryRepository):
             (session_id, limit),
         )
 
-        messages: list[Message] = []
+        messages: list[ChatMessage] = []
         for row in reversed(rows):
             tool_calls = json.loads(row["tool_calls_json"]) if row["tool_calls_json"] else []
             messages.append(
-                Message.model_validate(
+                ChatMessage.model_validate(
                     {
                         "role": row["role"],
                         "content": row["content"],
@@ -51,7 +51,7 @@ class SQLiteMemoryRepository(MemoryRepository):
             )
         return messages
 
-    def append_session_messages(self, session_id: str, messages: list[Message]) -> None:
+    def append_session_messages(self, session_id: str, messages: list[ChatMessage]) -> None:
         if not messages:
             return
 

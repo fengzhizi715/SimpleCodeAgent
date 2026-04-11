@@ -64,11 +64,11 @@ class ToolResult(BaseModel):
     content: str
     is_error: bool = False
 
-    def to_message(self) -> "Message":
+    def to_message(self) -> "ChatMessage":
         """将工具结果转换为 `tool` 角色消息。"""
-        from app.contracts.message import Message
+        from app.contracts.message import ChatMessage
 
-        return Message(
+        return ChatMessage(
             role="tool",
             content=self.content,
             name=self.name,

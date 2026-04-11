@@ -5,7 +5,7 @@ from __future__ import annotations
 from time import monotonic
 from uuid import uuid4
 
-from app.contracts.message import Message
+from app.contracts.message import ChatMessage
 from app.contracts.planner import PlanStep
 from app.contracts.run import RunChoice, RunMetrics, RunResult, RunUsage
 from app.contracts.trace import TraceEvent
@@ -83,11 +83,12 @@ class AgentLoop:
                 run_id=run_id,
                 session_id=session_id,
                 task=task,
+                max_steps=max_steps,
                 messages=[
                     # 每次运行都重新注入增强后的 system prompt，确保工具约束和编程规则生效。
-                    Message(role="system", content=context.effective_system_prompt),
+                    ChatMessage(role="system", content=context.effective_system_prompt),
                     *history_messages,
-                    Message(role="user", content=task),
+                    ChatMessage(role="user", content=task),
                 ],
                 history_message_count=len(history_messages),
                 trace_events=[],
@@ -326,8 +327,8 @@ class AgentLoop:
             session_memory.append(
                 session_id,
                 [
-                    Message(role="user", content=task),
-                    Message(role="assistant", content=summary_result.final_output),
+                    ChatMessage(role="user", content=task),
+                    ChatMessage(role="assistant", content=summary_result.final_output),
                 ],
             )
             if summary_result.metrics is not None:
@@ -381,7 +382,7 @@ class AgentLoop:
             choices=[
                 RunChoice(
                     index=0,
-                    message=Message(role="assistant", content=message),
+                    message=ChatMessage(role="assistant", content=message),
                     finish_reason="stop",
                 )
             ],

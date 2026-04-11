@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.contracts.message import Message as ChatMessage
+from app.contracts.message import ChatMessage
 from app.contracts.run import RunChoice as ChatChoice
 from app.contracts.run import RunRequest as ChatRequest
 from app.contracts.run import RunResult as ChatResponse
