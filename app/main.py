@@ -11,6 +11,7 @@ from app.contracts.run import RunResult
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
 from app.core.logger import configure_logging, get_logger, log_context
+from app.core.session import derive_project_session_id
 from app.llm.client import LLMProviderError, OpenAICompatibleProvider
 from app.v1.memory.repository import SQLiteMemoryRepository
 from app.v1.memory.session_memory import SessionMemory
@@ -104,6 +105,7 @@ def run_chat(args: argparse.Namespace) -> RunResult:
         timeout=settings.llm_timeout,
     )
     session_id = args.session_id or str(uuid4())
+    session_id = derive_project_session_id(session_id, args.workdir)
     with log_context(session_id=session_id):
         logger.info(
             "Preparing agent run: version=%s model=%s workdir=%s max_steps=%s reasoning_mode=%s",

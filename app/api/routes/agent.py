@@ -20,6 +20,7 @@ from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
 from app.core.exceptions import AppError, UnsupportedAgentVersionError
 from app.core.logger import get_logger, log_context
+from app.core.session import derive_project_session_id
 from app.llm.client import LLMProviderError
 from app.v1.tools.registry import ToolRegistry
 
@@ -92,8 +93,9 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
             detail="缺少鉴权信息，请传入 api_key / service_token，或配置 LLM_API_KEY / LLM_SERVICE_TOKEN。",
         )
 
-    session_id = request.session_id or str(uuid4())
     resolved_workdir = request.workdir or request.project_root or settings.workdir or None
+    session_id = request.session_id or str(uuid4())
+    session_id = derive_project_session_id(session_id, resolved_workdir)
 
     with log_context(session_id=session_id):
         logger.info(

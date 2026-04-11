@@ -13,7 +13,9 @@ class SimplePlanner(Planner):
         normalized = task.lower()
         keywords = [
             "新增",
+            "增加",
             "工具类",
+            "函数",
             "crud",
             "仿照",
             "参考",
@@ -29,6 +31,7 @@ class SimplePlanner(Planner):
             "分析",
             "create",
             "generate",
+            "function",
             "fix",
             "crud",
             "module",
@@ -41,6 +44,48 @@ class SimplePlanner(Planner):
 
     def create_plan(self, task: str) -> list[PlanStep]:
         normalized = task.lower()
+        if (
+            "工具类" in task
+            or "新增" in task
+            or "增加" in task
+            or "函数" in task
+            or "create" in normalized
+            or "function" in normalized
+        ):
+            return [
+                PlanStep(
+                    title="查看项目结构",
+                    description="查看项目根目录，识别代码目录、测试目录和可能的落盘位置。",
+                    input_summary=task,
+                    tool_name="list_dir",
+                    max_retries=1,
+                ),
+                PlanStep(
+                    title="搜索现有代码模式",
+                    description="搜索现有实现，提取函数、工具模块和代码风格线索。",
+                    input_summary="查找现有实现风格与放置位置",
+                    tool_name="file_search",
+                    max_retries=1,
+                ),
+                PlanStep(
+                    title="生成待写入实现",
+                    description=(
+                        "根据项目结构和现有风格，生成可直接写入的实现。"
+                        "必须只输出一个 JSON 对象，格式为 "
+                        "{\"path\":\"相对路径\",\"content\":\"完整文件内容\"}。"
+                        "不要输出 Markdown 代码块，不要加解释。"
+                    ),
+                    input_summary="项目结构、代码风格和用户需求",
+                ),
+                PlanStep(
+                    title="写入实现文件",
+                    description="将上一步生成的 path 和 content 直接写入工作区文件。",
+                    input_summary="上一步输出的 JSON 对象",
+                    tool_name="write_file",
+                    max_retries=1,
+                ),
+            ]
+
         if (
             "目录结构" in task
             or "项目结构" in task
@@ -204,34 +249,6 @@ class SimplePlanner(Planner):
                     title="总结功能行为",
                     description="结合搜索和代码内容输出结论。",
                     input_summary="相关代码上下文",
-                ),
-            ]
-
-        if "工具类" in task or "新增" in task or "create" in normalized:
-            return [
-                PlanStep(
-                    title="梳理需求和约束",
-                    description="明确工具类的职责、命名和放置位置。",
-                    input_summary=task,
-                ),
-                PlanStep(
-                    title="查看现有模式",
-                    description="搜索项目中相似工具类或相关实现作为参考。",
-                    input_summary="工具类命名或用途",
-                    tool_name="file_search",
-                    max_retries=1,
-                ),
-                PlanStep(
-                    title="生成实现代码",
-                    description="根据约束给出可直接落地的工具类实现。",
-                    input_summary="参考实现与需求",
-                ),
-                PlanStep(
-                    title="执行最小验证",
-                    description="运行编译、导入或测试命令验证工具类。",
-                    input_summary="生成的代码",
-                    tool_name="shell_run",
-                    max_retries=1,
                 ),
             ]
 

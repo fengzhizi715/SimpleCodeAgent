@@ -100,6 +100,9 @@ export SESSION_ID=demo-session
 
 `./start.sh` 和 CLI 都遵循这个规则。
 
+如果同时指定了 `session_id` 和 `workdir`，系统会自动把它派生成“项目级 session id”，避免同一个会话在不同项目之间复用旧上下文。
+例如 `demo-session` 在不同项目下会变成不同的实际 session 标识。
+
 限制最大执行步数：
 
 ```bash

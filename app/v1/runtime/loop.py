@@ -540,6 +540,17 @@ class AgentLoop:
                 summary_memory=summary_memory,
                 persist_session_memory=False,
             )
+            followup_direct_result = self._run_followup_direct_plan_tool_step(
+                session_id=session_id,
+                model=model,
+                reasoning_mode=reasoning_mode,
+                tool_registry=tool_registry,
+                session_memory=session_memory,
+                step=step,
+                step_result=last_result,
+            )
+            if followup_direct_result is not None:
+                last_result = followup_direct_result
             step.output_summary = last_result.final_output
             if last_result.status == "completed":
                 step.status = "completed"
@@ -721,10 +732,12 @@ class AgentLoop:
                 return None
             return {"path": candidate_path, "max_chars": 6000}
         if tool_name == "file_search":
-            query = self._infer_file_search_query(task, step)
-            if not query:
+            search_arguments = self._infer_file_search_arguments(task, step)
+            if search_arguments is None:
                 return None
-            return {"query": query, "max_results": 20}
+            return search_arguments
+        if tool_name == "write_file":
+            return self._infer_write_file_arguments(previous_outputs)
         if tool_name == "retrieve_docs":
             query = (step.input_summary or task).strip()
             if not query:
@@ -780,25 +793,188 @@ class AgentLoop:
                 return candidate
         return None
 
-    def _infer_file_search_query(self, task: str, step: PlanStep) -> str:
-        """根据任务和步骤语义推断 file_search 的查询词。"""
+    def _infer_file_search_arguments(self, task: str, step: PlanStep) -> dict[str, object] | None:
+        """根据任务和步骤语义推断 file_search 参数。"""
         normalized = task.lower()
         if "todo" in normalized:
-            return "TODO"
+            return {"query": "TODO", "max_results": 20}
+        if "函数" in task or "function" in normalized or "工具类" in task:
+            return {"query": "def ", "glob": "**/*.py", "max_results": 20}
         if step.input_summary:
             summary = step.input_summary.strip()
             if summary:
-                return summary
-        return task.strip()
+                return {"query": summary, "max_results": 20}
+        stripped = task.strip()
+        if not stripped:
+            return None
+        return {"query": stripped, "max_results": 20}
+
+    def _infer_write_file_arguments(self, previous_outputs: list[str]) -> dict[str, object] | None:
+        """从前序步骤结果中解析 write_file 所需的 path 和 content。"""
+        for output in reversed(previous_outputs):
+            arguments = self._build_write_file_arguments_from_text(output)
+            if arguments is not None:
+                return arguments
+        return None
+
+    def _run_followup_direct_plan_tool_step(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        reasoning_mode: str,
+        tool_registry: ToolRegistry | None,
+        session_memory: SessionMemory | None,
+        step: PlanStep,
+        step_result: RunResult,
+    ) -> RunResult | None:
+        """在 LLM 步骤输出了结构化工具参数时，补执行一次 direct tool。"""
+        if tool_registry is None or step.tool_name != "write_file":
+            return None
+        arguments = self._build_write_file_arguments_from_text(step_result.final_output)
+        if arguments is None:
+            return None
+        return self._run_direct_plan_tool_step_with_arguments(
+            session_id=session_id,
+            model=model,
+            reasoning_mode=reasoning_mode,
+            session_memory=session_memory,
+            step=step,
+            tool_registry=tool_registry,
+            arguments=arguments,
+        )
+
+    def _run_direct_plan_tool_step_with_arguments(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        reasoning_mode: str,
+        session_memory: SessionMemory | None,
+        step: PlanStep,
+        tool_registry: ToolRegistry,
+        arguments: dict[str, object],
+    ) -> RunResult:
+        """使用已确定参数直接执行规划步骤工具。"""
+        run_id = str(uuid4())
+        started_at = monotonic()
+        repository = session_memory.repository if session_memory is not None else SQLiteMemoryRepository()
+        trace_recorder = JsonlTraceRecorder(run_id=run_id)
+        trace_events: list[TraceEvent] = []
+
+        def append_event(event_type: str, message: str, payload: dict[str, object] | None = None) -> None:
+            event = make_trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type=event_type,
+                message=message,
+                payload=payload,
+            )
+            trace_events.append(event)
+            trace_recorder.record(event)
+
+        append_event("run_started", "Direct plan tool run started.", {"step_title": step.title, "tool_name": step.tool_name})
+        append_event("step_started", "Direct tool step started.", {"step_title": step.title})
+        append_event("tool_called", "Tool called.", {"tool_name": step.tool_name, "arguments": arguments})
+        tool_result = tool_registry.execute_tool(
+            tool_name=step.tool_name,
+            arguments=arguments,
+            tool_call_id=f"direct-{run_id}",
+        )
+        append_event(
+            "tool_result",
+            "Tool result received.",
+            {"tool_name": tool_result.name, "is_error": tool_result.is_error},
+        )
+        status = "failed" if tool_result.is_error else "completed"
+        finish_event_type = "run_failed" if tool_result.is_error else "run_finished"
+        finish_message = "Direct plan tool run failed." if tool_result.is_error else "Direct plan tool run finished."
+        append_event(finish_event_type, finish_message, {"step_title": step.title, "tool_name": step.tool_name})
+
+        result = RunResult(
+            id=f"direct-plan-tool-{run_id}",
+            model=model,
+            reasoning_mode=reasoning_mode,
+            choices=[
+                RunChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=tool_result.content),
+                    finish_reason="stop",
+                )
+            ],
+            run_id=run_id,
+            session_id=session_id,
+            step_count=1,
+            status=status,
+            final_output=tool_result.content,
+            direct_tool_execution_used=True,
+            metrics=RunMetrics(
+                duration_seconds=max(monotonic() - started_at, 0.0),
+                llm_call_count=0,
+                tool_call_count=1,
+                tool_error_count=1 if tool_result.is_error else 0,
+                memory_write_count=0,
+                fallback_count=0,
+            ),
+            trace=trace_events,
+        )
+        if hasattr(repository, "save_run"):
+            repository.save_run(result, f"[direct-tool] {step.title}")
+        if hasattr(repository, "save_trace_events"):
+            repository.save_trace_events(run_id, trace_events)
+        return result
 
     def _parse_json_object(self, text: str) -> dict[str, object] | None:
-        """尽量将步骤输出解析为 JSON 对象。"""
+        """尽量将完整文本解析为 JSON 对象。"""
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
             return None
         if isinstance(payload, dict):
             return payload
+        return None
+
+    def _extract_json_object(self, text: str) -> dict[str, object] | None:
+        """从普通文本或 fenced code block 中尽量提取 JSON 对象。"""
+        payload = self._parse_json_object(text)
+        if payload is not None:
+            return payload
+
+        stripped = text.strip()
+        fence_markers = ["```json", "```"]
+        for marker in fence_markers:
+            start = stripped.find(marker)
+            if start == -1:
+                continue
+            content_start = start + len(marker)
+            end = stripped.find("```", content_start)
+            if end == -1:
+                continue
+            candidate = stripped[content_start:end].strip()
+            payload = self._parse_json_object(candidate)
+            if payload is not None:
+                return payload
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = stripped[start : end + 1]
+            return self._parse_json_object(candidate)
+        return None
+
+    def _build_write_file_arguments_from_text(self, text: str) -> dict[str, object] | None:
+        """从文本中提取 write_file 所需的 path 和 content。"""
+        payload = self._extract_json_object(text)
+        if not payload:
+            return None
+        path = payload.get("path")
+        content = payload.get("content")
+        if isinstance(path, str) and path.strip() and isinstance(content, str):
+            return {
+                "path": path.strip(),
+                "content": content,
+                "dry_run": False,
+            }
         return None
 
     def _is_final_answer(self, result: RunResult) -> bool:

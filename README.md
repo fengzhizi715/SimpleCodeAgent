@@ -151,6 +151,8 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
 - `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
 
+当同时使用 `SESSION_ID` 和 `WORKDIR` 时，系统会自动派生项目级 session id，避免同一个会话在不同项目之间串上下文。
+
 ## 日志说明
 
 项目当前同时输出控制台日志和文件日志。
