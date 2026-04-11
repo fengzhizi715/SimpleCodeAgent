@@ -96,8 +96,10 @@ def _ensure_supported_version(version: str) -> Literal["v1"]:
     raise UnsupportedAgentVersionError(f"不支持的 Agent 版本：{version}")
 
 
-def run_task(args: argparse.Namespace) -> tuple[str, str, str, list[str], str, str, object | None, object | None]:
-    """执行任务并返回答案、run_id、session_id、简版 trace、版本、reasoning_mode、usage 和 metrics。"""
+def run_task(
+    args: argparse.Namespace,
+) -> tuple[str, str, str, list[str], str, str, object | None, object | None, bool]:
+    """执行任务并返回答案、run_id、session_id、简版 trace、版本、reasoning_mode、usage、metrics 和 direct execution 标记。"""
     if not args.model:
         raise AppError("缺少模型名，请设置 LLM_MODEL 或传入 --model。")
     if not (args.api_key or args.service_token):
@@ -180,6 +182,7 @@ def run_task(args: argparse.Namespace) -> tuple[str, str, str, list[str], str, s
             result.reasoning_mode,
             result.usage,
             result.metrics,
+            result.direct_tool_execution_used,
         )
 
 
@@ -189,7 +192,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        answer, run_id, session_id, trace_lines, version, reasoning_mode, usage, metrics = run_task(args)
+        answer, run_id, session_id, trace_lines, version, reasoning_mode, usage, metrics, direct_tool_execution_used = run_task(args)
     except (AppError, LLMProviderError) as exc:
         logger.exception("CLI task failed: %s", exc)
         print(f"错误: {exc}", file=sys.stderr)
@@ -208,6 +211,7 @@ def main() -> None:
     print()
     print(f"Version: {version}")
     print(f"Reasoning Mode: {reasoning_mode}")
+    print(f"Direct Tool Execution Used: {'yes' if direct_tool_execution_used else 'no'}")
     print()
     print(f"Run ID: {run_id}")
     print(f"Session ID: {session_id}")

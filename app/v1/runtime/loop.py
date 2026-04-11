@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
@@ -279,6 +281,7 @@ class AgentLoop:
         step_results: list[RunResult] = []
         total_step_count = 0
         plan_failed = False
+        direct_tool_execution_used = False
 
         for index, step in enumerate(plan, start=1):
             step_result = self._run_plan_step(
@@ -302,9 +305,48 @@ class AgentLoop:
             step_outputs.append(step_result.final_output)
             step_results.append(step_result)
             total_step_count += step_result.step_count
+            if step_result.direct_tool_execution_used:
+                direct_tool_execution_used = True
             if step.status == "failed":
                 plan_failed = True
                 break
+
+        executed_steps = plan[:len(step_results)]
+        expected_tool_usage = any(step.tool_name for step in executed_steps)
+        actual_tool_usage = self._has_tool_execution(step_results)
+        aggregated_usage = self._merge_usage([step_result.usage for step_result in step_results])
+        aggregated_metrics = self._merge_metrics([step_result.metrics for step_result in step_results])
+
+        if expected_tool_usage and not actual_tool_usage:
+            for step in executed_steps:
+                if step.tool_name and step.status == "completed":
+                    step.status = "failed"
+                    step.output_summary = (
+                        "分析未实际执行工具；模型输出了文本结果，但没有发起真实 tool call。"
+                    )
+                    break
+            failure_message = "分析未实际执行工具，无法可靠汇总结果。请检查模型是否发起了真实 tool call。"
+            return RunResult(
+                id=f"planner-summary-skipped-{uuid4()}",
+                model=model,
+                reasoning_mode=reasoning_mode,
+                choices=[
+                    RunChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=failure_message),
+                        finish_reason="stop",
+                    )
+                ],
+                run_id=step_results[-1].run_id if step_results else None,
+                session_id=session_id,
+                step_count=total_step_count,
+                status="failed",
+                final_output=failure_message,
+                plan=plan,
+                usage=aggregated_usage,
+                metrics=aggregated_metrics,
+                direct_tool_execution_used=direct_tool_execution_used,
+            )
 
         summary_prompt = self._build_summary_prompt(task=task, plan=plan, step_outputs=step_outputs)
         summary_result = self.run(
@@ -342,10 +384,9 @@ class AgentLoop:
                 "step_count": total_step_count + summary_result.step_count,
                 "plan": plan,
                 "status": "failed" if plan_failed else summary_result.status,
-                "usage": self._merge_usage(
-                    [step_result.usage for step_result in step_results] + [summary_result.usage]
-                ),
+                "usage": self._merge_usage([step_result.usage for step_result in step_results] + [summary_result.usage]),
                 "metrics": aggregated_metrics,
+                "direct_tool_execution_used": direct_tool_execution_used,
             }
         )
 
@@ -460,6 +501,23 @@ class AgentLoop:
             # 但它们仍然共享同一个 session，保证同任务上下文不被切碎。
             step.status = "in_progress"
             step.retry_count = attempt_index
+            direct_result = self._run_direct_plan_tool_step(
+                session_id=session_id,
+                model=model,
+                reasoning_mode=reasoning_mode,
+                tool_registry=tool_registry,
+                session_memory=session_memory,
+                step=step,
+                previous_outputs=previous_outputs,
+                task=task,
+            )
+            if direct_result is not None:
+                last_result = direct_result
+                step.output_summary = direct_result.final_output
+                if direct_result.status == "completed":
+                    step.status = "completed"
+                    return direct_result
+                continue
             step_prompt = self._build_step_prompt(
                 task=task,
                 step=step,
@@ -516,6 +574,14 @@ class AgentLoop:
         ]
         if step.input_summary:
             sections.append(f"输入摘要：{step.input_summary}")
+        if step.tool_name:
+            sections.extend(
+                [
+                    f"本步骤优先使用工具：{step.tool_name}",
+                    "如果需要获取真实信息，请直接发起真实 tool call，不要只描述计划，也不要输出伪 JSON、伪命令块或示例参数。",
+                    "只有在拿到工具结果后，再基于结果输出当前步骤结论。",
+                ]
+            )
         if previous_outputs:
             sections.append("前序步骤结果：")
             sections.extend(
@@ -542,6 +608,198 @@ class AgentLoop:
                 lines.append(step_outputs[index - 1])
         lines.append("请输出最终完整答案。")
         return "\n".join(lines)
+
+    def _run_direct_plan_tool_step(
+        self,
+        *,
+        session_id: str,
+        model: str,
+        reasoning_mode: str,
+        tool_registry: ToolRegistry | None,
+        session_memory: SessionMemory | None,
+        step: PlanStep,
+        previous_outputs: list[str],
+        task: str,
+    ) -> RunResult | None:
+        """当步骤工具和参数可确定时，直接执行工具而不依赖模型发起 tool call。"""
+        if tool_registry is None or step.tool_name is None:
+            return None
+
+        arguments = self._infer_direct_tool_arguments(
+            tool_name=step.tool_name,
+            step=step,
+            previous_outputs=previous_outputs,
+            task=task,
+            tool_registry=tool_registry,
+        )
+        if arguments is None:
+            return None
+
+        run_id = str(uuid4())
+        started_at = monotonic()
+        repository = session_memory.repository if session_memory is not None else SQLiteMemoryRepository()
+        trace_recorder = JsonlTraceRecorder(run_id=run_id)
+        trace_events: list[TraceEvent] = []
+
+        def append_event(event_type: str, message: str, payload: dict[str, object] | None = None) -> None:
+            event = make_trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type=event_type,
+                message=message,
+                payload=payload,
+            )
+            trace_events.append(event)
+            trace_recorder.record(event)
+
+        append_event("run_started", "Direct plan tool run started.", {"step_title": step.title, "tool_name": step.tool_name})
+        append_event("step_started", "Direct tool step started.", {"step_title": step.title})
+        append_event("tool_called", "Tool called.", {"tool_name": step.tool_name, "arguments": arguments})
+        tool_result = tool_registry.execute_tool(
+            tool_name=step.tool_name,
+            arguments=arguments,
+            tool_call_id=f"direct-{run_id}",
+        )
+        append_event(
+            "tool_result",
+            "Tool result received.",
+            {"tool_name": tool_result.name, "is_error": tool_result.is_error},
+        )
+        status = "failed" if tool_result.is_error else "completed"
+        finish_event_type = "run_failed" if tool_result.is_error else "run_finished"
+        finish_message = "Direct plan tool run failed." if tool_result.is_error else "Direct plan tool run finished."
+        append_event(finish_event_type, finish_message, {"step_title": step.title, "tool_name": step.tool_name})
+
+        result = RunResult(
+            id=f"direct-plan-tool-{run_id}",
+            model=model,
+            reasoning_mode=reasoning_mode,
+            choices=[
+                RunChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=tool_result.content),
+                    finish_reason="stop",
+                )
+            ],
+            run_id=run_id,
+            session_id=session_id,
+            step_count=1,
+            status=status,
+            final_output=tool_result.content,
+            direct_tool_execution_used=True,
+            metrics=RunMetrics(
+                duration_seconds=max(monotonic() - started_at, 0.0),
+                llm_call_count=0,
+                tool_call_count=1,
+                tool_error_count=1 if tool_result.is_error else 0,
+                memory_write_count=0,
+                fallback_count=0,
+            ),
+            trace=trace_events,
+        )
+        if hasattr(repository, "save_run"):
+            repository.save_run(result, f"[direct-tool] {step.title}")
+        if hasattr(repository, "save_trace_events"):
+            repository.save_trace_events(run_id, trace_events)
+        return result
+
+    def _infer_direct_tool_arguments(
+        self,
+        *,
+        tool_name: str,
+        step: PlanStep,
+        previous_outputs: list[str],
+        task: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object] | None:
+        """为确定性规划步骤推断直接执行所需的工具参数。"""
+        if tool_name == "list_dir":
+            return {"path": ".", "max_entries": 200}
+        if tool_name == "read_file":
+            candidate_path = self._infer_read_file_path(previous_outputs, tool_registry)
+            if candidate_path is None:
+                return None
+            return {"path": candidate_path, "max_chars": 6000}
+        if tool_name == "file_search":
+            query = self._infer_file_search_query(task, step)
+            if not query:
+                return None
+            return {"query": query, "max_results": 20}
+        if tool_name == "retrieve_docs":
+            query = (step.input_summary or task).strip()
+            if not query:
+                return None
+            return {"query": query, "top_k": 3, "rerank": True}
+        return None
+
+    def _infer_read_file_path(
+        self,
+        previous_outputs: list[str],
+        tool_registry: ToolRegistry,
+    ) -> str | None:
+        """根据前序工具输出推断最值得读取的关键文件。"""
+        common_candidates = [
+            "package.json",
+            "pyproject.toml",
+            "settings.gradle.kts",
+            "settings.gradle",
+            "build.gradle.kts",
+            "build.gradle",
+            "pom.xml",
+            "Cargo.toml",
+            "CMakeLists.txt",
+            "Makefile",
+            "README.md",
+        ]
+
+        for output in reversed(previous_outputs):
+            payload = self._parse_json_object(output)
+            if not payload:
+                continue
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                continue
+            entry_names = {
+                str(entry.get("name", "")): str(entry.get("path", ""))
+                for entry in entries
+                if isinstance(entry, dict)
+            }
+            for candidate in common_candidates:
+                candidate_path = entry_names.get(candidate)
+                if not candidate_path:
+                    continue
+                try:
+                    resolved = Path(candidate_path).resolve().relative_to(tool_registry.workspace_root.resolve())
+                    return str(resolved)
+                except ValueError:
+                    continue
+
+        for candidate in common_candidates:
+            candidate_path = tool_registry.workspace_root / candidate
+            if candidate_path.exists() and candidate_path.is_file():
+                return candidate
+        return None
+
+    def _infer_file_search_query(self, task: str, step: PlanStep) -> str:
+        """根据任务和步骤语义推断 file_search 的查询词。"""
+        normalized = task.lower()
+        if "todo" in normalized:
+            return "TODO"
+        if step.input_summary:
+            summary = step.input_summary.strip()
+            if summary:
+                return summary
+        return task.strip()
+
+    def _parse_json_object(self, text: str) -> dict[str, object] | None:
+        """尽量将步骤输出解析为 JSON 对象。"""
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(payload, dict):
+            return payload
+        return None
 
     def _is_final_answer(self, result: RunResult) -> bool:
         """判断 assistant 是否已经返回普通最终答案。"""
@@ -669,3 +927,12 @@ class AgentLoop:
             merged.completion_tokens += usage.completion_tokens
             merged.total_tokens += usage.total_tokens
         return merged if has_usage else None
+
+    def _has_tool_execution(self, step_results: list[RunResult]) -> bool:
+        """判断规划步骤是否真的发起过工具调用。"""
+        for result in step_results:
+            if result.metrics is not None and result.metrics.tool_call_count > 0:
+                return True
+            if any(event.event_type == "tool_called" for event in result.trace):
+                return True
+        return False

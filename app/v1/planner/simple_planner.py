@@ -42,6 +42,35 @@ class SimplePlanner(Planner):
     def create_plan(self, task: str) -> list[PlanStep]:
         normalized = task.lower()
         if (
+            "目录结构" in task
+            or "项目结构" in task
+            or "目录" in task
+            or "project structure" in normalized
+            or "directory structure" in normalized
+        ):
+            return [
+                PlanStep(
+                    title="查看根目录结构",
+                    description="使用目录工具查看项目根目录，识别主要目录和关键文件。",
+                    input_summary=task,
+                    tool_name="list_dir",
+                    max_retries=1,
+                ),
+                PlanStep(
+                    title="读取关键配置文件",
+                    description="读取能体现构建方式、入口和模块划分的关键文件。",
+                    input_summary="根目录结构与关键文件线索",
+                    tool_name="read_file",
+                    max_retries=1,
+                ),
+                PlanStep(
+                    title="总结目录与模块组织",
+                    description="结合目录和关键文件内容，总结项目结构、模块职责和开发约定。",
+                    input_summary="目录结构与关键文件内容",
+                ),
+            ]
+
+        if (
             "修复" in task
             or "bug" in normalized
             or "失败" in task

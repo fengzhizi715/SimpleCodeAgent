@@ -57,6 +57,46 @@ class ToolRegistry:
         """返回暴露给 LLM 的全部工具定义。"""
         return [tool.definition for tool in self._tools.values()]
 
+    def execute_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tool_call_id: str = "direct-tool-call",
+    ) -> ToolResult:
+        """按工具名直接执行工具，供 runtime 的确定性步骤使用。"""
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            logger.error("Direct tool execution failed: tool=%s reason=not_found", tool_name)
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                content=json.dumps(
+                    {"ok": False, "error": f"Tool not found: {tool_name}", "tool_name": tool_name},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                is_error=True,
+            )
+        try:
+            return tool.execute(arguments=arguments, tool_call_id=tool_call_id)
+        except Exception as exc:
+            logger.exception("Direct tool execution failed: tool=%s error=%s", tool_name, exc)
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                content=json.dumps(
+                    {
+                        "ok": False,
+                        "error": f"Tool execution failed for {tool_name}: {exc}",
+                        "tool_name": tool_name,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                is_error=True,
+            )
+
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """将工具调用路由到正确工具并执行。"""
         tool_name = tool_call.function.name

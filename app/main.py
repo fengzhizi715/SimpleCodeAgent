@@ -177,6 +177,7 @@ def main() -> None:
     print()
     print(f"Version: {args.version}")
     print(f"Reasoning Mode: {result.reasoning_mode}")
+    print(f"Direct Tool Execution Used: {'yes' if result.direct_tool_execution_used else 'no'}")
     print()
     print(f"Run ID: {result.run_id or ''}")
     print(f"Session ID: {result.session_id or args.session_id or ''}")

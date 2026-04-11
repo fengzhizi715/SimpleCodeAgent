@@ -82,6 +82,7 @@ class RunResult(BaseModel):
     choices: list[RunChoice]
     usage: RunUsage | None = None
     metrics: RunMetrics | None = None
+    direct_tool_execution_used: bool = False
     run_id: str | None = None
     session_id: str | None = None
     step_count: int = 0
