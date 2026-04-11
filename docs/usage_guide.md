@@ -346,23 +346,6 @@ logs/app.log
 2026-04-10 21:00:30 | ERROR | app.llm.client | run_id=... | session_id=demo-session | LLM provider connection failed: error=timed out
 ```
 
-推荐关注的模块：
-
-- `app.main`
-  - CLI 入口与整体运行结果
-- `app.api.routes.agent`
-  - API 请求入口与响应结果
-- `app.llm.client`
-  - 模型请求、响应、超时、鉴权与解析问题
-- `app.v1.runtime.loop`
-  - step 推进、tool call、运行结束或失败
-- `app.v1.tools.registry`
-  - 工具路由、参数解析、工具异常
-- `app.v1.tools.shell_run`
-  - shell 命令执行与超时
-- `app.v1.memory.repository`
-  - session/run/trace 的 SQLite 持久化
-
 你可以通过 `LOG_LEVEL` 控制输出详细程度，例如：
 
 ```env
