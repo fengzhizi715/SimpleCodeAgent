@@ -225,10 +225,10 @@ python -m app.main "你好，介绍一下你自己" --version v1
 当前 `v1` 的 RAG 使用方式是：
 
 - Agent 具备 `retrieve_docs` 能力
-- 某些任务会自动触发文档检索
+- 当任务明确提到 `docs`、`文档`、`知识库`、`先检索文档` 这类信号时，planner 会默认插入 `retrieve_docs`
 - 但不是所有编程任务都会默认先查 RAG
 
-更容易触发 RAG 的提示词通常会明确提到：
+当前默认会触发 RAG 的提示词通常会明确提到：
 
 - `根据 docs`
 - `根据文档`

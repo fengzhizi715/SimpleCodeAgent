@@ -9,6 +9,21 @@ from app.v1.planner.base import Planner
 class SimplePlanner(Planner):
     """基于规则的简单任务拆解器。"""
 
+    DOC_RETRIEVAL_KEYWORDS = (
+        "docs",
+        "doc ",
+        "doc\n",
+        "文档",
+        "知识库",
+        "检索文档",
+        "检索相关文档",
+        "先查文档",
+        "先检索文档",
+        "根据 docs",
+        "根据文档",
+        "根据知识库",
+    )
+
     def should_plan(self, task: str) -> bool:
         normalized = task.lower()
         keywords = [
@@ -44,6 +59,7 @@ class SimplePlanner(Planner):
 
     def create_plan(self, task: str) -> list[PlanStep]:
         normalized = task.lower()
+        needs_doc_retrieval = self._needs_doc_retrieval(task, normalized)
         if (
             "工具类" in task
             or "新增" in task
@@ -52,7 +68,7 @@ class SimplePlanner(Planner):
             or "create" in normalized
             or "function" in normalized
         ):
-            return [
+            plan = [
                 PlanStep(
                     title="查看项目结构",
                     description="查看项目根目录，识别代码目录、测试目录和可能的落盘位置。",
@@ -85,6 +101,7 @@ class SimplePlanner(Planner):
                     max_retries=1,
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if (
             "目录结构" in task
@@ -93,7 +110,7 @@ class SimplePlanner(Planner):
             or "project structure" in normalized
             or "directory structure" in normalized
         ):
-            return [
+            plan = [
                 PlanStep(
                     title="查看根目录结构",
                     description="使用目录工具查看项目根目录，识别主要目录和关键文件。",
@@ -114,6 +131,7 @@ class SimplePlanner(Planner):
                     input_summary="目录结构与关键文件内容",
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if (
             "修复" in task
@@ -121,7 +139,7 @@ class SimplePlanner(Planner):
             or "失败" in task
             or "fix" in normalized
         ):
-            return [
+            plan = [
                 PlanStep(
                     title="复现问题",
                     description="先运行最小验证命令，确认当前错误表现。",
@@ -149,9 +167,10 @@ class SimplePlanner(Planner):
                     max_retries=1,
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if "测试" in task or "pytest" in normalized or "失败原因" in task or "test" in normalized:
-            return [
+            plan = [
                 PlanStep(
                     title="定位测试入口",
                     description="识别应该执行的测试命令或相关测试文件。",
@@ -170,9 +189,10 @@ class SimplePlanner(Planner):
                     input_summary="测试输出",
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if "crud" in normalized or "方法" in task:
-            return [
+            plan = [
                 PlanStep(
                     title="查看服务接口与数据结构",
                     description="读取现有 service 和相关模型，明确缺失的方法。",
@@ -200,9 +220,10 @@ class SimplePlanner(Planner):
                     max_retries=1,
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if "仿照" in task or "参考" in task or "similar" in normalized:
-            return [
+            plan = [
                 PlanStep(
                     title="阅读参考模块",
                     description="读取已有模块，提取结构、接口和代码风格。",
@@ -228,9 +249,10 @@ class SimplePlanner(Planner):
                     max_retries=1,
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
         if "搜索" in task or "总结" in task or "search" in normalized or "summarize" in normalized:
-            return [
+            plan = [
                 PlanStep(
                     title="定位相关代码",
                     description="搜索与目标功能相关的文件、函数或类。",
@@ -251,8 +273,9 @@ class SimplePlanner(Planner):
                     input_summary="相关代码上下文",
                 ),
             ]
+            return self._finalize_plan(plan, needs_doc_retrieval)
 
-        return [
+        plan = [
             PlanStep(
                 title="理解任务",
                 description="提取任务目标、约束与预期输出。",
@@ -269,3 +292,27 @@ class SimplePlanner(Planner):
                 input_summary="执行结果",
             ),
         ]
+        return self._finalize_plan(plan, needs_doc_retrieval)
+
+    def _needs_doc_retrieval(self, task: str, normalized: str) -> bool:
+        """判断任务是否应在规划前强制插入文档检索。"""
+        del task
+        return any(keyword in normalized for keyword in self.DOC_RETRIEVAL_KEYWORDS)
+
+    def _finalize_plan(self, plan: list[PlanStep], needs_doc_retrieval: bool) -> list[PlanStep]:
+        """按统一规则补充必须的前置步骤。"""
+        if not needs_doc_retrieval:
+            return plan
+        if any(step.tool_name == "retrieve_docs" for step in plan):
+            return plan
+        return [self._build_doc_retrieval_step(), *plan]
+
+    def _build_doc_retrieval_step(self) -> PlanStep:
+        """构建统一的文档检索步骤。"""
+        return PlanStep(
+            title="检索相关文档",
+            description="先从知识库中检索与任务相关的文档片段，提取实现约定、接口说明和背景知识。",
+            input_summary="用户任务与文档约束",
+            tool_name="retrieve_docs",
+            max_retries=1,
+        )
