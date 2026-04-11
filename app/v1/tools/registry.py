@@ -12,6 +12,7 @@ from app.v1.tools.append_file import AppendFileTool
 from app.v1.tools.base import DummyTool, Tool
 from app.v1.tools.file_search import FileSearchTool
 from app.v1.tools.list_dir import ListDirTool
+from app.v1.tools.multi_file_patch import MultiFilePatchTool
 from app.v1.tools.read_file import ReadFileTool
 from app.v1.tools.retrieve_docs import RetrieveDocsTool
 from app.v1.tools.replace_in_file import ReplaceInFileTool
@@ -49,6 +50,7 @@ class ToolRegistry:
         self.register(ListDirTool(workspace_root=self.workspace_root))
         self.register(ReplaceInFileTool(workspace_root=self.workspace_root))
         self.register(AppendFileTool(workspace_root=self.workspace_root))
+        self.register(MultiFilePatchTool(workspace_root=self.workspace_root))
         self.register(RetrieveDocsTool(workspace_root=self.workspace_root))
 
     def get_tool_definitions(self) -> list[ToolDefinition]:

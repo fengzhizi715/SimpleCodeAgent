@@ -85,6 +85,7 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str,
         service_token: str = "",
         auth_mode: str = "auto",
+        reasoning_param_style: str = "none",
         extra_headers: Mapping[str, str] | None = None,
         timeout: int = 60,
     ) -> None:
@@ -93,11 +94,13 @@ class OpenAICompatibleProvider(LLMProvider):
         self.model = model
         self.service_token = service_token
         self.auth_mode = auth_mode.lower()
+        self.reasoning_param_style = reasoning_param_style.lower()
         self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
 
     def chat(self, chat_request: RunRequest) -> RunResult:
         payload = chat_request.to_provider_payload(fallback_model=self.model)
+        payload = self._apply_reasoning_mapping(payload, chat_request.reasoning_mode)
 
         endpoint = f"{self.base_url}/chat/completions"
         logger.info(
@@ -140,6 +143,34 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMProviderError("Provider returned invalid JSON") from exc
 
         return self._parse_response(data)
+
+    def _apply_reasoning_mapping(
+        self,
+        payload: dict[str, object],
+        reasoning_mode: str,
+    ) -> dict[str, object]:
+        """按 Provider 配置将 reasoning_mode 映射到实际请求字段。"""
+        if reasoning_mode == "default" or self.reasoning_param_style == "none":
+            return payload
+
+        updated_payload = dict(payload)
+        if self.reasoning_param_style == "reasoning_effort":
+            updated_payload["reasoning_effort"] = reasoning_mode
+        elif self.reasoning_param_style == "reasoning_object":
+            updated_payload["reasoning"] = {"effort": reasoning_mode}
+        else:
+            logger.warning(
+                "Unknown reasoning parameter style: style=%s; skip provider mapping.",
+                self.reasoning_param_style,
+            )
+            return payload
+
+        logger.info(
+            "Applied provider reasoning mapping: style=%s reasoning_mode=%s",
+            self.reasoning_param_style,
+            reasoning_mode,
+        )
+        return updated_payload
 
     def _build_headers(self) -> dict[str, str]:
         """构造请求头，兼容 Bearer 与 Service Token 两种鉴权方式。"""

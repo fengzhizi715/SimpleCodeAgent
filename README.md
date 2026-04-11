@@ -99,10 +99,12 @@ demo_workspace/ # 编程任务演示工作区
 详细使用手册见：
 
 - [docs/usage_guide.md](docs/usage_guide.md)
+- [docs/demo_scenarios.md](docs/demo_scenarios.md)
 
 其中包含：
 
 - CLI 用法
+- Demo 演示脚本与推荐提示词
 - `SESSION_ID` 默认会话行为
 - `WORKDIR` / `--workdir` 用法
 - RAG 文档导入

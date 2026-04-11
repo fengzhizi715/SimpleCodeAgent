@@ -84,6 +84,7 @@ def get_provider(
         api_key=resolved_api_key,
         service_token=resolved_service_token,
         auth_mode=settings.llm_auth_mode,
+        reasoning_param_style=settings.llm_reasoning_param_style,
         model=resolved_model,
         timeout=settings.llm_timeout,
     )

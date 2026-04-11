@@ -99,6 +99,7 @@ def run_chat(args: argparse.Namespace) -> RunResult:
         api_key=args.api_key,
         service_token=args.service_token,
         auth_mode=settings.llm_auth_mode,
+        reasoning_param_style=settings.llm_reasoning_param_style,
         model=args.model,
         timeout=settings.llm_timeout,
     )

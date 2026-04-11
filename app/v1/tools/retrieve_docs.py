@@ -28,6 +28,15 @@ class RetrieveDocsTool(Tool):
                         "description": "返回的片段数量。",
                         "default": 3,
                     },
+                    "rerank": {
+                        "type": "boolean",
+                        "description": "是否对向量检索结果进行轻量重排。",
+                        "default": True,
+                    },
+                    "fetch_k": {
+                        "type": "integer",
+                        "description": "重排前召回的候选数量，默认自动使用更大的候选集。",
+                    },
                     "min_score": {
                         "type": "number",
                         "description": "最小相似度分数阈值，范围建议 0.0 到 1.0。",
@@ -43,17 +52,28 @@ class RetrieveDocsTool(Tool):
     def execute(self, arguments: dict[str, object], tool_call_id: str) -> ToolResult:
         query = str(arguments.get("query", "")).strip()
         top_k = int(arguments.get("top_k", 3))
+        rerank = bool(arguments.get("rerank", True))
+        raw_fetch_k = arguments.get("fetch_k")
+        fetch_k = int(raw_fetch_k) if raw_fetch_k is not None else None
         min_score = float(arguments.get("min_score", 0.0))
         if not query:
             return self.error(tool_call_id=tool_call_id, message="Query must not be empty.")
 
-        results = self.retriever.retrieve(query=query, top_k=top_k, min_score=min_score)
+        results = self.retriever.retrieve(
+            query=query,
+            top_k=top_k,
+            min_score=min_score,
+            rerank=rerank,
+            fetch_k=fetch_k,
+        )
         return self.success(
             tool_call_id=tool_call_id,
             content={
                 "ok": True,
                 "query": query,
                 "top_k": top_k,
+                "rerank": rerank,
+                "fetch_k": fetch_k,
                 "min_score": min_score,
                 "match_count": len(results),
                 "matches": results,

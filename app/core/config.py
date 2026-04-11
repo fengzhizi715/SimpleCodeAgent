@@ -50,6 +50,7 @@ class Settings:
     llm_service_token: str = os.getenv("LLM_SERVICE_TOKEN", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
     llm_timeout: int = int(os.getenv("LLM_TIMEOUT", str(DEFAULT_OPENAI_TIMEOUT)))
+    llm_reasoning_param_style: str = os.getenv("LLM_REASONING_PARAM_STYLE", "none").lower()
     session_id: str = os.getenv("SESSION_ID", "")
     # 顶层统一使用 workdir 语义，同时兼容历史的 WORKSPACE_ROOT 配置。
     workdir: str = os.getenv("WORKDIR", os.getenv("WORKSPACE_ROOT", ""))

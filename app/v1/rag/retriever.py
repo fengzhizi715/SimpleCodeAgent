@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import re
 
 from app.v1.rag.embeddings import EmbeddingProvider, build_embedding_provider
 from app.v1.rag.vector_store import ChromaVectorStore
@@ -19,12 +19,61 @@ class DocumentRetriever:
         self.vector_store = vector_store or ChromaVectorStore()
         self.embedding_provider = embedding_provider or build_embedding_provider()
 
-    def retrieve(self, query: str, top_k: int = 3, min_score: float = 0.0) -> list[dict[str, object]]:
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 3,
+        min_score: float = 0.0,
+        rerank: bool = True,
+        fetch_k: int | None = None,
+    ) -> list[dict[str, object]]:
         """返回与查询最相关的文档片段。"""
         query_embedding = self.embedding_provider.embed_texts([query])[0]
-        matches = self.vector_store.query(query_embedding=query_embedding, top_k=top_k)
-        return [
+        candidate_count = fetch_k if fetch_k is not None else max(top_k * 3, top_k)
+        matches = self.vector_store.query(query_embedding=query_embedding, top_k=candidate_count)
+        filtered_matches = [
             match
             for match in matches
             if float(match.get("score", 0.0)) >= min_score
         ]
+        if not rerank:
+            return filtered_matches[:top_k]
+
+        query_terms = self._extract_terms(query)
+        reranked_matches = []
+        for match in filtered_matches:
+            content = str(match.get("content", ""))
+            lexical_score = self._lexical_score(query_terms, content)
+            vector_score = float(match.get("score", 0.0))
+            rerank_score = (vector_score * 0.7) + (lexical_score * 0.3)
+            reranked_matches.append(
+                {
+                    **match,
+                    "lexical_score": lexical_score,
+                    "rerank_score": rerank_score,
+                }
+            )
+
+        reranked_matches.sort(
+            key=lambda item: (float(item.get("rerank_score", 0.0)), float(item.get("score", 0.0))),
+            reverse=True,
+        )
+        return reranked_matches[:top_k]
+
+    def _extract_terms(self, text: str) -> set[str]:
+        """从查询中提取可用于轻量重排的词项。"""
+        return {
+            token
+            for token in re.findall(r"[A-Za-z0-9_]+", text.lower())
+            if len(token) >= 2
+        }
+
+    def _lexical_score(self, query_terms: set[str], content: str) -> float:
+        """基于词项重合度计算轻量 lexical 分数。"""
+        if not query_terms:
+            return 0.0
+        content_terms = set(re.findall(r"[A-Za-z0-9_]+", content.lower()))
+        if not content_terms:
+            return 0.0
+        overlap = len(query_terms & content_terms)
+        return overlap / len(query_terms)
