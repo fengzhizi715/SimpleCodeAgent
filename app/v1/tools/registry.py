@@ -1,8 +1,6 @@
 """工具注册与路由。"""
 
 from __future__ import annotations
-
-import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +14,7 @@ from app.v1.tools.multi_file_patch import MultiFilePatchTool
 from app.v1.tools.read_file import ReadFileTool
 from app.v1.tools.retrieve_docs import RetrieveDocsTool
 from app.v1.tools.replace_in_file import ReplaceInFileTool
+from app.v1.tools.router import ToolRouter
 from app.v1.tools.shell_run import ShellRunTool
 from app.v1.tools.write_file import WriteFileTool
 
@@ -28,6 +27,7 @@ class ToolRegistry:
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         self._tools: dict[str, Tool] = {}
         self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
+        self._router = ToolRouter(self)
 
     def register(self, tool: Tool) -> None:
         """按工具定义中的名称注册工具实例。"""
@@ -57,6 +57,10 @@ class ToolRegistry:
         """返回暴露给 LLM 的全部工具定义。"""
         return [tool.definition for tool in self._tools.values()]
 
+    def get(self, tool_name: str) -> Tool | None:
+        """根据工具名获取已注册工具。"""
+        return self._tools.get(tool_name)
+
     def execute_tool(
         self,
         *,
@@ -65,95 +69,12 @@ class ToolRegistry:
         tool_call_id: str = "direct-tool-call",
     ) -> ToolResult:
         """按工具名直接执行工具，供 runtime 的确定性步骤使用。"""
-        tool = self._tools.get(tool_name)
-        if tool is None:
-            logger.error("Direct tool execution failed: tool=%s reason=not_found", tool_name)
-            return ToolResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                content=json.dumps(
-                    {"ok": False, "error": f"Tool not found: {tool_name}", "tool_name": tool_name},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                is_error=True,
-            )
-        try:
-            return tool.execute(arguments=arguments, tool_call_id=tool_call_id)
-        except Exception as exc:
-            logger.exception("Direct tool execution failed: tool=%s error=%s", tool_name, exc)
-            return ToolResult(
-                tool_call_id=tool_call_id,
-                name=tool_name,
-                content=json.dumps(
-                    {
-                        "ok": False,
-                        "error": f"Tool execution failed for {tool_name}: {exc}",
-                        "tool_name": tool_name,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                is_error=True,
-            )
+        return self._router.route(
+            tool_name,
+            arguments,
+            tool_call_id=tool_call_id,
+        )
 
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """将工具调用路由到正确工具并执行。"""
-        tool_name = tool_call.function.name
-        tool = self._tools.get(tool_name)
-        if tool is None:
-            logger.error("Tool routing failed: tool=%s reason=not_found", tool_name)
-            return self._error_result(
-                tool_call=tool_call,
-                message=f"Tool not found: {tool_name}",
-            )
-
-        try:
-            # 模型输出的 arguments 以 JSON 字符串形式进入 runtime，
-            # 这里统一做解析和错误收口，避免每个工具各自重复处理。
-            arguments = json.loads(tool_call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            logger.error("Tool routing failed: tool=%s reason=invalid_json_arguments", tool_name)
-            return self._error_result(
-                tool_call=tool_call,
-                message=f"Invalid tool arguments for {tool_name}",
-                raw_arguments=tool_call.function.arguments,
-            )
-
-        if not isinstance(arguments, dict):
-            logger.error("Tool routing failed: tool=%s reason=arguments_not_object", tool_name)
-            return self._error_result(
-                tool_call=tool_call,
-                message=f"Tool arguments must be a JSON object for {tool_name}",
-            )
-
-        try:
-            return tool.execute(arguments=arguments, tool_call_id=tool_call.id)
-        except Exception as exc:
-            # 工具异常不直接打崩整个 loop，而是回填结构化错误结果给模型下一轮处理。
-            logger.exception("Tool execution failed: tool=%s error=%s", tool_name, exc)
-            return self._error_result(
-                tool_call=tool_call,
-                message=f"Tool execution failed for {tool_name}: {exc}",
-            )
-
-    def _error_result(
-        self,
-        *,
-        tool_call: ToolCall,
-        message: str,
-        **extra: Any,
-    ) -> ToolResult:
-        """创建结构化的工具错误结果。"""
-        payload: dict[str, Any] = {
-            "ok": False,
-            "error": message,
-            "tool_name": tool_call.function.name,
-        }
-        payload.update(extra)
-        return ToolResult(
-            tool_call_id=tool_call.id,
-            name=tool_call.function.name,
-            content=json.dumps(payload, ensure_ascii=False, indent=2),
-            is_error=True,
-        )
+        return self._router.route_tool_call(tool_call)
