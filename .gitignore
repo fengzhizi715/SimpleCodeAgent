@@ -92,3 +92,5 @@ pids/
 *.pid
 *.seed
 *.pid.lock
+
+.qoder/

@@ -120,6 +120,7 @@ Runtime 负责：
 所有核心数据结构必须在 `app/contracts` 中定义并复用，例如：
 
 - `ChatMessage`
+- `ToolSchema`
 - `ToolDefinition`
 - `ToolCall`
 - `ToolResult`
