@@ -37,3 +37,15 @@ class AgentState:
     memory_write_count: int = 0
     fallback_count: int = 0
     trace_events: list[TraceEvent] = field(default_factory=list)
+
+    @property
+    def is_finished(self) -> bool:
+        """返回当前任务是否已经结束。"""
+
+        return self.status != "running"
+
+    @property
+    def is_completed(self) -> bool:
+        """返回当前任务是否已成功完成。"""
+
+        return self.status == "completed"
