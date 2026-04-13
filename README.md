@@ -99,7 +99,6 @@ demo_workspace/ # 编程任务演示工作区
 详细使用手册见：
 
 - [docs/usage_guide.md](docs/usage_guide.md)
-- [docs/demo_scenarios.md](docs/demo_scenarios.md)
 
 其中包含：
 
@@ -156,6 +155,9 @@ python -m app.main "你好，介绍一下你自己" --version v1
   - `reasoning_effort`：映射为 `reasoning_effort=<mode>`
   - `reasoning_object`：映射为 `reasoning={"effort": "<mode>"}`
   - 具体使用哪一种，取决于你接入的 OpenAI-compatible 服务支持哪种字段风格
+- `WRITE_VALIDATION_MODE`：控制 direct `write_file` 前的内容完整性校验策略
+  - `strict`：默认值；内容疑似截断或 Python 语法不通过时拒绝落盘
+  - `permissive`：只要提取到 `path + content` 就允许落盘，更适合演示成功率优先的场景
 - `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
 - `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
 

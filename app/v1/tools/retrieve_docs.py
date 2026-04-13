@@ -10,9 +10,9 @@ from app.v1.tools.base import Tool
 class RetrieveDocsTool(Tool):
     """从文档知识库中检索相关片段。"""
 
-    def __init__(self, workspace_root: str | None = None) -> None:
+    def __init__(self, workspace_root: str | None = None, retriever: DocumentRetriever | None = None) -> None:
         super().__init__(workspace_root=workspace_root)
-        self.retriever = DocumentRetriever()
+        self.retriever = retriever if retriever is not None else DocumentRetriever()
 
     @property
     def definition(self) -> ToolDefinition:

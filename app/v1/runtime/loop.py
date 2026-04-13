@@ -2,30 +2,28 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
 from app.contracts.message import ChatMessage
-from app.contracts.planner import PlanStep
-from app.contracts.run import RunChoice, RunMetrics, RunResult, RunUsage
-from app.contracts.trace import TraceEvent
-from app.core.exceptions import AppError, RuntimeMaxStepsError, RuntimeTimeoutError
+from app.contracts.run import RunChoice, RunMetrics, RunResult
 from app.core.logger import get_logger, log_context
 from app.llm.client import LLMProvider
 from app.llm.parser import extract_final_text, extract_tool_calls
 from app.trace.events import make_trace_event
-from app.trace.recorder import JsonlTraceRecorder
-from app.trace.repository import SQLiteTraceRepository
 from app.v1.memory.repository import SQLiteMemoryRepository
 from app.v1.memory.session_memory import SessionMemory
 from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.base import Planner
 from app.v1.runtime.context import RunContext
+from app.v1.runtime.direct_tool_executor import DirectToolExecutor
 from app.v1.runtime.executor import RuntimeExecutor
+from app.v1.runtime.plan_executor import PlanExecutor
 from app.v1.runtime.state import AgentState
+from app.v1.runtime.write_intent_parser import WriteIntentParser
 from app.v1.tools.registry import ToolRegistry
+from app.trace.recorder import JsonlTraceRecorder
+from app.trace.repository import SQLiteTraceRepository
 
 logger = get_logger(__name__)
 
@@ -35,6 +33,14 @@ class AgentLoop:
 
     def __init__(self, executor: RuntimeExecutor | None = None) -> None:
         self.executor = executor or RuntimeExecutor()
+        self.write_intent_parser = WriteIntentParser()
+        self.direct_tool_executor = DirectToolExecutor(
+            write_intent_parser=self.write_intent_parser
+        )
+        self.plan_executor = PlanExecutor(
+            run_callable=self.run,
+            direct_tool_executor=self.direct_tool_executor,
+        )
 
     def run(
         self,
@@ -52,9 +58,12 @@ class AgentLoop:
         session_memory: SessionMemory | None = None,
         summary_memory: SummaryMemory | None = None,
         persist_session_memory: bool = True,
+        root_run_id: str | None = None,
+        parent_run_id: str | None = None,
     ) -> RunResult:
         """执行最小 Agent 循环并返回标准化结果。"""
         run_id = str(uuid4())
+        effective_root_run_id = root_run_id or run_id
         with log_context(run_id=run_id, session_id=session_id):
             started_at = monotonic()
             registry = tool_registry or ToolRegistry()
@@ -63,9 +72,10 @@ class AgentLoop:
             trace_repository = SQLiteTraceRepository(session_store.repository.db)
             trace_recorder = JsonlTraceRecorder(run_id=run_id)
             history_messages = session_store.load(session_id)
-            # RunContext 集中持有本次执行依赖，避免 loop 中散落太多环境判断。
             context = RunContext(
                 run_id=run_id,
+                root_run_id=effective_root_run_id,
+                parent_run_id=parent_run_id,
                 session_id=session_id,
                 provider=provider,
                 model=model,
@@ -87,7 +97,6 @@ class AgentLoop:
                 task=task,
                 max_steps=max_steps,
                 messages=[
-                    # 每次运行都重新注入增强后的 system prompt，确保工具约束和编程规则生效。
                     ChatMessage(role="system", content=context.effective_system_prompt),
                     *history_messages,
                     ChatMessage(role="user", content=task),
@@ -111,8 +120,6 @@ class AgentLoop:
             )
 
             while state.step_count < context.max_steps:
-                # 这里控制的是“整次运行”的总时长。
-                # 单次 LLM 请求的超时由 Provider 层处理，Runtime 只负责全局兜底停止。
                 if monotonic() - started_at >= context.run_timeout_seconds:
                     return self._build_fallback_final_result(
                         context=context,
@@ -173,7 +180,6 @@ class AgentLoop:
                         state.step_count,
                         len(tool_calls),
                     )
-                    # 先记录 assistant 的 tool-call 消息，再把工具结果回填给下一轮模型。
                     assistant_message = result.choices[0].message
                     state.messages.append(assistant_message)
                     self._handle_tool_calls(
@@ -258,101 +264,13 @@ class AgentLoop:
         session_memory: SessionMemory | None = None,
         summary_memory: SummaryMemory | None = None,
         planner: Planner,
+        root_run_id: str | None = None,
     ) -> RunResult:
         """先规划，再顺序执行步骤并汇总结果。"""
-        plan = planner.create_plan(task)
-        if not plan:
-            return self.run(
-                provider=provider,
-                model=model,
-                task=task,
-                system_prompt=system_prompt,
-                session_id=session_id,
-                reasoning_mode=reasoning_mode,
-                temperature=temperature,
-                max_steps=max_steps,
-                run_timeout_seconds=run_timeout_seconds,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-            )
-
-        step_outputs: list[str] = []
-        step_results: list[RunResult] = []
-        total_step_count = 0
-        plan_failed = False
-        direct_tool_execution_used = False
-
-        for index, step in enumerate(plan, start=1):
-            step_result = self._run_plan_step(
-                provider=provider,
-                model=model,
-                task=task,
-                system_prompt=system_prompt,
-                session_id=session_id,
-                reasoning_mode=reasoning_mode,
-                temperature=temperature,
-                max_steps=max_steps,
-                run_timeout_seconds=run_timeout_seconds,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-                step=step,
-                step_index=index,
-                total_steps=len(plan),
-                previous_outputs=step_outputs,
-            )
-            step_outputs.append(step_result.final_output)
-            step_results.append(step_result)
-            total_step_count += step_result.step_count
-            if step_result.direct_tool_execution_used:
-                direct_tool_execution_used = True
-            if step.status == "failed":
-                plan_failed = True
-                break
-
-        executed_steps = plan[:len(step_results)]
-        expected_tool_usage = any(step.tool_name for step in executed_steps)
-        actual_tool_usage = self._has_tool_execution(step_results)
-        aggregated_usage = self._merge_usage([step_result.usage for step_result in step_results])
-        aggregated_metrics = self._merge_metrics([step_result.metrics for step_result in step_results])
-
-        if expected_tool_usage and not actual_tool_usage:
-            for step in executed_steps:
-                if step.tool_name and step.status == "completed":
-                    step.status = "failed"
-                    step.output_summary = (
-                        "分析未实际执行工具；模型输出了文本结果，但没有发起真实 tool call。"
-                    )
-                    break
-            failure_message = "分析未实际执行工具，无法可靠汇总结果。请检查模型是否发起了真实 tool call。"
-            return RunResult(
-                id=f"planner-summary-skipped-{uuid4()}",
-                model=model,
-                reasoning_mode=reasoning_mode,
-                choices=[
-                    RunChoice(
-                        index=0,
-                        message=ChatMessage(role="assistant", content=failure_message),
-                        finish_reason="stop",
-                    )
-                ],
-                run_id=step_results[-1].run_id if step_results else None,
-                session_id=session_id,
-                step_count=total_step_count,
-                status="failed",
-                final_output=failure_message,
-                plan=plan,
-                usage=aggregated_usage,
-                metrics=aggregated_metrics,
-                direct_tool_execution_used=direct_tool_execution_used,
-            )
-
-        summary_prompt = self._build_summary_prompt(task=task, plan=plan, step_outputs=step_outputs)
-        summary_result = self.run(
+        return self.plan_executor.run_with_plan(
             provider=provider,
             model=model,
-            task=summary_prompt,
+            task=task,
             system_prompt=system_prompt,
             session_id=session_id,
             reasoning_mode=reasoning_mode,
@@ -362,32 +280,8 @@ class AgentLoop:
             tool_registry=tool_registry,
             session_memory=session_memory,
             summary_memory=summary_memory,
-            persist_session_memory=False,
-        )
-        # 规划步骤和汇总步骤不直接写入会话记忆，避免把中间推理污染成长期上下文。
-        if session_memory is not None and summary_result.status == "completed":
-            session_memory.append(
-                session_id,
-                [
-                    ChatMessage(role="user", content=task),
-                    ChatMessage(role="assistant", content=summary_result.final_output),
-                ],
-            )
-            if summary_result.metrics is not None:
-                summary_result.metrics.memory_write_count += 1
-        aggregated_metrics = self._merge_metrics(
-            [step_result.metrics for step_result in step_results] + [summary_result.metrics]
-        )
-        return summary_result.model_copy(
-            update={
-                "session_id": session_id,
-                "step_count": total_step_count + summary_result.step_count,
-                "plan": plan,
-                "status": "failed" if plan_failed else summary_result.status,
-                "usage": self._merge_usage([step_result.usage for step_result in step_results] + [summary_result.usage]),
-                "metrics": aggregated_metrics,
-                "direct_tool_execution_used": direct_tool_execution_used,
-            }
+            planner=planner,
+            root_run_id=root_run_id,
         )
 
     def _build_fallback_final_result(
@@ -443,7 +337,6 @@ class AgentLoop:
         if not context.persist_session_memory:
             return
         start_index = 1 + state.history_message_count
-        # 这里只保存本轮新增消息，避免把已加载的历史重复写回数据库。
         new_messages = [
             message
             for message in state.messages[start_index:]
@@ -465,523 +358,21 @@ class AgentLoop:
         state: AgentState,
         result: RunResult,
     ) -> None:
-        """当仓储支持时，持久化 run 与 trace 元数据。"""
+        """当仓储支持时，持久化 run 与 trace 元数据。
+
+        trace 事件已在 _append_trace_event 中实时写入 SQLite，
+        此处的批量写入是幂等安全网（INSERT OR REPLACE）。
+        """
         repository = context.session_memory.repository
         if hasattr(repository, "save_run"):
             repository.save_run(result, state.task)
         if hasattr(repository, "save_trace_events"):
             repository.save_trace_events(context.run_id, state.trace_events)
 
-    def _run_plan_step(
-        self,
-        *,
-        provider: LLMProvider,
-        model: str,
-        task: str,
-        system_prompt: str,
-        session_id: str,
-        reasoning_mode: str,
-        temperature: float,
-        max_steps: int,
-        run_timeout_seconds: int,
-        tool_registry: ToolRegistry | None,
-        session_memory: SessionMemory | None,
-        summary_memory: SummaryMemory | None,
-        step: PlanStep,
-        step_index: int,
-        total_steps: int,
-        previous_outputs: list[str],
-    ) -> RunResult:
-        """执行单个规划步骤，并按需要重试。"""
-        last_result: RunResult | None = None
-        total_attempts = max(1, step.max_retries + 1)
-
-        for attempt_index in range(total_attempts):
-            # 每个规划步骤都作为独立 run 执行，方便追踪和重试；
-            # 但它们仍然共享同一个 session，保证同任务上下文不被切碎。
-            step.status = "in_progress"
-            step.retry_count = attempt_index
-            direct_result = self._run_direct_plan_tool_step(
-                session_id=session_id,
-                model=model,
-                reasoning_mode=reasoning_mode,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                step=step,
-                previous_outputs=previous_outputs,
-                task=task,
-            )
-            if direct_result is not None:
-                last_result = direct_result
-                step.output_summary = direct_result.final_output
-                if direct_result.status == "completed":
-                    step.status = "completed"
-                    return direct_result
-                continue
-            step_prompt = self._build_step_prompt(
-                task=task,
-                step=step,
-                step_index=step_index,
-                total_steps=total_steps,
-                previous_outputs=previous_outputs,
-            )
-            last_result = self.run(
-                provider=provider,
-                model=model,
-                task=step_prompt,
-                system_prompt=system_prompt,
-                session_id=session_id,
-                reasoning_mode=reasoning_mode,
-                temperature=temperature,
-                max_steps=max_steps,
-                run_timeout_seconds=run_timeout_seconds,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-                persist_session_memory=False,
-            )
-            followup_direct_result = self._run_followup_direct_plan_tool_step(
-                session_id=session_id,
-                model=model,
-                reasoning_mode=reasoning_mode,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                step=step,
-                step_result=last_result,
-            )
-            if followup_direct_result is not None:
-                last_result = followup_direct_result
-            step.output_summary = last_result.final_output
-            if last_result.status == "completed":
-                step.status = "completed"
-                return last_result
-
-        step.status = "failed"
-        return last_result or RunResult(
-            id="planner-step-fallback",
-            model=model,
-            reasoning_mode=reasoning_mode,
-            choices=[],
-            session_id=session_id,
-            status="failed",
-            final_output=f"步骤执行失败：{step.title}",
-        )
-
-    def _build_step_prompt(
-        self,
-        *,
-        task: str,
-        step: PlanStep,
-        step_index: int,
-        total_steps: int,
-        previous_outputs: list[str],
-    ) -> str:
-        """构造单个规划步骤的执行提示。"""
-        sections = [
-            f"总任务：{task}",
-            f"当前是第 {step_index}/{total_steps} 步。",
-            f"步骤标题：{step.title}",
-            f"步骤描述：{step.description}",
-        ]
-        if step.input_summary:
-            sections.append(f"输入摘要：{step.input_summary}")
-        if step.tool_name:
-            sections.extend(
-                [
-                    f"本步骤优先使用工具：{step.tool_name}",
-                    "如果需要获取真实信息，请直接发起真实 tool call，不要只描述计划，也不要输出伪 JSON、伪命令块或示例参数。",
-                    "只有在拿到工具结果后，再基于结果输出当前步骤结论。",
-                ]
-            )
-        if previous_outputs:
-            sections.append("前序步骤结果：")
-            sections.extend(
-                [f"- 第 {index + 1} 步：{output}" for index, output in enumerate(previous_outputs)]
-            )
-        sections.append("请只完成当前步骤，并输出该步骤的结果。")
-        return "\n".join(sections)
-
-    def _build_summary_prompt(
-        self,
-        *,
-        task: str,
-        plan: list[PlanStep],
-        step_outputs: list[str],
-    ) -> str:
-        """构造最终汇总提示。"""
-        lines = [f"请基于以下步骤结果，汇总完成总任务：{task}", "步骤结果："]
-        for index, step in enumerate(plan, start=1):
-            lines.append(f"{index}. {step.title}")
-            if step.status == "failed":
-                lines.append(f"步骤失败：{step.output_summary or '无输出'}")
-                continue
-            if index <= len(step_outputs):
-                lines.append(step_outputs[index - 1])
-        lines.append("请输出最终完整答案。")
-        return "\n".join(lines)
-
-    def _run_direct_plan_tool_step(
-        self,
-        *,
-        session_id: str,
-        model: str,
-        reasoning_mode: str,
-        tool_registry: ToolRegistry | None,
-        session_memory: SessionMemory | None,
-        step: PlanStep,
-        previous_outputs: list[str],
-        task: str,
-    ) -> RunResult | None:
-        """当步骤工具和参数可确定时，直接执行工具而不依赖模型发起 tool call。"""
-        if tool_registry is None or step.tool_name is None:
-            return None
-
-        arguments = self._infer_direct_tool_arguments(
-            tool_name=step.tool_name,
-            step=step,
-            previous_outputs=previous_outputs,
-            task=task,
-            tool_registry=tool_registry,
-        )
-        if arguments is None:
-            return None
-
-        run_id = str(uuid4())
-        started_at = monotonic()
-        repository = session_memory.repository if session_memory is not None else SQLiteMemoryRepository()
-        trace_recorder = JsonlTraceRecorder(run_id=run_id)
-        trace_events: list[TraceEvent] = []
-
-        def append_event(event_type: str, message: str, payload: dict[str, object] | None = None) -> None:
-            event = make_trace_event(
-                run_id=run_id,
-                session_id=session_id,
-                event_type=event_type,
-                message=message,
-                payload=payload,
-            )
-            trace_events.append(event)
-            trace_recorder.record(event)
-
-        append_event("run_started", "Direct plan tool run started.", {"step_title": step.title, "tool_name": step.tool_name})
-        append_event("step_started", "Direct tool step started.", {"step_title": step.title})
-        append_event("tool_called", "Tool called.", {"tool_name": step.tool_name, "arguments": arguments})
-        tool_result = tool_registry.execute_tool(
-            tool_name=step.tool_name,
-            arguments=arguments,
-            tool_call_id=f"direct-{run_id}",
-        )
-        append_event(
-            "tool_result",
-            "Tool result received.",
-            {"tool_name": tool_result.name, "is_error": tool_result.is_error},
-        )
-        status = "failed" if tool_result.is_error else "completed"
-        finish_event_type = "run_failed" if tool_result.is_error else "run_finished"
-        finish_message = "Direct plan tool run failed." if tool_result.is_error else "Direct plan tool run finished."
-        append_event(finish_event_type, finish_message, {"step_title": step.title, "tool_name": step.tool_name})
-
-        result = RunResult(
-            id=f"direct-plan-tool-{run_id}",
-            model=model,
-            reasoning_mode=reasoning_mode,
-            choices=[
-                RunChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=tool_result.content),
-                    finish_reason="stop",
-                )
-            ],
-            run_id=run_id,
-            session_id=session_id,
-            step_count=1,
-            status=status,
-            final_output=tool_result.content,
-            direct_tool_execution_used=True,
-            metrics=RunMetrics(
-                duration_seconds=max(monotonic() - started_at, 0.0),
-                llm_call_count=0,
-                tool_call_count=1,
-                tool_error_count=1 if tool_result.is_error else 0,
-                memory_write_count=0,
-                fallback_count=0,
-            ),
-            trace=trace_events,
-        )
-        if hasattr(repository, "save_run"):
-            repository.save_run(result, f"[direct-tool] {step.title}")
-        if hasattr(repository, "save_trace_events"):
-            repository.save_trace_events(run_id, trace_events)
-        return result
-
-    def _infer_direct_tool_arguments(
-        self,
-        *,
-        tool_name: str,
-        step: PlanStep,
-        previous_outputs: list[str],
-        task: str,
-        tool_registry: ToolRegistry,
-    ) -> dict[str, object] | None:
-        """为确定性规划步骤推断直接执行所需的工具参数。"""
-        if tool_name == "list_dir":
-            return {"path": ".", "max_entries": 200}
-        if tool_name == "read_file":
-            candidate_path = self._infer_read_file_path(previous_outputs, tool_registry)
-            if candidate_path is None:
-                return None
-            return {"path": candidate_path, "max_chars": 6000}
-        if tool_name == "file_search":
-            search_arguments = self._infer_file_search_arguments(task, step)
-            if search_arguments is None:
-                return None
-            return search_arguments
-        if tool_name == "write_file":
-            return self._infer_write_file_arguments(previous_outputs)
-        if tool_name == "retrieve_docs":
-            query = (step.input_summary or task).strip()
-            if not query:
-                return None
-            return {"query": query, "top_k": 3, "rerank": True}
-        return None
-
-    def _infer_read_file_path(
-        self,
-        previous_outputs: list[str],
-        tool_registry: ToolRegistry,
-    ) -> str | None:
-        """根据前序工具输出推断最值得读取的关键文件。"""
-        common_candidates = [
-            "package.json",
-            "pyproject.toml",
-            "settings.gradle.kts",
-            "settings.gradle",
-            "build.gradle.kts",
-            "build.gradle",
-            "pom.xml",
-            "Cargo.toml",
-            "CMakeLists.txt",
-            "Makefile",
-            "README.md",
-        ]
-
-        for output in reversed(previous_outputs):
-            payload = self._parse_json_object(output)
-            if not payload:
-                continue
-            entries = payload.get("entries")
-            if not isinstance(entries, list):
-                continue
-            entry_names = {
-                str(entry.get("name", "")): str(entry.get("path", ""))
-                for entry in entries
-                if isinstance(entry, dict)
-            }
-            for candidate in common_candidates:
-                candidate_path = entry_names.get(candidate)
-                if not candidate_path:
-                    continue
-                try:
-                    resolved = Path(candidate_path).resolve().relative_to(tool_registry.workspace_root.resolve())
-                    return str(resolved)
-                except ValueError:
-                    continue
-
-        for candidate in common_candidates:
-            candidate_path = tool_registry.workspace_root / candidate
-            if candidate_path.exists() and candidate_path.is_file():
-                return candidate
-        return None
-
-    def _infer_file_search_arguments(self, task: str, step: PlanStep) -> dict[str, object] | None:
-        """根据任务和步骤语义推断 file_search 参数。"""
-        normalized = task.lower()
-        if "todo" in normalized:
-            return {"query": "TODO", "max_results": 20}
-        if "函数" in task or "function" in normalized or "工具类" in task:
-            return {"query": "def ", "glob": "**/*.py", "max_results": 20}
-        if step.input_summary:
-            summary = step.input_summary.strip()
-            if summary:
-                return {"query": summary, "max_results": 20}
-        stripped = task.strip()
-        if not stripped:
-            return None
-        return {"query": stripped, "max_results": 20}
-
-    def _infer_write_file_arguments(self, previous_outputs: list[str]) -> dict[str, object] | None:
-        """从前序步骤结果中解析 write_file 所需的 path 和 content。"""
-        for output in reversed(previous_outputs):
-            arguments = self._build_write_file_arguments_from_text(output)
-            if arguments is not None:
-                return arguments
-        return None
-
-    def _run_followup_direct_plan_tool_step(
-        self,
-        *,
-        session_id: str,
-        model: str,
-        reasoning_mode: str,
-        tool_registry: ToolRegistry | None,
-        session_memory: SessionMemory | None,
-        step: PlanStep,
-        step_result: RunResult,
-    ) -> RunResult | None:
-        """在 LLM 步骤输出了结构化工具参数时，补执行一次 direct tool。"""
-        if tool_registry is None or step.tool_name != "write_file":
-            return None
-        arguments = self._build_write_file_arguments_from_text(step_result.final_output)
-        if arguments is None:
-            return None
-        return self._run_direct_plan_tool_step_with_arguments(
-            session_id=session_id,
-            model=model,
-            reasoning_mode=reasoning_mode,
-            session_memory=session_memory,
-            step=step,
-            tool_registry=tool_registry,
-            arguments=arguments,
-        )
-
-    def _run_direct_plan_tool_step_with_arguments(
-        self,
-        *,
-        session_id: str,
-        model: str,
-        reasoning_mode: str,
-        session_memory: SessionMemory | None,
-        step: PlanStep,
-        tool_registry: ToolRegistry,
-        arguments: dict[str, object],
-    ) -> RunResult:
-        """使用已确定参数直接执行规划步骤工具。"""
-        run_id = str(uuid4())
-        started_at = monotonic()
-        repository = session_memory.repository if session_memory is not None else SQLiteMemoryRepository()
-        trace_recorder = JsonlTraceRecorder(run_id=run_id)
-        trace_events: list[TraceEvent] = []
-
-        def append_event(event_type: str, message: str, payload: dict[str, object] | None = None) -> None:
-            event = make_trace_event(
-                run_id=run_id,
-                session_id=session_id,
-                event_type=event_type,
-                message=message,
-                payload=payload,
-            )
-            trace_events.append(event)
-            trace_recorder.record(event)
-
-        append_event("run_started", "Direct plan tool run started.", {"step_title": step.title, "tool_name": step.tool_name})
-        append_event("step_started", "Direct tool step started.", {"step_title": step.title})
-        append_event("tool_called", "Tool called.", {"tool_name": step.tool_name, "arguments": arguments})
-        tool_result = tool_registry.execute_tool(
-            tool_name=step.tool_name,
-            arguments=arguments,
-            tool_call_id=f"direct-{run_id}",
-        )
-        append_event(
-            "tool_result",
-            "Tool result received.",
-            {"tool_name": tool_result.name, "is_error": tool_result.is_error},
-        )
-        status = "failed" if tool_result.is_error else "completed"
-        finish_event_type = "run_failed" if tool_result.is_error else "run_finished"
-        finish_message = "Direct plan tool run failed." if tool_result.is_error else "Direct plan tool run finished."
-        append_event(finish_event_type, finish_message, {"step_title": step.title, "tool_name": step.tool_name})
-
-        result = RunResult(
-            id=f"direct-plan-tool-{run_id}",
-            model=model,
-            reasoning_mode=reasoning_mode,
-            choices=[
-                RunChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=tool_result.content),
-                    finish_reason="stop",
-                )
-            ],
-            run_id=run_id,
-            session_id=session_id,
-            step_count=1,
-            status=status,
-            final_output=tool_result.content,
-            direct_tool_execution_used=True,
-            metrics=RunMetrics(
-                duration_seconds=max(monotonic() - started_at, 0.0),
-                llm_call_count=0,
-                tool_call_count=1,
-                tool_error_count=1 if tool_result.is_error else 0,
-                memory_write_count=0,
-                fallback_count=0,
-            ),
-            trace=trace_events,
-        )
-        if hasattr(repository, "save_run"):
-            repository.save_run(result, f"[direct-tool] {step.title}")
-        if hasattr(repository, "save_trace_events"):
-            repository.save_trace_events(run_id, trace_events)
-        return result
-
-    def _parse_json_object(self, text: str) -> dict[str, object] | None:
-        """尽量将完整文本解析为 JSON 对象。"""
-        try:
-            payload = json.loads(text)
-        except json.JSONDecodeError:
-            return None
-        if isinstance(payload, dict):
-            return payload
-        return None
-
-    def _extract_json_object(self, text: str) -> dict[str, object] | None:
-        """从普通文本或 fenced code block 中尽量提取 JSON 对象。"""
-        payload = self._parse_json_object(text)
-        if payload is not None:
-            return payload
-
-        stripped = text.strip()
-        fence_markers = ["```json", "```"]
-        for marker in fence_markers:
-            start = stripped.find(marker)
-            if start == -1:
-                continue
-            content_start = start + len(marker)
-            end = stripped.find("```", content_start)
-            if end == -1:
-                continue
-            candidate = stripped[content_start:end].strip()
-            payload = self._parse_json_object(candidate)
-            if payload is not None:
-                return payload
-
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = stripped[start : end + 1]
-            return self._parse_json_object(candidate)
-        return None
-
-    def _build_write_file_arguments_from_text(self, text: str) -> dict[str, object] | None:
-        """从文本中提取 write_file 所需的 path 和 content。"""
-        payload = self._extract_json_object(text)
-        if not payload:
-            return None
-        path = payload.get("path")
-        content = payload.get("content")
-        if isinstance(path, str) and path.strip() and isinstance(content, str):
-            return {
-                "path": path.strip(),
-                "content": content,
-                "dry_run": False,
-            }
-        return None
-
     def _is_final_answer(self, result: RunResult) -> bool:
         """判断 assistant 是否已经返回普通最终答案。"""
         if not result.choices:
             return False
-
         message = result.choices[0].message
         if extract_tool_calls(result):
             return False
@@ -1015,8 +406,6 @@ class AgentLoop:
                 },
             )
             tool_result = context.tool_registry.execute_tool_call(tool_call)
-            # 无论工具成功还是失败，都统一转成 tool 消息回填给模型。
-            # 这样模型可以自己决定是重试、换工具，还是直接向用户解释问题。
             state.messages.append(tool_result.to_message())
             if tool_result.is_error:
                 state.tool_error_count += 1
@@ -1055,15 +444,32 @@ class AgentLoop:
         message: str,
         payload: dict[str, object] | None = None,
     ) -> None:
-        """统一追加并落盘 Trace 事件。"""
+        """统一追加并落盘 Trace 事件。
+
+        写入顺序：SQLite（权威数据源）→ JSONL（辅助 debug 日志）。
+        SQLite 写入失败仅记录警告，不影响运行；JSONL 作为备份仍会写入，
+        后续可通过 reconcile_from_jsonl 恢复缺失数据。
+        """
         event = make_trace_event(
             run_id=context.run_id,
+            root_run_id=context.root_run_id,
+            parent_run_id=context.parent_run_id,
             session_id=context.session_id,
             event_type=event_type,
             message=message,
             payload=payload,
         )
         state.trace_events.append(event)
+        # SQLite 是权威数据源，优先写入
+        sqlite_ok = context.trace_repository.save_event(context.run_id, event)
+        if not sqlite_ok:
+            logger.warning(
+                "Trace event not persisted to SQLite, JSONL is the fallback: "
+                "run_id=%s event_type=%s",
+                context.run_id,
+                event_type,
+            )
+        # JSONL 是辅助 debug 日志，后写入（即使 SQLite 失败也写 JSONL 作为备份）
         context.trace_recorder.record(event)
 
     def _build_metrics(self, state: AgentState, started_at: float) -> RunMetrics:
@@ -1076,39 +482,3 @@ class AgentLoop:
             memory_write_count=state.memory_write_count,
             fallback_count=state.fallback_count,
         )
-
-    def _merge_metrics(self, metrics_list: list[RunMetrics | None]) -> RunMetrics:
-        """合并多次运行结果的指标，用于 planner 汇总场景。"""
-        merged = RunMetrics()
-        for metrics in metrics_list:
-            if metrics is None:
-                continue
-            merged.duration_seconds += metrics.duration_seconds
-            merged.llm_call_count += metrics.llm_call_count
-            merged.tool_call_count += metrics.tool_call_count
-            merged.tool_error_count += metrics.tool_error_count
-            merged.memory_write_count += metrics.memory_write_count
-            merged.fallback_count += metrics.fallback_count
-        return merged
-
-    def _merge_usage(self, usage_list: list[RunUsage | None]) -> RunUsage | None:
-        """合并多次运行的 token usage，用于 planner 汇总场景。"""
-        merged = RunUsage()
-        has_usage = False
-        for usage in usage_list:
-            if usage is None:
-                continue
-            has_usage = True
-            merged.prompt_tokens += usage.prompt_tokens
-            merged.completion_tokens += usage.completion_tokens
-            merged.total_tokens += usage.total_tokens
-        return merged if has_usage else None
-
-    def _has_tool_execution(self, step_results: list[RunResult]) -> bool:
-        """判断规划步骤是否真的发起过工具调用。"""
-        for result in step_results:
-            if result.metrics is not None and result.metrics.tool_call_count > 0:
-                return True
-            if any(event.event_type == "tool_called" for event in result.trace):
-                return True
-        return False

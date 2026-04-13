@@ -16,6 +16,8 @@ class TraceEvent(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     run_id: str | None = None
+    root_run_id: str | None = None
+    parent_run_id: str | None = None
     session_id: str | None = None
     event_type: str
     message: str

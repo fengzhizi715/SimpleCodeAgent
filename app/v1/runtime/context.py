@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict
+from dataclasses import dataclass
 
 from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
@@ -33,13 +33,22 @@ Coding-task policy:
 """.strip()
 
 
-class RunContext(BaseModel):
-    """单次 Agent 运行的执行上下文。"""
+@dataclass(kw_only=True)
+class RunContext:
+    """单次 Agent 运行的执行上下文。
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+    使用 dataclass 而非 Pydantic BaseModel，因为 RunContext 持有
+    LLMProvider、ToolRegistry 等不可序列化的运行时对象，
+    Pydantic 的校验和序列化能力在此场景下无法发挥作用。
+
+    kw_only=True 允许必填字段和有默认值的字段混合声明，
+    所有字段都必须通过关键字参数传入，避免位置参数顺序问题。
+    """
 
     run_id: str
+    root_run_id: str
     session_id: str
+    parent_run_id: str | None = None
     provider: LLMProvider
     model: str
     reasoning_mode: str = "default"

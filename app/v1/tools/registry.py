@@ -17,6 +17,7 @@ from app.v1.tools.replace_in_file import ReplaceInFileTool
 from app.v1.tools.router import ToolRouter
 from app.v1.tools.shell_run import ShellRunTool
 from app.v1.tools.write_file import WriteFileTool
+from app.v1.rag.retriever import DocumentRetriever
 
 logger = get_logger(__name__)
 
@@ -28,6 +29,8 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
         self._router = ToolRouter(self)
+        # 缓存 DocumentRetriever 实例，避免每次创建工具时重新初始化 Chroma 和 Embedding Provider
+        self._cached_retriever: DocumentRetriever | None = None
 
     def register(self, tool: Tool) -> None:
         """按工具定义中的名称注册工具实例。"""
@@ -51,7 +54,7 @@ class ToolRegistry:
         self.register(ReplaceInFileTool(workspace_root=self.workspace_root))
         self.register(AppendFileTool(workspace_root=self.workspace_root))
         self.register(MultiFilePatchTool(workspace_root=self.workspace_root))
-        self.register(RetrieveDocsTool(workspace_root=self.workspace_root))
+        self.register(RetrieveDocsTool(workspace_root=self.workspace_root, retriever=self._get_retriever()))
 
     def get_tool_definitions(self) -> list[ToolDefinition]:
         """返回暴露给 LLM 的全部工具定义。"""
@@ -78,3 +81,9 @@ class ToolRegistry:
     def execute_tool_call(self, tool_call: ToolCall) -> ToolResult:
         """将工具调用路由到正确工具并执行。"""
         return self._router.route_tool_call(tool_call)
+
+    def _get_retriever(self) -> DocumentRetriever:
+        """获取或创建缓存的 DocumentRetriever 实例。"""
+        if self._cached_retriever is None:
+            self._cached_retriever = DocumentRetriever()
+        return self._cached_retriever

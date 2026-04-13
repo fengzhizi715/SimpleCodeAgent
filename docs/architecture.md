@@ -49,16 +49,27 @@
 
 ## 3. Planner 与普通单轮运行的关系
 
-`v1` 不区分单独的“规划引擎”和“执行引擎”，而是保留两条运行路径：
+`v1` 不做复杂 workflow runtime，但已经把“主循环”和“规划步骤执行”拆成了不同职责：
 
 - 简单任务：
   - 直接进入 `AgentLoop.run()`
 - 复杂任务：
   - 先由 `SimplePlanner` 拆成 2 到 5 个步骤
-  - 再逐步调用 `AgentLoop.run()` 执行每个步骤
+  - 再由 `PlanExecutor` 顺序执行每个步骤
   - 最后再调用一次汇总步骤，生成最终答案
 
-当前 Planner 的目标不是做复杂 DAG 或工作流系统，而是让 demo 足够稳定、足够容易解释。
+当前 `app/v1/runtime` 内部的职责大致如下：
+
+- `loop.py`
+  - 只负责单 Agent 主循环、工具回填、fallback 和 run 级持久化
+- `plan_executor.py`
+  - 负责规划步骤执行、步骤汇总、写入成功校验
+- `direct_tool_executor.py`
+  - 负责对明确步骤做 deterministic tool execution
+- `write_intent_parser.py`
+  - 负责从模型输出中提取 `path/content` 等写入意图
+
+这样做的目标不是把 `v1` 变复杂，而是避免把规划、写入解析和主循环全部堆在一个文件里，降低调试成本。
 
 ## 4. Tool 系统设计
 

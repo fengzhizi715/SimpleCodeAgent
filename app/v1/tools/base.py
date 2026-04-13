@@ -36,12 +36,29 @@ class Tool(ABC):
     def resolve_path(self, raw_path: str) -> Path:
         """解析路径并确保其位于工作区内。"""
         path = Path(raw_path)
-        resolved = (self.workspace_root / path).resolve() if not path.is_absolute() else path.resolve()
+        candidate = (self.workspace_root / path) if not path.is_absolute() else path
+        resolved = candidate.resolve(strict=False)
+        self._ensure_safe_path(candidate)
         try:
             resolved.relative_to(self.workspace_root.resolve())
         except ValueError as exc:
             raise AppError(f"Path is outside workspace: {raw_path}") from exc
         return resolved
+
+    def _ensure_safe_path(self, candidate: Path) -> None:
+        """显式检查路径链路中的符号链接，避免工作区逃逸。"""
+        workspace_root = self.workspace_root.resolve()
+        current = candidate
+        while True:
+            if current.exists() and current.is_symlink():
+                target = current.resolve(strict=False)
+                try:
+                    target.relative_to(workspace_root)
+                except ValueError as exc:
+                    raise AppError(f"Path escapes workspace through symlink: {candidate}") from exc
+            if current == workspace_root or current.parent == current:
+                break
+            current = current.parent
 
     def success(self, *, tool_call_id: str, content: dict[str, Any]) -> ToolResult:
         """构造一个带 JSON 内容的成功结果。"""

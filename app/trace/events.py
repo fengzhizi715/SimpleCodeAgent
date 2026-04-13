@@ -22,6 +22,8 @@ TraceEventType = Literal[
 def make_trace_event(
     *,
     run_id: str,
+    root_run_id: str | None = None,
+    parent_run_id: str | None = None,
     session_id: str,
     event_type: TraceEventType,
     message: str,
@@ -30,6 +32,8 @@ def make_trace_event(
     """创建标准 TraceEvent。"""
     return TraceEvent(
         run_id=run_id,
+        root_run_id=root_run_id,
+        parent_run_id=parent_run_id,
         session_id=session_id,
         event_type=event_type,
         message=message,

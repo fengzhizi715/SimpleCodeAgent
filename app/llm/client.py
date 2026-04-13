@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Mapping
 from urllib import error, request
@@ -88,6 +89,7 @@ class OpenAICompatibleProvider(LLMProvider):
         reasoning_param_style: str = "none",
         extra_headers: Mapping[str, str] | None = None,
         timeout: int = 60,
+        max_retries: int = 2,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -97,6 +99,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.reasoning_param_style = reasoning_param_style.lower()
         self.extra_headers = dict(extra_headers or {})
         self.timeout = timeout
+        self.max_retries = max_retries
 
     def chat(self, chat_request: RunRequest) -> RunResult:
         payload = chat_request.to_provider_payload(fallback_model=self.model)
@@ -120,21 +123,33 @@ class OpenAICompatibleProvider(LLMProvider):
             method="POST",
         )
 
-        try:
-            with request.urlopen(http_request, timeout=self.timeout) as response:
-                response_body = response.read().decode("utf-8")
-        except error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            logger.error("LLM provider returned HTTP error: status=%s body=%s", exc.code, body)
-            raise LLMProviderError(
-                f"Provider returned HTTP {exc.code}: {body}"
-            ) from exc
-        except error.URLError as exc:
-            logger.error("LLM provider request failed: reason=%s", exc.reason)
-            raise LLMProviderError(f"Provider request failed: {exc.reason}") from exc
-        except (http.client.HTTPException, OSError) as exc:
-            logger.error("LLM provider connection failed: error=%s", exc)
-            raise LLMProviderError(f"Provider connection failed: {exc}") from exc
+        response_body = ""
+        for attempt in range(self.max_retries + 1):
+            try:
+                with request.urlopen(http_request, timeout=self.timeout) as response:
+                    response_body = response.read().decode("utf-8")
+                break
+            except error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if self._is_retryable_http_error(exc.code) and attempt < self.max_retries:
+                    self._sleep_before_retry(attempt, f"http {exc.code}")
+                    continue
+                logger.error("LLM provider returned HTTP error: status=%s body=%s", exc.code, body)
+                raise LLMProviderError(
+                    f"Provider returned HTTP {exc.code}: {body}"
+                ) from exc
+            except error.URLError as exc:
+                if attempt < self.max_retries:
+                    self._sleep_before_retry(attempt, f"url error: {exc.reason}")
+                    continue
+                logger.error("LLM provider request failed: reason=%s", exc.reason)
+                raise LLMProviderError(f"Provider request failed: {exc.reason}") from exc
+            except (http.client.HTTPException, OSError) as exc:
+                if attempt < self.max_retries:
+                    self._sleep_before_retry(attempt, f"connection error: {exc}")
+                    continue
+                logger.error("LLM provider connection failed: error=%s", exc)
+                raise LLMProviderError(f"Provider connection failed: {exc}") from exc
 
         try:
             data = json.loads(response_body)
@@ -143,6 +158,22 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMProviderError("Provider returned invalid JSON") from exc
 
         return self._parse_response(data)
+
+    def _is_retryable_http_error(self, status_code: int) -> bool:
+        """判断 HTTP 错误是否适合重试。"""
+        return status_code in {429, 500, 502, 503, 504}
+
+    def _sleep_before_retry(self, attempt: int, reason: str) -> None:
+        """在可重试错误间做指数退避。"""
+        delay_seconds = min(2 ** attempt, 4)
+        logger.warning(
+            "Retrying LLM request: attempt=%s/%s delay=%ss reason=%s",
+            attempt + 1,
+            self.max_retries,
+            delay_seconds,
+            reason,
+        )
+        time.sleep(delay_seconds)
 
     def _apply_reasoning_mapping(
         self,

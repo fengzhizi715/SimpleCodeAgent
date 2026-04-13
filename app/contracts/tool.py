@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class ToolFunction(BaseModel):
@@ -37,9 +37,17 @@ class ToolDefinition(BaseModel):
 
     name: str
     description: str
-    parameters: dict[str, Any] = Field(default_factory=dict)
+    input_schema: "ToolSchema" = Field(
+        default_factory=lambda: ToolSchema(),
+        validation_alias=AliasChoices("input_schema", "parameters"),
+    )
     strict: bool = False
     type: Literal["function"] = "function"
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        """兼容旧字段名，返回输入参数 schema。"""
+        return self.input_schema.to_provider_dict()
 
     def to_provider_dict(self) -> dict[str, object]:
         """将工具定义转换为 OpenAI 兼容格式。"""
@@ -48,9 +56,29 @@ class ToolDefinition(BaseModel):
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": self.input_schema.to_provider_dict(),
                 "strict": self.strict,
             },
+        }
+
+
+class ToolSchema(BaseModel):
+    """工具输入参数的结构定义。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["object"] = "object"
+    properties: dict[str, Any] = Field(default_factory=dict)
+    required: list[str] = Field(default_factory=list)
+    additional_properties: bool = Field(default=False, alias="additionalProperties")
+
+    def to_provider_dict(self) -> dict[str, Any]:
+        """转换为 OpenAI-compatible 工具参数 schema。"""
+        return {
+            "type": self.type,
+            "properties": self.properties,
+            "required": self.required,
+            "additionalProperties": self.additional_properties,
         }
 
 

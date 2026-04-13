@@ -19,9 +19,12 @@ logger = get_logger(__name__)
 class SQLiteMemoryRepository(MemoryRepository):
     """使用 SQLite 持久化会话记忆。"""
 
+    _cleanup_ran: bool = False
+
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db = SQLiteDB(db_path)
         logger.info("Initialized SQLite memory repository: db_path=%s", self.db.db_path)
+        self._maybe_cleanup_old_sessions()
 
     def get_session_messages(self, session_id: str, limit: int) -> list[ChatMessage]:
         rows = self.db.fetchall(
@@ -156,7 +159,98 @@ class SQLiteMemoryRepository(MemoryRepository):
             run.step_count,
         )
 
-    def save_trace_events(self, run_id: str, events: list[TraceEvent]) -> None:
-        """持久化某次运行的追踪元数据。"""
-        SQLiteTraceRepository(self.db).save_events(run_id, events)
-        logger.info("Persisted trace events: run_id=%s event_count=%s", run_id, len(events))
+    def cleanup_old_sessions(self, max_age_days: int = 30) -> int:
+        """清理超过指定天数的会话及其关联数据。
+
+        按级联顺序删除：trace_index → runs → messages → summaries → sessions，
+        最后执行 VACUUM 压缩数据库文件。
+
+        Args:
+            max_age_days: 保留最近多少天的会话，默认 30 天。
+
+        Returns:
+            被清理的会话数量。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+
+        # 查找过期的 session_id
+        old_sessions = self.db.fetchall(
+            "SELECT id FROM sessions WHERE updated_at < ?",
+            (cutoff,),
+        )
+        if not old_sessions:
+            return 0
+
+        session_ids = [row["id"] for row in old_sessions]
+
+        # 批量删除关联数据（使用子查询避免逐条循环）
+        # 1. 删除 trace_index（通过 runs 关联）
+        placeholders = ",".join("?" for _ in session_ids)
+        self.db.execute(
+            f"DELETE FROM trace_index WHERE run_id IN "
+            f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
+            tuple(session_ids),
+        )
+        # 2. 删除 runs
+        self.db.execute(
+            f"DELETE FROM runs WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
+        )
+        # 3. 删除 messages
+        self.db.execute(
+            f"DELETE FROM messages WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
+        )
+        # 4. 删除 summaries
+        self.db.execute(
+            f"DELETE FROM summaries WHERE session_id IN ({placeholders})",
+            tuple(session_ids),
+        )
+        # 5. 删除 sessions
+        self.db.executemany(
+            "DELETE FROM sessions WHERE id = ?",
+            [(session_id,) for session_id in session_ids],
+        )
+
+        # 压缩数据库文件
+        # VACUUM 不能在事务内执行，需要直接使用连接对象
+        try:
+            conn = self.db.connect()
+            conn.execute("VACUUM")
+        except Exception:
+            logger.warning("VACUUM failed after cleanup, database will continue to work but file may be larger")
+
+        logger.info(
+            "Cleaned up old sessions: count=%s max_age_days=%s",
+            len(session_ids),
+            max_age_days,
+        )
+        return len(session_ids)
+
+    def _maybe_cleanup_old_sessions(self) -> None:
+        """在仓储初始化时执行一次默认清理，形成基础保留策略。"""
+        if self.__class__._cleanup_ran:
+            return
+        try:
+            cleaned = self.cleanup_old_sessions(max_age_days=30)
+            logger.info(
+                "Applied default session retention policy: cleaned=%s max_age_days=30",
+                cleaned,
+            )
+        finally:
+            self.__class__._cleanup_ran = True
+
+    def save_trace_events(self, run_id: str, events: list[TraceEvent]) -> bool:
+        """持久化某次运行的追踪元数据。
+
+        Returns:
+            True 表示写入成功，False 表示写入失败。
+        """
+        result = SQLiteTraceRepository(self.db).save_events(run_id, events)
+        if result:
+            logger.info("Persisted trace events: run_id=%s event_count=%s", run_id, len(events))
+        else:
+            logger.warning("Failed to persist trace events to SQLite: run_id=%s event_count=%s", run_id, len(events))
+        return result

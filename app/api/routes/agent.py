@@ -56,7 +56,7 @@ class AgentRunRequest(BaseModel):
     system_prompt: str = Field(default="You are a helpful assistant.", description="系统提示词。")
     temperature: float = Field(default=0.0, description="采样温度。")
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
-    run_timeout_seconds: int = Field(default=120, ge=1, le=3600, description="单次运行超时时间。")
+    run_timeout_seconds: int = Field(default=120, ge=1, le=600, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
 
 

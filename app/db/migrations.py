@@ -68,4 +68,8 @@ SCHEMA_STATEMENTS = [
     CREATE INDEX IF NOT EXISTS idx_trace_index_run_id_created_at
     ON trace_index(run_id, created_at)
     """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
+    ON sessions(updated_at)
+    """,
 ]

@@ -13,7 +13,6 @@ from app.v1.memory.session_memory import SessionMemory
 from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
-from app.v1.tools.registry import ToolRegistry
 
 logger = get_logger(__name__)
 
@@ -22,14 +21,6 @@ logger = get_logger(__name__)
 def get_memory_repository() -> SQLiteMemoryRepository:
     """返回共享的 SQLite Memory 仓储。"""
     return SQLiteMemoryRepository()
-
-
-@lru_cache(maxsize=1)
-def get_tool_registry() -> ToolRegistry:
-    """返回默认工具注册表。"""
-    registry = ToolRegistry()
-    registry.register_default_tools()
-    return registry
 
 
 @lru_cache(maxsize=1)
