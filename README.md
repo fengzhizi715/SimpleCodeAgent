@@ -65,6 +65,7 @@ WORKDIR=/absolute/path/to/your/project
 ```text
 app/
   api/          # HTTP 服务入口与路由
+  cli/          # CLI 入口复用的参数与执行封装
   contracts/    # 跨模块共享的数据协议
   core/         # 配置、日志、异常等基础能力
   db/           # SQLite 连接与迁移
@@ -74,12 +75,13 @@ app/
     memory/     # 会话记忆与摘要记忆
     planner/    # 任务拆解与步骤规划
     rag/        # 文档切分、向量化与检索
-    runtime/    # Agent 主循环、执行器与上下文
+    runtime/    # Agent 主循环、规划执行与 direct tool 执行
     tools/      # 工具定义、注册与代码操作工具
   v2/           # 后续多 Agent 版本预留
 docs/           # 项目文档与使用手册
 scripts/        # 本地运行、导入和调试脚本
 demo_workspace/ # 编程任务演示工作区
+logs/           # 按天滚动的运行日志（默认保留 30 天）
 ```
 
 ## 版本说明
