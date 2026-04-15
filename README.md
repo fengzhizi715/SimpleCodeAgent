@@ -111,7 +111,7 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 - `WORKDIR` / `--workdir` 用法
 - RAG 文档导入与单文件导入
 - 如何触发 RAG 检索
-- `local_ai_inference_platform` 接入建议
+- `OpenVitamin` 接入建议
 - FastAPI 调用方式
 - Trace 查看
 - Coding demo 演示流程
