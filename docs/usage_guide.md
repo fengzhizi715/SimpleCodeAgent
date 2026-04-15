@@ -40,7 +40,7 @@ SESSION_ID=demo-session
 WORKDIR=/absolute/path/to/your/project
 ```
 
-如果你接的是 `local_ai_inference_platform`，推荐直接使用 `service token` 鉴权，而不是 Bearer API Key。
+如果你接的是 `OpenVitamin`，推荐直接使用 `service token` 鉴权，而不是 Bearer API Key。
 
 推荐配置说明：
 
