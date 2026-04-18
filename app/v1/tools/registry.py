@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.contracts.tool import ToolCall, ToolDefinition, ToolResult
+from app.core.config import BASE_DIR
 from app.core.logger import get_logger
 from app.v1.tools.append_file import AppendFileTool
 from app.v1.tools.base import DummyTool, Tool
@@ -27,7 +28,13 @@ class ToolRegistry:
 
     def __init__(self, workspace_root: str | Path | None = None) -> None:
         self._tools: dict[str, Tool] = {}
-        self.workspace_root = Path(workspace_root).expanduser().resolve() if workspace_root else None
+        # ToolRegistry 与 Tool 基类保持一致：未显式指定 workdir 时，默认回退到仓库根目录。
+        # 这样 direct tool inference 不会因为 workspace_root 为 None 而在 Path 拼接时崩溃。
+        self.workspace_root = (
+            Path(workspace_root).expanduser().resolve()
+            if workspace_root
+            else BASE_DIR.resolve()
+        )
         self._router = ToolRouter(self)
         # 缓存 DocumentRetriever 实例，避免每次创建工具时重新初始化 Chroma 和 Embedding Provider
         self._cached_retriever: DocumentRetriever | None = None
