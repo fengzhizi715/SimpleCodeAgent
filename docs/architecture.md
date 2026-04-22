@@ -29,6 +29,35 @@
 - `v1` 作为可运行、可演示的单 Agent 版本持续可用
 - `v2` 在不破坏 `v1` 的前提下逐步演进为多 Agent 实现
 
+### 架构分层图（共享底座 + 版本实现）
+
+```mermaid
+flowchart TB
+  U[CLI / API 输入] --> A[app/api + app/main]
+  A --> R1[app/v1 运行时]
+  A --> R2[app/v2 预留]
+
+  subgraph Shared[共享底座]
+    C[app/contracts]
+    K[app/core]
+    L[app/llm]
+    D[app/db]
+    T[app/trace]
+  end
+
+  R1 --> C
+  R1 --> K
+  R1 --> L
+  R1 --> D
+  R1 --> T
+
+  R2 -.未来复用.-> C
+  R2 -.未来复用.-> K
+  R2 -.未来复用.-> L
+  R2 -.未来复用.-> D
+  R2 -.未来复用.-> T
+```
+
 ## 2. v1 主链路
 
 一次典型的 `v1` 运行流程如下：
@@ -46,6 +75,36 @@
    - session memory
    - run metadata
    - trace timeline
+
+### v1 运行时主链路图
+
+```mermaid
+sequenceDiagram
+  participant User as 用户
+  participant Entry as CLI/API
+  participant Loop as AgentLoop
+  participant LLM as LLMProvider
+  participant Tools as ToolRegistry/Router
+  participant Mem as SessionMemory
+  participant Trace as TraceRecorder
+
+  User->>Entry: task + version + workdir
+  Entry->>Loop: run(request)
+  Loop->>Mem: load(session_id)
+  Loop->>Trace: run_started
+  Loop->>LLM: chat(messages, tools)
+  LLM-->>Loop: answer 或 tool_calls
+  alt 返回 tool_calls
+    Loop->>Tools: route(tool_name, arguments)
+    Tools-->>Loop: ToolResult
+    Loop->>Trace: tool_called / tool_result
+    Loop->>LLM: 带工具结果继续下一轮
+  else 返回最终答案
+    Loop->>Trace: run_finished
+  end
+  Loop->>Mem: append(messages)
+  Loop-->>Entry: RunResult
+```
 
 ## 3. Planner 与普通单轮运行的关系
 
@@ -89,6 +148,20 @@ Runtime 不直接操作文件系统，也不直接执行 shell。所有外部动
 - 行为更容易审计
 - 工具失败可以统一回填给模型处理
 - 后续 `v2` 可以复用相同的工具协议
+
+### Tool 路由与执行图
+
+```mermaid
+flowchart LR
+  A[LLM ToolCall / direct call] --> B[ToolRouter]
+  B --> C{ToolRegistry.get(name)}
+  C -- 未找到 --> E[统一错误 ToolResult]
+  C -- 找到 --> D[Tool.execute(arguments)]
+  D -- 成功 --> F[成功 ToolResult]
+  D -- 异常 --> E
+  E --> G[回填给 Runtime]
+  F --> G
+```
 
 当前 `ToolRegistry` 还支持配置工作目录，用于分析指定本地项目目录，而不是只分析当前仓库。
 
@@ -150,6 +223,23 @@ Trace 同时保留两种形式：
 
 - 主业务数据统一落到 SQLite
 - 向量检索仍交给 Chroma 处理
+
+### 数据与可观测性落盘图
+
+```mermaid
+flowchart TB
+  subgraph Runtime[v1 Runtime]
+    X[AgentLoop / PlanExecutor]
+  end
+
+  X --> M[(.simple_code_agent.sqlite3)]
+  X --> J[.traces/<run_id>.jsonl]
+  X --> V[(.chroma/chroma.sqlite3)]
+
+  M --> M1[sessions/messages/runs/trace metadata/summary]
+  J --> J1[完整事件流]
+  V --> V1[RAG 向量索引]
+```
 
 ## 8. 为什么 v1 和 v2 要分目录
 
