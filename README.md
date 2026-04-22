@@ -125,7 +125,7 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 开发者架构说明见：
 
 - [docs/architecture.md](docs/architecture.md)
-- [docs/roadmap.md](docs/roadmap.md)
+- [docs/teaching_roadmap.md](docs/teaching_roadmap.md)
 - [docs/demo_scenarios.md](docs/demo_scenarios.md)
 
 ## 常用入口
@@ -151,7 +151,7 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
 - 演示脚本：[`docs/demo_scenarios.md`](docs/demo_scenarios.md)
-- 演进路线：[`docs/roadmap.md`](docs/roadmap.md)
+- 演进路线：[`docs/teaching_roadmap.md`](docs/teaching_roadmap.md)
 
 ## 当前限制
 
