@@ -81,7 +81,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   participant User as 用户
-  participant Entry as CLI or API
+  participant Entry as CLI_API
   participant Loop as AgentLoop
   participant LLM as LLMProvider
   participant Registry as ToolRegistry
@@ -90,15 +90,15 @@ sequenceDiagram
   participant Mem as SessionMemory
   participant Trace as TraceRecorder
 
-  User->>Entry: task + version + workdir
-  Entry->>Loop: run(request)
+  User->>Entry: submit task
+  Entry->>Loop: start run
   Loop->>Mem: load(session_id)
   Loop->>Trace: run_started
-  loop while step_count < max_steps
-    Loop->>Loop: step_count += 1
+  loop each step before max_steps
+    Loop->>Loop: increase step_count
     Loop->>Trace: step_started
     Loop->>Trace: llm_called
-    Loop->>LLM: chat(messages, tool_definitions)
+    Loop->>LLM: chat with messages and tools
     LLM-->>Loop: answer or tool_calls
     Loop->>Trace: llm_responded
     alt model returns tool_calls
@@ -116,32 +116,32 @@ sequenceDiagram
         Loop->>Trace: tool_called
         Loop->>Trace: tool_result
       end
-      Loop->>Loop: append assistant/tool messages
-      Loop->>Loop: continue next step
+      Loop->>Loop: append assistant and tool messages
+      Loop->>Loop: continue
     else model returns empty or failed result
       Loop->>Trace: run_failed
-      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Mem: append new messages
       Loop->>Trace: memory_written
-      Loop-->>Entry: fallback RunResult(status=failed)
+      Loop-->>Entry: return fallback failed result
     else model returns final answer text
-      Loop->>Loop: set status=completed
+      Loop->>Loop: mark completed
       Loop->>Trace: run_finished
-      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Mem: append new messages
       Loop->>Trace: memory_written
-      Loop-->>Entry: RunResult(status=completed)
+      Loop-->>Entry: return completed result
     end
     opt run timeout
       Loop->>Trace: run_failed
-      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Mem: append new messages
       Loop->>Trace: memory_written
-      Loop-->>Entry: fallback RunResult(status=failed)
+      Loop-->>Entry: return timeout fallback result
     end
   end
   opt max_steps reached
     Loop->>Trace: run_failed
-    Loop->>Mem: append(new user/assistant/tool)
+    Loop->>Mem: append new messages
     Loop->>Trace: memory_written
-    Loop-->>Entry: fallback RunResult(status=max_steps_exceeded)
+    Loop-->>Entry: return max_steps_exceeded result
   end
 ```
 
