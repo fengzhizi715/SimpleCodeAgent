@@ -4,9 +4,9 @@
 
 如果你准备继续维护项目实现，而不是只做使用验证，建议同时阅读：
 
-- [architecture.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/architecture.md)
-- [AGENTS.md](/Users/tony/PycharmProjects/SimpleCodeAgent/AGENTS.md)
-- [demo_scenarios.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/demo_scenarios.md)
+- [architecture.md](./architecture.md)
+- [AGENTS.md](../AGENTS.md)
+- [demo_scenarios.md](./demo_scenarios.md)
 
 ## 1. 环境准备
 
@@ -343,7 +343,7 @@ curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 
 如果你想按固定场景做能力演示，而不是自由提问，推荐阅读：
 
-- [demo_scenarios.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/demo_scenarios.md)
+- [demo_scenarios.md](./demo_scenarios.md)
 
 其中整理了 3 个适合当前 `v1` 的演示脚本：
 
@@ -390,9 +390,9 @@ WRITE_VALIDATION_MODE=permissive
 
 当前项目使用两套持久化：
 
-- 主业务库：[.simple_code_agent.sqlite3](/Users/tony/PycharmProjects/SimpleCodeAgent/.simple_code_agent.sqlite3)
+- 主业务库：`.simple_code_agent.sqlite3`
   - 保存 session、messages、runs、trace、summary
-- 向量库：[.chroma/chroma.sqlite3](/Users/tony/PycharmProjects/SimpleCodeAgent/.chroma/chroma.sqlite3)
+- 向量库：`.chroma/chroma.sqlite3`
   - 保存 RAG 检索所需的向量数据
 
 ## 9. 日志说明
