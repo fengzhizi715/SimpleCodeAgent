@@ -111,6 +111,21 @@ flowchart TD
 
 说明：上图用 `flowchart` 替代 `sequenceDiagram`，避免 GitHub Mermaid 对嵌套 `loop` 解析不稳定。控制流与 `app/v1/runtime/loop.py` 一致：先进入 `while`，再检查超时，再递增 `step_count`，再发起 LLM 调用。
 
+### v1 运行时主链路图（简版）
+
+```mermaid
+flowchart LR
+  U[用户] --> E[CLI 或 API]
+  E --> L[AgentLoop]
+  L --> R[RuntimeExecutor 调 LLM]
+  R --> X{需要工具吗}
+  X -->|是| T[ToolRegistry 执行工具]
+  T --> L
+  X -->|否| Y[输出最终答案]
+  L --> Z[Trace 与 Memory 落盘]
+  Y --> Z
+```
+
 ## 3. Planner 与普通单轮运行的关系
 
 `v1` 不做复杂 workflow runtime，但已经把“主循环”和“规划步骤执行”拆成了不同职责：
