@@ -178,6 +178,6 @@ Trace 同时保留两种形式：
 
 ## 10. 后续推荐阅读
 
-- [README.md](/Users/tony/PycharmProjects/SimpleCodeAgent/README.md)
-- [docs/usage_guide.md](/Users/tony/PycharmProjects/SimpleCodeAgent/docs/usage_guide.md)
-- [AGENTS.md](/Users/tony/PycharmProjects/SimpleCodeAgent/AGENTS.md)
+- [README.md](../README.md)
+- [docs/usage_guide.md](./usage_guide.md)
+- [AGENTS.md](../AGENTS.md)
