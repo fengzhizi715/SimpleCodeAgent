@@ -1,112 +1,344 @@
-# Roadmap（教学导向）
+# Roadmap（课程 12 节版）
 
-本仓库的长期定位是 **编程智能体 / Agent Runtime 的教学样例**：代码可读、边界清晰、可观测、可渐进扩展，而不是追求「最强生产级框架」。
+本文档用于把 `Simple Code Agent` 项目路线与课程大纲对齐。目标是让每一节课都能对应到：
 
-下文从 **教学目标**、**学习路径**、**技术演进**、**里程碑** 四个维度描述规划，便于备课与迭代。
+- 明确的工程概念
+- 可定位的代码目录
+- 可复现的课堂 Demo
+- 可观测、可验收的学习产出
 
----
-
-## 1. 教学定位与原则
-
-### 1.1 我们希望学员带走什么
-
-- 理解 **Tool 驱动** 的 Agent：外部动作只通过 Tool，Runtime 负责循环与状态。
-- 理解 **Contract 优先**：跨模块用 Pydantic 模型，而不是散落字典。
-- 能读懂并调试一条完整链路：**请求 → LLM → tool call → 回填 → Trace / Memory**。
-- 建立 **能力边界** 意识：小范围可验证任务 vs 全自动软件工程。
-
-### 1.2 仓库为教学服务的硬性原则
-
-- **v1 保持简单稳定**：主循环可预测、步数可控、易打断点；不把 v1 做成复杂 workflow 引擎。
-- **可观测优先**：每次运行有 `run_id`、Trace 时间线，便于课堂演示与作业批改。
-- **双版本隔离**：`v1` 打基础，`v2` 承载进阶实验，避免「为了演示而改乱底座」。
-- **文档与示例同步演进**：改行为必改 `usage_guide` / `demo_scenarios` / 相关测试或可复现脚本。
+项目整体遵循：`v1` 作为稳定教学主线，`v2` 作为进阶扩展方向。
 
 ---
 
-## 2. 建议学习路径（可按周拆课）
+## 0. 课程总目标与边界
 
-下列顺序与当前代码结构大致对应，教师可按课时裁剪。
+### 总目标
 
-| 阶段 | 主题 | 建议阅读 / 实践 |
-|------|------|-----------------|
-| L0 | 环境与一次完整运行 | `README.md`、`docs/usage_guide.md` 前几节；跑通 CLI 或 API |
-| L1 | Contract 与配置 | `app/contracts`、`app/core/config.py`；理解 `RunRequest` / `ToolResult` 等 |
-| L2 | LLM Provider 与 tool 解析 | `app/llm`；理解「模型输出如何变成结构化 tool call」 |
-| L3 | Tool Registry / Router | `app/v1/tools/registry.py`、`router.py`；可结合仓库内针对 Tool 的单元测试 |
-| L4 | Agent 主循环 | `app/v1/runtime/loop.py`；步数上限、结束条件、错误回填 |
-| L5 | Memory 与 Session | `app/v1/memory`、`app/db`；理解 `run_id` vs `session_id` |
-| L6 | Trace 与排错 | `app/trace`；用 `scripts/view_trace.py` 或 API 看时间线 |
-| L7 | Planner 与确定性步骤 | `app/v1/planner`、`plan_executor.py`、`direct_tool_executor.py` |
-| L8 | RAG（选修） | `docs/rag_usage.md`、`app/v1/rag`；导入文档 + `retrieve_docs` |
-| L9 | 多 Agent（进阶选修） | `app/v2` 规划；与 v1 对比「编排复杂度」 |
+结课时，学员可以独立完成一个轻量编程执行型 CodeAgent，具备：
 
-**课堂演示脚本** 可统一使用 [`docs/demo_scenarios.md`](./demo_scenarios.md)。
+- 搜索项目代码
+- 阅读和理解文件
+- 根据 docs 生成/修改简单实现
+- 完成小范围 CRUD 与 bugfix
+- 执行测试并分析失败
+- 输出可查询 Trace
 
----
+### 边界（避免课程失焦）
 
-## 3. 技术演进方向（仍对齐教学）
-
-### 3.1 v1（当前主线）
-
-**目标**：作为 **默认教材版本** —— 稳定、可运行、可讲解、可布置作业。
-
-教学上优先强化的方向：
-
-- **错误可解释**：工具失败、校验拒绝、超时等，返回信息与 Trace 一致，便于学员对照日志。
-- **小步可验证**：与「小范围编程任务」一致，配套 demo 工作区与 pytest 片段。
-- **测试与示例**：关键路径（如 Tool 路由、Planner 分支）有轻量测试，避免「只能口头讲无法验收」。
-
-明确 **非目标**（避免课程范围失控）：
-
-- 大规模自动重构、自动部署、无边界 shell。
-- 在 v1 内堆叠完整 DAG / 企业级编排引擎。
-
-### 3.2 v2（预留进阶线）
-
-**目标**：在 **不破坏 v1 讲义与实验** 的前提下，提供 **第二学期或选修模块** 的实验场。
-
-候选主题（与智能体工程课天然契合）：
-
-- Coordinator / Worker / Reviewer 等角色分工。
-- 多 Agent 上下文隔离与权限边界。
-- 更复杂的规划与执行编排（仍建议保持「可读」优于「万能」）。
-
-**进入 v2 的原则**：
-
-- 讲义与作业默认仍以 v1 为准；v2 标注为进阶。
-- 能力从 v1 抽象上提共享底座前，须在课堂或文档中说明「为何上提、边界是什么」。
+- 主线只覆盖 **小范围可验证编程任务**，不追求大规模自动化软件工程。
+- `v1` 不演进为复杂 workflow 引擎，复杂编排放到 `v2` 讨论。
+- 每节课以「可运行 + 可解释 + 可观测」为第一优先级。
 
 ---
 
-## 4. 里程碑（面向开课与维护）
+## 1. 12 节课程映射（按你的大纲）
 
-### M1：教学材料「一站式」
+### 第 1 节 Agent 工程范式与 CodeAgent 项目路线
 
-- README 作为导航；详细步骤集中在 `usage_guide`。
-- `demo_scenarios` 与课堂节奏对齐（每个场景对应明确学习目标与验收方式）。
-- 常见故障（超时、鉴权、workdir、session）有独立 FAQ 或可链接段落。
+**内容对齐**
 
-### M2：可教、可评、可复现
+- AI 应用三阶段：Prompt → Workflow → Agent
+- 真正的 Agent Runtime 定义（loop + tool + state + trace）
+- CodeAgent 最终 Demo 预览
+- 技术栈与目录结构导览
+- LLM Provider 抽象思想
 
-- 为 **Tool / Router / Planner / Trace** 等关键模块补充或整理 **短作业级** 测试或脚本（小而专，不要求全覆盖）。
-- Runtime 输出字段（如 `Direct Tool Execution Used`）在文档中有 **语义说明**，便于实验报告引用。
-- 保持「单节课内能 clone → 配置 → 跑通 → 看 trace」的端到端体验。
+**项目落点**
 
-### M3：进阶实验包（v2 最小原型）
+- `README.md`
+- `docs/architecture.md`
+- `app/llm`
+- `app/v1/runtime`
 
-- 实现最小多 Agent 流程（例如 Coordinator + 单 Worker），**单独目录、单独入口**。
-- 提供 **与 v1 对照** 的说明文档（复杂度、调试成本、适用场景）。
-- 可选：为教师提供「关闭 v2、仅 v1」的课程配置说明，降低第一节课的认知负荷。
+**平台穿插**
+
+- 推理平台价值：模型路由、trace、cost 可观测
 
 ---
 
-## 5. 欢迎你一起定调
+### 第 2 节 项目初始化与 LLM Provider 实现
 
-若你计划用于 **高校课程 / 企业内训 / 开源工作坊**，后续可在本文件或 `docs/` 中增补：
+**内容对齐**
 
-- 建议课时分配与作业 rubric；
-- 「学员必做」与「加分选做」清单；
-- 指定 Python 版本与依赖锁定策略（便于机房统一环境）。
+- 项目结构创建、`config` / `.env`
+- logging 规范
+- `LLMProvider` 抽象与 OpenAI-compatible client
 
-有具体课型（几周、每周几课时）时，可以把大纲发我，我可以把第 2 节学习路径改成与你的课表一一对应的版本。
+**Demo**
+
+- CLI 发起一次模型调用
+
+**项目落点**
+
+- `app/core/config.py`
+- `app/core/logger.py`
+- `app/llm/client.py`
+- `scripts/run_cli.py`
+
+---
+
+### 第 3 节 最小 Agent Loop：思考 → 行动 → 结束
+
+**内容对齐**
+
+- message contract
+- agent state
+- step 执行流程
+- final answer 判定
+
+**Demo**
+
+- Agent 完成一个简单问答/阅读任务
+
+**项目落点**
+
+- `app/contracts/message.py`
+- `app/contracts/run.py`
+- `app/v1/runtime/loop.py`
+- `app/v1/runtime/state.py`
+
+---
+
+### 第 4 节 Tool 系统设计：Contract 与 Registry
+
+**内容对齐**
+
+- tool schema
+- tool base class
+- registry
+- tool routing
+
+**Demo**
+
+- 注册 `dummy_tool` 并通过 `ToolRouter` 调用
+
+**平台穿插**
+
+- skill governance
+- tool 权限控制
+
+**项目落点**
+
+- `app/contracts/tool.py`
+- `app/v1/tools/base.py`
+- `app/v1/tools/registry.py`
+- `app/v1/tools/router.py`
+
+---
+
+### 第 5 节 代码操作工具：读 / 搜 / 写 / 执行
+
+**内容对齐**
+
+- `read_file`
+- `file_search`
+- `write_file`
+- `shell_run`
+
+**Demo**
+
+- Agent 搜索 TODO 并总结
+
+**项目落点**
+
+- `app/v1/tools/read_file.py`
+- `app/v1/tools/file_search.py`
+- `app/v1/tools/write_file.py`
+- `app/v1/tools/shell_run.py`
+
+---
+
+### 第 6 节 Memory 系统：让 Agent 具备上下文能力
+
+**内容对齐**
+
+- session memory
+- context 压缩策略
+- memory repository
+- 多轮任务串联
+
+**Demo**
+
+- 连续执行多个开发任务并复用上下文
+
+**项目落点**
+
+- `app/v1/memory/session_memory.py`
+- `app/v1/memory/repository.py`
+- `app/v1/memory/summary_memory.py`
+- `app/db`
+
+---
+
+### 第 7 节 RAG：让 Agent 能查文档与规范
+
+**内容对齐**
+
+- chunking
+- embedding
+- Chroma
+- retriever tool
+
+**Demo**
+
+- Agent 根据 docs 写代码
+
+**平台穿插**
+
+- embedding pipeline
+
+**项目落点**
+
+- `app/v1/rag/chunking.py`
+- `app/v1/rag/embeddings.py`
+- `app/v1/rag/vector_store.py`
+- `app/v1/tools/retrieve_docs.py`
+- `docs/rag_usage.md`
+
+---
+
+### 第 8 节 Planner：从分析任务到简单编程执行
+
+**内容对齐**
+
+- step list
+- 任务拆解
+- 执行顺序
+- step retry
+
+**Demo**
+
+- “新增一个工具类”任务
+
+**平台穿插**
+
+- DAG / workflow engine（作为对比，不进入 v1 主线实现）
+
+**项目落点**
+
+- `app/v1/planner/simple_planner.py`
+- `app/v1/runtime/plan_executor.py`
+- `app/v1/runtime/direct_tool_executor.py`
+
+---
+
+### 第 9 节 Runtime 稳定性：避免 Agent 失控
+
+**内容对齐**
+
+- `max_steps`
+- timeout
+- retry
+- error handling
+- fallback
+
+**Demo**
+
+- 定位并修复一次“无限循环 / 步数耗尽”问题
+
+**项目落点**
+
+- `app/v1/runtime/loop.py`
+- `app/llm/client.py`
+- `app/core/exceptions.py`
+
+---
+
+### 第 10 节 Trace 系统：Agent 可观测性
+
+**内容对齐**
+
+- trace event schema
+- jsonl recorder
+- trace repository
+- trace viewer
+
+**Demo**
+
+- 查看一次完整 coding run 的事件时间线
+
+**平台穿插**
+
+- 平台 trace timeline 对照演示
+
+**项目落点**
+
+- `app/contracts/trace.py`
+- `app/trace/recorder.py`
+- `app/trace/repository.py`
+- `scripts/view_trace.py`
+
+---
+
+### 第 11 节 服务化：CLI + FastAPI 接入
+
+**内容对齐**
+
+- run endpoint
+- streaming（现状与扩展点）
+- `run_id`
+- debug trace query
+
+**Demo**
+
+- Postman / curl 调用 Agent 服务
+
+**项目落点**
+
+- `app/api/server.py`
+- `app/api/routes/agent.py`
+- `app/api/routes/debug.py`
+- `app/main.py`
+
+---
+
+### 第 12 节 最终项目：轻量编程执行型 CodeAgent
+
+**最终能力展示**
+
+- Agent 搜索项目代码
+- 阅读文件
+- 根据 docs 写工具类
+- 新增简单 CRUD
+- 运行测试
+- 修复小 bug
+- 输出 trace
+
+**最后升级演示**
+
+- 切换本地推理平台模型
+- 多模型路由思想
+
+**项目落点**
+
+- 组合第 2~11 节全部模块做一次端到端验收
+- 建议使用 [`docs/demo_scenarios.md`](./demo_scenarios.md) 作为基础脚本
+
+---
+
+## 2. 阶段性里程碑（按开课节奏）
+
+### M1（第 1~4 节）：跑通最小闭环
+
+- 产出：能解释架构、能从 CLI 调模型、能注册并路由 `dummy_tool`。
+- 验收：学员可独立完成“最小 loop + tool call”演示。
+
+### M2（第 5~8 节）：形成编程执行能力
+
+- 产出：具备读搜写执工具链、memory、RAG、planner 基础能力。
+- 验收：学员可完成“根据 docs 新增一个小工具类”任务。
+
+### M3（第 9~12 节）：稳定性与服务化收口
+
+- 产出：具备稳定性治理、trace 观测、API 接入与最终整体验收。
+- 验收：学员可提交“可复现 demo + trace 证据 + 简短复盘”。
+
+---
+
+## 3. 教学实施建议（便于你后续扩展）
+
+- 每节课保持「概念 30% + 代码走读 30% + Demo 40%」。
+- 每次作业都要求附上 `run_id` 或关键 Trace 片段，减少“只贴结果不贴过程”。
+- 所有进阶话题（DAG、多 Agent 复杂编排）统一标注为「扩展阅读/选修」。
+- 若进入高校或企业内训，可补一份 rubric：正确性、可解释性、可观测性、工程整洁度。
