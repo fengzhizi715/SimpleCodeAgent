@@ -86,6 +86,7 @@ sequenceDiagram
   participant LLM as LLMProvider
   participant Registry as ToolRegistry
   participant Router as ToolRouter
+  participant Tool as Tool
   participant Mem as SessionMemory
   participant Trace as TraceRecorder
 
@@ -93,27 +94,55 @@ sequenceDiagram
   Entry->>Loop: run(request)
   Loop->>Mem: load(session_id)
   Loop->>Trace: run_started
-  loop until final answer or max_steps
+  loop while step_count < max_steps
+    Loop->>Loop: step_count += 1
+    Loop->>Trace: step_started
+    Loop->>Trace: llm_called
     Loop->>LLM: chat(messages, tool_definitions)
     LLM-->>Loop: answer or tool_calls
+    Loop->>Trace: llm_responded
     alt model returns tool_calls
-      Loop->>Router: route_tool_call(tool_call)
-      Router->>Registry: get(tool_name)
-      Registry-->>Router: tool instance or None
-      Router-->>Loop: ToolResult (ok or error)
-      Loop->>Trace: tool_called
-      Loop->>Trace: tool_result
-    else model returns final answer
-      Loop->>Loop: break loop
+      loop for each tool_call
+        Loop->>Registry: execute_tool_call(tool_call)
+        Registry->>Router: route_tool_call(tool_call)
+        Router->>Registry: get(tool_name)
+        Registry-->>Router: tool instance or None
+        opt tool exists
+          Router->>Tool: execute(arguments)
+          Tool-->>Router: ToolResult
+        end
+        Router-->>Registry: ToolResult
+        Registry-->>Loop: ToolResult
+        Loop->>Trace: tool_called
+        Loop->>Trace: tool_result
+      end
+      Loop->>Loop: append assistant/tool messages
+      Loop->>Loop: continue next step
+    else model returns empty or failed result
+      Loop->>Trace: run_failed
+      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Trace: memory_written
+      Loop-->>Entry: fallback RunResult(status=failed)
+    else model returns final answer text
+      Loop->>Loop: set status=completed
+      Loop->>Trace: run_finished
+      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Trace: memory_written
+      Loop-->>Entry: RunResult(status=completed)
+    end
+    opt run timeout
+      Loop->>Trace: run_failed
+      Loop->>Mem: append(new user/assistant/tool)
+      Loop->>Trace: memory_written
+      Loop-->>Entry: fallback RunResult(status=failed)
     end
   end
-  alt run succeeded
-    Loop->>Trace: run_finished
-  else run failed
+  opt max_steps reached
     Loop->>Trace: run_failed
+    Loop->>Mem: append(new user/assistant/tool)
+    Loop->>Trace: memory_written
+    Loop-->>Entry: fallback RunResult(status=max_steps_exceeded)
   end
-  Loop->>Mem: append(messages)
-  Loop-->>Entry: RunResult
 ```
 
 ## 3. Planner 与普通单轮运行的关系
