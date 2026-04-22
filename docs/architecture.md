@@ -81,10 +81,11 @@ flowchart TB
 ```mermaid
 sequenceDiagram
   participant User as 用户
-  participant Entry as CLI/API
+  participant Entry as CLI or API
   participant Loop as AgentLoop
   participant LLM as LLMProvider
-  participant Tools as ToolRegistry/Router
+  participant Registry as ToolRegistry
+  participant Router as ToolRouter
   participant Mem as SessionMemory
   participant Trace as TraceRecorder
 
@@ -92,15 +93,24 @@ sequenceDiagram
   Entry->>Loop: run(request)
   Loop->>Mem: load(session_id)
   Loop->>Trace: run_started
-  Loop->>LLM: chat(messages, tools)
-  LLM-->>Loop: answer 或 tool_calls
-  alt 返回 tool_calls
-    Loop->>Tools: route(tool_name, arguments)
-    Tools-->>Loop: ToolResult
-    Loop->>Trace: tool_called / tool_result
-    Loop->>LLM: 带工具结果继续下一轮
-  else 返回最终答案
+  loop until final answer or max_steps
+    Loop->>LLM: chat(messages, tool_definitions)
+    LLM-->>Loop: answer or tool_calls
+    alt model returns tool_calls
+      Loop->>Router: route_tool_call(tool_call)
+      Router->>Registry: get(tool_name)
+      Registry-->>Router: tool instance or None
+      Router-->>Loop: ToolResult (ok or error)
+      Loop->>Trace: tool_called
+      Loop->>Trace: tool_result
+    else model returns final answer
+      Loop->>Loop: break loop
+    end
+  end
+  alt run succeeded
     Loop->>Trace: run_finished
+  else run failed
+    Loop->>Trace: run_failed
   end
   Loop->>Mem: append(messages)
   Loop-->>Entry: RunResult
@@ -152,15 +162,20 @@ Runtime 不直接操作文件系统，也不直接执行 shell。所有外部动
 ### Tool 路由与执行图
 
 ```mermaid
-flowchart LR
-  A[LLM ToolCall / direct call] --> B[ToolRouter]
-  B --> C{ToolRegistry.get(name)}
-  C -- 未找到 --> E[统一错误 ToolResult]
-  C -- 找到 --> D[Tool.execute(arguments)]
-  D -- 成功 --> F[成功 ToolResult]
-  D -- 异常 --> E
-  E --> G[回填给 Runtime]
-  F --> G
+flowchart TD
+  A[ToolCall from model] --> B[ToolRouter.route_tool_call]
+  B --> C[Parse JSON arguments]
+  C --> D{Arguments valid JSON object}
+  D -- No --> E[Build error ToolResult]
+  D -- Yes --> F[ToolRegistry.get tool_name]
+  F --> G{Tool exists}
+  G -- No --> E
+  G -- Yes --> H[Tool.execute arguments]
+  H --> I{Execution success}
+  I -- Yes --> J[Success ToolResult]
+  I -- No --> E
+  E --> K[Return ToolResult is_error=true]
+  J --> L[Return ToolResult is_error=false]
 ```
 
 当前 `ToolRegistry` 还支持配置工作目录，用于分析指定本地项目目录，而不是只分析当前仓库。
