@@ -6,7 +6,6 @@
 
 - [architecture.md](./architecture.md)
 - [AGENTS.md](../AGENTS.md)
-- [demo_scenarios.md](./demo_scenarios.md)
 
 ## 1. 环境准备
 
@@ -341,9 +340,7 @@ curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 .venv/bin/pytest demo_workspace/tests/test_math_utils.py
 ```
 
-如果你想按固定场景做能力演示，而不是自由提问，推荐阅读：
-
-- [demo_scenarios.md](./demo_scenarios.md)
+如果你想按固定场景做能力演示，而不是自由提问，建议直接复用本节给出的 3 个演示任务。
 
 其中整理了 3 个适合当前 `v1` 的演示脚本：
 
