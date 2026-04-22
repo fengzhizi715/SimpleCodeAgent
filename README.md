@@ -126,110 +126,35 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/roadmap.md](docs/roadmap.md)
+- [docs/demo_scenarios.md](docs/demo_scenarios.md)
 
-## 启动方式
+## 常用入口
 
-模块入口仍然保留，适合快速本地验证：
+模块入口（快速本地验证）：
 
 ```bash
 python -m app.main "你好，介绍一下你自己" --version v1
 ```
 
-也可以用一键脚本：
+启动脚本：
 
 ```bash
 ./start.sh "你好，介绍一下你自己"
 ```
 
-## 环境变量
+## 文档导航
 
-- `APP_ENV`：运行环境，例如 `development`
-- `LOG_LEVEL`：日志级别，例如 `INFO`
-- `DEBUG`：是否开启调试，`true` 或 `false`
-- `LLM_BASE_URL`：OpenAI-compatible 服务地址
-- `LLM_AUTH_MODE`：鉴权方式，支持 `auto`、`bearer`、`service_token`、`none`
-- `LLM_API_KEY`：调用模型的 API Key
-- `LLM_SERVICE_TOKEN`：用于 `X-Service-Token` 的服务令牌
-- `LLM_MODEL`：模型名
-- `LLM_TIMEOUT`：请求超时时间，单位秒
-- `LLM_REASONING_PARAM_STYLE`：控制 `reasoning_mode` 如何映射到 Provider 请求参数
-  - `none`：不映射，只作为运行元数据保留
-  - `reasoning_effort`：映射为 `reasoning_effort=<mode>`
-  - `reasoning_object`：映射为 `reasoning={"effort": "<mode>"}`
-  - 具体使用哪一种，取决于你接入的 OpenAI-compatible 服务支持哪种字段风格
-- `WRITE_VALIDATION_MODE`：控制 direct `write_file` 前的内容完整性校验策略
-  - `strict`：默认值；内容疑似截断或 Python 语法不通过时拒绝落盘
-  - `permissive`：只要提取到 `path + content` 就允许落盘，更适合演示成功率优先的场景
-- `SESSION_ID`：默认会话 ID。`.env` 或系统环境变量中配置后，CLI 和 `./start.sh` 在未显式传 `--session-id` 时都会使用它
-- `WORKDIR`：默认目标工作目录。配置后，CodeAgent 会在这个目录下进行读写、搜索和 shell 执行
-
-当同时使用 `SESSION_ID` 和 `WORKDIR` 时，系统会自动派生项目级 session id，避免同一个会话在不同项目之间串上下文。
-
-CLI 和模块入口还会输出：
-
-- `Direct Tool Execution Used`
-
-该字段表示当前运行是否使用了 planner 的确定性工具执行路径，而不是完全依赖模型主动发起 `tool_calls`。
-
-## 日志说明
-
-项目当前同时输出控制台日志和文件日志。
-
-日志文件默认保存在项目根目录下的 `logs/`：
-
-```text
-logs/app.log
-```
-
-文件日志按天滚动，并默认只保留最近 30 天，避免日志长期无限增长。
-
-日志格式如下：
-
-```text
-2026-04-10 21:00:00 | INFO | app.llm.client | run_id=... | session_id=... | Sending LLM request: model=...
-```
-
-日志至少包含：
-
-- 时间
-- 级别
-- 模块名
-- `run_id`
-- `session_id`
-- 明确消息
-
-因此排查时可以很快判断：
-
-- 是哪一层输出的日志
-- 是 `INFO` 还是 `ERROR`
-- 是配置装配问题、模型调用问题，还是工具执行问题
-
-可以通过 `LOG_LEVEL` 控制日志级别，例如：
-
-```env
-LOG_LEVEL=INFO
-```
+- 使用与演示：[`docs/usage_guide.md`](docs/usage_guide.md)
+- 架构与边界：[`docs/architecture.md`](docs/architecture.md)
+- Runtime 约束：[`docs/agent_runtime.md`](docs/agent_runtime.md)
+- Tool 总览：[`docs/tooling.md`](docs/tooling.md)
+- RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
+- 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
+- 演示脚本：[`docs/demo_scenarios.md`](docs/demo_scenarios.md)
+- 演进路线：[`docs/roadmap.md`](docs/roadmap.md)
 
 ## 当前限制
 
 - `v2` 入口只预留，还没有多 Agent 实现
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入
-
-## 验收
-
-满足以下目标：
-
-- 能读取 `.env`
-- 日志能正常输出
-- `python -m app.main "hello"` 能发起模型调用
-- 支持切换模型名和 `base_url`
-- 核心对象通过 Pydantic 校验
-- 最小 Agent Loop 能生成 `run_id` 并累计 `step_count`
-- Tool call 能执行并把结果回传到下一轮 LLM
-- 提供基础代码操作工具集
-- 统一约定工具错误处理：收到 `ok=false` 后先诊断再决定是否重试
-- 支持基于 SQLite 的 session memory
-- 提供统一 SQLite 持久化层，保存 session / run / trace metadata
-- 支持简单 Planner：拆解复杂任务并顺序执行步骤
-- CLI / API 支持显式 `version` 选择入口
