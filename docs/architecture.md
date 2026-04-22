@@ -79,71 +79,37 @@ flowchart TB
 ### v1 运行时主链路图
 
 ```mermaid
-sequenceDiagram
-  participant User as 用户
-  participant Entry as CLI_API
-  participant Loop as AgentLoop
-  participant LLM as LLMProvider
-  participant Registry as ToolRegistry
-  participant Router as ToolRouter
-  participant Tool as Tool
-  participant Mem as SessionMemory
-  participant Trace as TraceRecorder
+flowchart TD
+  U[用户] --> E[CLI 或 API]
+  E --> A[AgentLoop.run 开始]
+  A --> M0[SessionMemory 读取历史]
+  A --> T0[Trace run_started]
+  A --> S{while step_count 小于 max_steps}
 
-  User->>Entry: submit task
-  Entry->>Loop: start run
-  Loop->>Mem: load(session_id)
-  Loop->>Trace: run_started
-  loop each step before max_steps
-    Loop->>Loop: increase step_count
-    Loop->>Trace: step_started
-    Loop->>Trace: llm_called
-    Loop->>LLM: chat with messages and tools
-    LLM-->>Loop: answer or tool_calls
-    Loop->>Trace: llm_responded
-    alt model returns tool_calls
-      loop for each tool_call
-        Loop->>Registry: execute_tool_call(tool_call)
-        Registry->>Router: route_tool_call(tool_call)
-        Router->>Registry: get(tool_name)
-        Registry-->>Router: tool instance or None
-        opt tool exists
-          Router->>Tool: execute(arguments)
-          Tool-->>Router: ToolResult
-        end
-        Router-->>Registry: ToolResult
-        Registry-->>Loop: ToolResult
-        Loop->>Trace: tool_called
-        Loop->>Trace: tool_result
-      end
-      Loop->>Loop: append assistant and tool messages
-      Loop->>Loop: continue
-    else model returns empty or failed result
-      Loop->>Trace: run_failed
-      Loop->>Mem: append new messages
-      Loop->>Trace: memory_written
-      Loop-->>Entry: return fallback failed result
-    else model returns final answer text
-      Loop->>Loop: mark completed
-      Loop->>Trace: run_finished
-      Loop->>Mem: append new messages
-      Loop->>Trace: memory_written
-      Loop-->>Entry: return completed result
-    end
-    opt run timeout
-      Loop->>Trace: run_failed
-      Loop->>Mem: append new messages
-      Loop->>Trace: memory_written
-      Loop-->>Entry: return timeout fallback result
-    end
-  end
-  opt max_steps reached
-    Loop->>Trace: run_failed
-    Loop->>Mem: append new messages
-    Loop->>Trace: memory_written
-    Loop-->>Entry: return max_steps_exceeded result
-  end
+  S -->|否 循环结束| F1[Trace run_failed 并 持久化 返回 max_steps_exceeded]
+  S -->|是| O{是否超过 run_timeout}
+
+  O -->|是| F2[Trace run_failed 并 持久化 返回 timeout]
+  O -->|否| P[step_count 加一]
+  P --> T1[Trace step_started]
+  T1 --> T2[Trace llm_called]
+  T2 --> L[RuntimeExecutor 调用 LLMProvider.chat]
+  L --> T3[Trace llm_responded]
+
+  T3 --> B{本轮响应类型}
+
+  B -->|含 tool_calls| H[处理每个 tool_call]
+  H --> R[ToolRegistry.execute_tool_call]
+  R --> Z[ToolRouter.route_tool_call 与 Tool.execute]
+  Z --> T4[Trace tool_called 与 tool_result]
+  T4 --> C[消息追加 assistant 与 tool 并回到 while]
+  C --> S
+
+  B -->|无 tool_calls 且 为回退或空结果| F3[Trace run_failed 并 持久化 返回 failed]
+  B -->|无 tool_calls 且 有最终文本| D[Trace run_finished 并 持久化 返回 completed]
 ```
+
+说明：上图用 `flowchart` 替代 `sequenceDiagram`，避免 GitHub Mermaid 对嵌套 `loop` 解析不稳定。控制流与 `app/v1/runtime/loop.py` 一致：先进入 `while`，再检查超时，再递增 `step_count`，再发起 LLM 调用。
 
 ## 3. Planner 与普通单轮运行的关系
 
