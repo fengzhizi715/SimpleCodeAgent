@@ -126,7 +126,72 @@ flowchart LR
   Y --> Z
 ```
 
-## 3. Planner 与普通单轮运行的关系
+## 3. v2 主链路（中心化多 Agent）
+
+`v2` 当前采用“中心化 orchestrator + 多角色 Agent + shared workspace”的实现方式。
+
+### v2 组件关系图
+
+```mermaid
+flowchart TB
+  U[用户任务] --> O[OrchestratorRuntime]
+  O --> P[PlannerAgent]
+  O --> A[AnalystAgent]
+  O --> C[CoderAgent]
+  O --> T[TesterAgent]
+  O --> R[ReviewerAgent 可选]
+
+  O --> W[SharedWorkspace]
+  O --> CB[ContextBuilder]
+  O --> AR[AgentRegistry]
+
+  subgraph Reuse[复用共享与 v1 能力]
+    LLM[app/llm]
+    TOOL[ToolRegistry 与 v1 tools]
+    DB[app/db]
+    TRACE[app/trace]
+    V1LOOP[v1 AgentLoop 供 Coder 复用]
+  end
+
+  P --> LLM
+  A --> TOOL
+  C --> V1LOOP
+  C --> TOOL
+  T --> TOOL
+  R --> TOOL
+
+  O --> DB
+  O --> TRACE
+  O --> LLM
+```
+
+### v2 Orchestrator 执行流程图（MVP）
+
+```mermaid
+flowchart TD
+  S[接收任务并初始化 run/workspace] --> P[委派 Planner 生成计划]
+  P --> Q{计划是否可用}
+  Q -->|否| F0[run_failed 返回]
+  Q -->|是| L[按 step 顺序委派目标 Agent]
+
+  L --> X{step 结果}
+  X -->|completed| U[更新 workspace 与 artifacts]
+  U --> R{是否还有下一步}
+  R -->|是| L
+  R -->|否| DONE[汇总最终答案 run_finished]
+
+  X -->|retryable 且 tester 失败| FB[回流给 Coder 修复]
+  FB --> K{回流是否成功}
+  K -->|是| L
+  K -->|否| RP
+
+  X -->|failed 或回流失败| RP{replan 次数未达上限}
+  RP -->|是| REPLAN[委派 Planner 重新规划]
+  REPLAN --> L
+  RP -->|否| FF[fail fast / fallback]
+```
+
+## 4. Planner 与普通单轮运行的关系
 
 `v1` 不做复杂 workflow runtime，但已经把“主循环”和“规划步骤执行”拆成了不同职责：
 
@@ -150,7 +215,7 @@ flowchart LR
 
 这样做的目标不是把 `v1` 变复杂，而是避免把规划、写入解析和主循环全部堆在一个文件里，降低调试成本。
 
-## 4. Tool 系统设计
+## 5. Tool 系统设计
 
 本项目的 Agent 是 Tool 驱动的。
 
@@ -196,7 +261,7 @@ flowchart TD
 - API 使用 `workdir`
 - `project_root` 仅作为历史兼容输入名保留
 
-## 5. Memory 与 Session 的边界
+## 6. Memory 与 Session 的边界
 
 本项目中有两个容易混淆的概念：
 
@@ -214,7 +279,7 @@ flowchart TD
 
 规划任务内部的中间步骤默认不会直接污染主会话记忆，只会把最终汇总结果回写到主会话。
 
-## 6. Trace 体系
+## 7. Trace 体系
 
 每次运行至少会记录这些事件：
 
@@ -235,7 +300,7 @@ Trace 同时保留两种形式：
 - SQLite `trace_index`
   - 适合按 `run_id` 做时间线查询
 
-## 7. 存储结构
+## 8. 存储结构
 
 当前项目存在两套持久化：
 
@@ -266,7 +331,7 @@ flowchart TB
   V --> V1[RAG 向量索引]
 ```
 
-## 8. 为什么 v1 和 v2 要分目录
+## 9. 为什么 v1 和 v2 要分目录
 
 这是当前仓库最重要的演进约束之一。
 
@@ -281,7 +346,7 @@ flowchart TB
 - 不应把 `v2` 的复杂编排直接堆进 `app/v1`
 - 成熟且稳定的能力，才考虑从 `v1/v2` 上提到共享底座
 
-## 9. 开发建议
+## 10. 开发建议
 
 建议优先遵循下面几条：
 
@@ -291,7 +356,7 @@ flowchart TB
 - 新增 `v2` 能力时，尽量通过清晰的 agent role 和 contract 做边界隔离
 - 新增工具时，优先保证结构化输入输出，而不是先堆复杂逻辑
 
-## 10. 后续推荐阅读
+## 11. 后续推荐阅读
 
 - [README.md](../README.md)
 - [docs/usage_guide.md](./usage_guide.md)
