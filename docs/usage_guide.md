@@ -318,6 +318,44 @@ curl -s http://127.0.0.1:8000/agent/run \
 curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 ```
 
+列出最近若干次 **V2** 运行（仅含已写入 `v2_workspaces` 的记录，供 Web UI 历史页等）：
+
+```bash
+curl -s 'http://127.0.0.1:8000/debug/v2/runs?limit=50&offset=0'
+```
+
+### 5.1 Web UI（V2 演示，可选）
+
+仓库内提供了最小 `Vue3 + Vite` 页面，用于在浏览器里提交 `v2` 任务并查看回放与 Trace。开发服务器会把 `/agent` 与 `/debug` 代理到本机 `8000` 上的 FastAPI，因此**请先按上文启动 `uvicorn`**，再启动前端。
+
+```bash
+cd webui
+npm install
+npm run dev
+```
+
+或在仓库根目录直接执行（脚本会先 `npm install` 再启动 Vite）：
+
+```bash
+./webui/start.sh
+```
+
+传给 Vite 的额外参数会原样透传，例如指定监听地址：
+
+```bash
+./webui/start.sh -- --host 127.0.0.1 --port 5173
+```
+
+然后打开终端提示的本地地址（默认 `http://127.0.0.1:5173`）。`POST /agent/run` 的鉴权仍由后端读取环境变量或请求体；若你未在浏览器里传 `api_key` / `service_token`，请保证服务端已配置 `LLM_API_KEY` 或 `LLM_SERVICE_TOKEN`。
+
+生产构建：
+
+```bash
+cd webui
+npm run build
+# 产物在 webui/dist/，可交给任意静态资源服务器托管
+```
+
 ## 6. Trace 查看
 
 除了通过 API 查询，也可以直接用脚本查看时间线：
@@ -397,9 +435,10 @@ WRITE_VALIDATION_MODE=permissive
 
 当前项目使用两套持久化：
 
-- 主业务库：`.simple_code_agent.sqlite3`
-  - 保存 session、messages、runs、trace、summary
-- 向量库：`.chroma/chroma.sqlite3`
+- 主业务库：`.simple_code_agent.sqlite3`（或环境变量 `SQLITE_DB_PATH` 指定的单文件路径）
+  - 保存 session、messages、runs、trace、summary、V2 workspace 等
+- 若仓库根目录仍遗留旧路径 `data/app.db`，在**未**设置 `SQLITE_DB_PATH` 且主库文件尚不存在时，程序会在首次连接时**自动**将其迁移为上述统一主库
+- 向量库：`.chroma/chroma.sqlite3`（不随主库环境变量变化）
   - 保存 RAG 检索所需的向量数据
 
 ## 9. 日志说明

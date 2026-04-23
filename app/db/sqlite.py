@@ -2,21 +2,54 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.core.config import BASE_DIR
+from app.core import config
+from app.core.config import get_sqlite_database_path
+from app.core.logger import get_logger
 from app.db.migrations import SCHEMA_STATEMENTS
+
+logger = get_logger(__name__)
+
+
+def _maybe_migrate_legacy_data_app_db(target: Path, *, legacy_path: Path) -> None:
+    """若曾使用根目录 data/app.db，在首次未指定自定义路径时迁移为统一库。"""
+    if (os.getenv("SQLITE_DB_PATH") or "").strip():
+        return
+    if not legacy_path.exists():
+        return
+    if target.exists() and legacy_path.resolve() != target.resolve():
+        logger.warning(
+            "旧库 %s 仍存在，且统一库 %s 已存在。请自行核对后删除其中一份。",
+            legacy_path,
+            target,
+        )
+        return
+    if target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("将旧库迁移为统一主库：%s -> %s", legacy_path, target)
+    shutil.move(str(legacy_path), str(target))
 
 
 class SQLiteDB:
     """带自动建表能力的 SQLite 封装。"""
 
     def __init__(self, db_path: str | Path | None = None) -> None:
-        self.db_path = Path(db_path) if db_path else BASE_DIR / ".simple_code_agent.sqlite3"
+        if db_path is not None:
+            self.db_path = Path(db_path)
+        else:
+            default_target = get_sqlite_database_path()
+            _maybe_migrate_legacy_data_app_db(
+                default_target, legacy_path=config.BASE_DIR / "data" / "app.db"
+            )
+            self.db_path = default_target
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._write_lock = threading.RLock()

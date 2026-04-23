@@ -7,7 +7,7 @@ from pathlib import Path
 from app.cli.entry import run_agent_task
 from app.contracts.agent import AgentResult, AgentTask, SharedWorkspace
 from app.contracts.message import ChatMessage
-from app.contracts.run import RunChoice, RunRequest, RunResult
+from app.contracts.run import RunChoice, RunMetrics, RunRequest, RunResult, RunUsage
 from app.db.sqlite import SQLiteDB
 from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
@@ -71,6 +71,8 @@ class FakeCoderLoop:
             step_count=1,
             status="completed",
             final_output="已完成最小改动。",
+            usage=RunUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            metrics=RunMetrics(llm_call_count=1, tool_call_count=2),
         )
 
 
@@ -143,7 +145,54 @@ def test_planner_agent_prefers_llm_structured_plan(tmp_path: Path) -> None:
     assert len(plan["steps"]) == 2
     assert plan["steps"][0]["suggested_agent"] == "analyst"
     assert plan["steps"][1]["tool_name"] == "write_file"
+    assert result.metrics is not None
+    assert result.metrics.llm_call_count == 1
     assert provider.requests, "planner should call LLM provider"
+
+
+def test_planner_agent_routes_summary_steps_to_analyst(tmp_path: Path) -> None:
+    provider = QueueProvider(
+        [
+            """
+            {
+              "summary": "analysis plan",
+              "steps": [
+                {
+                  "title": "总结目录与模块组织",
+                  "goal": "结合目录和关键文件内容，总结项目结构、模块职责和开发约定。",
+                  "type": "general",
+                  "description": "输出项目结构概述，不做代码修改",
+                  "suggested_agent": "coder",
+                  "input_requirements": ["目录结构", "关键文件"],
+                  "success_criteria": ["给出结构化项目总结"],
+                  "max_retries": 1
+                }
+              ]
+            }
+            """
+        ]
+    )
+    agent = PlannerAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="分析项目结构")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="分析项目结构",
+        step_type="planning",
+        target_agent="planner",
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=_make_context(tmp_path, provider),
+        prompt_context={},
+    )
+
+    step = result.output_data["plan"]["steps"][0]
+    assert step["type"] == "analysis"
+    assert step["suggested_agent"] == "analyst"
+    assert step["tool_name"] == "file_search"
 
 
 def test_tester_agent_prefers_targeted_test_command(tmp_path: Path) -> None:
@@ -175,6 +224,8 @@ def test_tester_agent_prefers_targeted_test_command(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert result.output_data["selected_command"] == "pytest -q tests/test_sample.py"
     assert result.output_data["test_report"]["status"] == "passed"
+    assert result.metrics is not None
+    assert result.metrics.tool_call_count == 1
 
 
 def test_analyst_agent_happy_path(tmp_path: Path) -> None:
@@ -198,6 +249,9 @@ def test_analyst_agent_happy_path(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert result.output_data["project_summary"]
     assert isinstance(result.output_data["key_files"], list)
+    assert "构建方式" in result.output_data["project_summary"]
+    assert result.metrics is not None
+    assert result.metrics.tool_call_count >= 2
 
 
 def test_coder_agent_happy_path(tmp_path: Path) -> None:
@@ -218,6 +272,10 @@ def test_coder_agent_happy_path(tmp_path: Path) -> None:
 
     assert result.status == "completed"
     assert "app/sample.py" in result.output_data["created_files"] or "app/sample.py" in result.output_data["modified_files"]
+    assert result.usage is not None
+    assert result.usage.total_tokens == 15
+    assert result.metrics is not None
+    assert result.metrics.tool_call_count == 2
 
 
 def test_reviewer_agent_happy_path(tmp_path: Path) -> None:

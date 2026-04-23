@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.contracts.agent import AgentArtifact, AgentResult, AgentSpec, AgentTask, SharedWorkspace, TestReport
+from app.contracts.run import RunMetrics
 from app.v2.agent_impls.llm_utils import parse_tool_content
 from app.v2.base import AgentBase, AgentContext
 
@@ -65,6 +66,7 @@ class TesterAgent(AgentBase):
                 agent_id=self.spec.agent_id,
                 status="failed",
                 summary=report.summary,
+                metrics=RunMetrics(tool_call_count=1, tool_error_count=1),
                 output_data={
                     "test_report": report.model_dump(),
                     "command_candidates": command_candidates,
@@ -96,6 +98,7 @@ class TesterAgent(AgentBase):
             agent_id=self.spec.agent_id,
             status="completed" if ok else "retryable",
             summary=report.summary,
+            metrics=RunMetrics(tool_call_count=1),
             output_data={
                 "test_report": report.model_dump(),
                 "command_candidates": command_candidates,

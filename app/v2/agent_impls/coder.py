@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from app.contracts.agent import AgentArtifact, AgentResult, AgentSpec, AgentTask, SharedWorkspace
+from app.contracts.run import RunMetrics
 from app.v1.runtime.loop import AgentLoop
 from app.v2.agent_impls.workspace_diff import build_workspace_diff, snapshot_workspace
 from app.v2.base import AgentBase, AgentContext
@@ -85,6 +86,8 @@ class CoderAgent(AgentBase):
             agent_id=self.spec.agent_id,
             status="completed" if result.status == "completed" else "failed",
             summary=summary,
+            usage=result.usage,
+            metrics=result.metrics or RunMetrics(),
             output_data={
                 "run_id": result.run_id,
                 "step_count": result.step_count,

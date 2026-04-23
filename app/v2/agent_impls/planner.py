@@ -6,6 +6,7 @@ import json
 
 from app.contracts.agent import AgentArtifact, AgentResult, AgentSpec, AgentTask, SharedWorkspace
 from app.contracts.planner import Plan, PlanStep
+from app.contracts.run import RunMetrics, RunResult, RunUsage
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v2.agent_impls.llm_utils import chat_json
 from app.v2.agent_impls.payloads import PLANNER_TOOL_HINTS, PlannerOutputPayload
@@ -45,7 +46,12 @@ class PlannerAgent(AgentBase):
         context: AgentContext,
         prompt_context: dict[str, object],
     ) -> AgentResult:
-        raw_plan = self._generate_plan(task=task, workspace=workspace, context=context, prompt_context=prompt_context)
+        raw_plan, usage, metrics = self._generate_plan(
+            task=task,
+            workspace=workspace,
+            context=context,
+            prompt_context=prompt_context,
+        )
         plan = Plan(
             summary=f"Plan for: {task.goal}",
             steps=[self._enrich_step(step) for step in raw_plan],
@@ -56,6 +62,8 @@ class PlannerAgent(AgentBase):
             agent_id=self.spec.agent_id,
             status="completed",
             summary=f"生成 {len(plan.steps)} 个步骤的执行计划。",
+            usage=usage,
+            metrics=metrics,
             output_data={"plan": plan.model_dump()},
             artifacts=[
                 AgentArtifact(
@@ -74,18 +82,22 @@ class PlannerAgent(AgentBase):
         workspace: SharedWorkspace,
         context: AgentContext,
         prompt_context: dict[str, object],
-    ) -> list[PlanStep]:
-        llm_plan = self._generate_plan_with_llm(
+    ) -> tuple[list[PlanStep], RunUsage | None, RunMetrics]:
+        llm_plan, llm_result = self._generate_plan_with_llm(
             task=task,
             workspace=workspace,
             context=context,
             prompt_context=prompt_context,
         )
+        metrics = RunMetrics(llm_call_count=1 if llm_result is not None else 0)
+        usage = llm_result.usage if llm_result is not None else None
         if llm_plan:
-            return llm_plan
+            return llm_plan, usage, metrics
         if self.planner.should_plan(task.goal):
-            return self.planner.create_plan(task.goal)
-        return [PlanStep(title="执行任务", goal=task.goal, description=task.goal)]
+            metrics.fallback_count += 1
+            return self.planner.create_plan(task.goal), usage, metrics
+        metrics.fallback_count += 1
+        return [PlanStep(title="执行任务", goal=task.goal, description=task.goal)], usage, metrics
 
     def _generate_plan_with_llm(
         self,
@@ -94,7 +106,7 @@ class PlannerAgent(AgentBase):
         workspace: SharedWorkspace,
         context: AgentContext,
         prompt_context: dict[str, object],
-    ) -> list[PlanStep] | None:
+    ) -> tuple[list[PlanStep] | None, RunResult | None]:
         system_prompt = (
             "You are the Planner Agent for SimpleCodeAgent V2. "
             "Return only valid JSON with keys summary and steps. "
@@ -113,15 +125,15 @@ class PlannerAgent(AgentBase):
                 "请输出 2-5 个可执行步骤，优先保持中心化调度、先分析再编码再验证。",
             ]
         )
-        payload = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
+        payload, llm_result = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
         if payload is None:
-            return None
+            return None, llm_result
         try:
             parsed = PlannerOutputPayload.model_validate(payload)
         except Exception:
-            return None
+            return None, llm_result
         if not parsed.steps:
-            return None
+            return None, llm_result
         return [
             PlanStep(
                 title=item.title,
@@ -134,11 +146,12 @@ class PlannerAgent(AgentBase):
                 max_retries=item.max_retries,
             )
             for item in parsed.steps
-        ]
+        ], llm_result
 
     def _enrich_step(self, step: PlanStep) -> PlanStep:
-        suggested_agent = step.suggested_agent or self._suggest_agent(step)
         step_type = step.type if step.type != "general" else self._infer_step_type(step)
+        routing_step = step.model_copy(update={"type": step_type})
+        suggested_agent = self._resolve_suggested_agent(step=routing_step)
         goal = step.goal or step.description or step.title
         input_requirements = list(step.input_requirements)
         success_criteria = list(step.success_criteria)
@@ -157,10 +170,18 @@ class PlannerAgent(AgentBase):
             }
         )
 
+    def _resolve_suggested_agent(self, *, step: PlanStep) -> str:
+        title = f"{step.title} {step.description}".lower()
+        if any(keyword in title for keyword in ("总结", "汇总", "概述", "summary", "summarize", "overview")):
+            return "analyst"
+        return step.suggested_agent or self._suggest_agent(step)
+
     def _infer_step_type(self, step: PlanStep) -> str:
         text = f"{step.title} {step.description} {step.tool_name or ''}".lower()
         if any(keyword in text for keyword in ("测试", "验证", "pytest", "test", "shell_run")):
             return "testing"
+        if any(keyword in text for keyword in ("总结", "汇总", "概述", "summary", "summarize", "overview")):
+            return "analysis"
         if any(keyword in text for keyword in ("查看", "搜索", "分析", "read", "search", "list")):
             return "analysis"
         if any(keyword in text for keyword in ("实现", "修复", "生成", "写入", "modify", "fix", "write")):
@@ -175,6 +196,8 @@ class PlannerAgent(AgentBase):
         if step.type == "coding" or step.tool_name in {"write_file", "replace_in_file", "multi_file_patch"}:
             return "coder"
         title = f"{step.title} {step.description}".lower()
+        if any(keyword in title for keyword in ("总结", "汇总", "概述", "summary", "summarize", "overview")):
+            return "analyst"
         if "测试" in title or "test" in title:
             return "tester"
         if "分析" in title or "查看" in title or "search" in title:

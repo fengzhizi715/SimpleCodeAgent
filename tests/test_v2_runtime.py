@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.contracts.agent import AgentResult, AgentSpec, AgentTask, SharedWorkspace, TestReport
 from app.contracts.planner import Plan, PlanStep
-from app.contracts.run import RunRequest, RunResult
+from app.contracts.run import RunMetrics, RunRequest, RunResult, RunUsage
 from app.db.sqlite import SQLiteDB
 from app.llm.client import LLMProvider
 from app.trace.repository import SQLiteTraceRepository
@@ -101,7 +101,15 @@ class FakeAnalystAgent(AgentBase):
             agent_id="analyst",
             status="completed",
             summary="分析完成",
-            output_data={"project_summary": "这是一个带 v1/v2 目录的示例工程。"},
+            usage=RunUsage(prompt_tokens=11, completion_tokens=7, total_tokens=18),
+            metrics=RunMetrics(llm_call_count=1, tool_call_count=3),
+            output_data={
+                "project_summary": "这是一个带 v1/v2 目录的示例工程。",
+                "module_responsibilities": {"app": "主体代码目录。", "tests": "测试目录。"},
+                "entry_files": ["app/main.py", "app/api/routes/agent.py"],
+                "key_files": [{"path": "app/main.py", "reason": "应用入口"}],
+                "coding_hints": ["优先从 app 和 tests 理解结构。"],
+            },
         )
 
 
@@ -129,6 +137,8 @@ class FakeCoderAgent(AgentBase):
             agent_id="coder",
             status="completed",
             summary="已修改 app/v2 相关代码。",
+            usage=RunUsage(prompt_tokens=20, completion_tokens=9, total_tokens=29),
+            metrics=RunMetrics(llm_call_count=1, tool_call_count=2),
             output_data={"final_output": "patched"},
         )
 
@@ -237,6 +247,7 @@ class FakeTesterAgent(AgentBase):
             agent_id="tester",
             status="completed",
             summary="测试通过。",
+            metrics=RunMetrics(tool_call_count=1),
             output_data={"test_report": report.model_dump()},
         )
 
@@ -264,8 +275,16 @@ def test_v2_runtime_orchestrates_agents_and_updates_workspace(tmp_path: Path) ->
     assert result.status == "completed"
     assert result.step_count == 3
     assert "项目分析：这是一个带 v1/v2 目录的示例工程。" in result.final_output
+    assert "模块职责：app: 主体代码目录。；tests: 测试目录。" in result.final_output
+    assert "关键文件：app/main.py(应用入口)" in result.final_output
+    assert "开发提示：优先从 app 和 tests 理解结构。" in result.final_output
     assert "代码改动：已修改 app/v2 相关代码。" in result.final_output
     assert "测试结果：passed，测试通过。" in result.final_output
+    assert result.usage is not None
+    assert result.usage.total_tokens == 47
+    assert result.metrics is not None
+    assert result.metrics.llm_call_count == 2
+    assert result.metrics.tool_call_count == 6
     assert any(event.event_type == "delegation_started" for event in result.trace)
     assert any(event.event_type == "agent_selected" for event in result.trace)
 

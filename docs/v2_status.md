@@ -24,6 +24,7 @@
 - 已经完成：
   - 多 Agent 基础协议
   - Registry / Workspace / Context Builder 基础版
+  - Agent 实现已拆分到 `app/v2/agent_impls/*`，职责边界更清晰
   - `Planner / Analyst / Coder / Tester` 四个角色的 P0 能力
   - `ReviewerAgent` 基础版
   - 中心化 `Orchestrator Runtime`
@@ -102,11 +103,14 @@
 - 按 `agent_id` 获取 Agent
 - 列出全部 Agent spec
 - 列出当前可用 Agent
+- 默认装配支持 `enable_reviewer` 开关
+- 提供教学/调试角色矩阵输出（`describe_agent_matrix` + CLI debug 命令）
 
 对应文件：
 
 - `app/v2/registry.py`
 - `app/v2/factory.py`
+- `app/v2/agent_impls/__init__.py`
 
 ### 2.3 Shared Workspace
 
@@ -408,6 +412,10 @@
 
 当前已支持 `CLI -> v2 runtime`。
 
+并已提供基础教学调试命令：
+
+- `python scripts/run_cli.py debug agent-matrix`
+
 但仍然还没有形成真正稳定的课程 Demo 闭环，例如：
 
 - 适合演示的固定任务脚本
@@ -505,9 +513,9 @@
 
 ### 4.10 V2 Demo 闭环
 
-当前还没有形成稳定的：
+当前已具备基础演示入口，但还没有形成稳定的完整闭环：
 
-- CLI demo
+- CLI demo（基础可用）
 - 教学 demo
 - 从用户任务到多 Agent trace 展示的完整演示路径
 
@@ -540,6 +548,8 @@
 - `CoderAgent` 已补齐文件列表 / diff 预览 / 风险摘要
 - `TesterAgent` 已增强命令选择与失败分类
 - CLI 已接入 `v2` 入口
+- Agent 已拆分到 `agent_impls/*` 并补齐基础 happy path 测试
+- CLI 已支持 `debug agent-matrix` 展示角色矩阵
 
 ### P1：已启动并完成基础版
 

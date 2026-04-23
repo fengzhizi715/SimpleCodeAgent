@@ -115,6 +115,8 @@ class OrchestratorRuntime:
         trace_events: list[TraceEvent] = []
         delegation_records: list[DelegationRecord] = []
         delegation_start_event_ids: dict[str, str] = {}
+        aggregate_usage = RunUsage()
+        aggregate_metrics = RunMetrics()
         started_at = datetime.now(UTC)
         self.v2_repository.ensure_session(session_id)
         self.v2_repository.ensure_run(
@@ -154,6 +156,11 @@ class OrchestratorRuntime:
             delegation_start_event_ids=delegation_start_event_ids,
             parent_event_id=run_started_event.id,
         )
+        self._accumulate_agent_result(
+            aggregate_usage=aggregate_usage,
+            aggregate_metrics=aggregate_metrics,
+            result=planner_result,
+        )
         if planner_result.status != "completed":
             return self._build_failure_result(
                 run_id=run_id,
@@ -163,6 +170,8 @@ class OrchestratorRuntime:
                 task=task,
                 message=planner_result.error_message or planner_result.summary,
                 trace_events=trace_events,
+                aggregate_usage=aggregate_usage,
+                aggregate_metrics=aggregate_metrics,
                 started_at=started_at,
                 step_count=0,
                 trace_recorder=trace_recorder,
@@ -202,6 +211,8 @@ class OrchestratorRuntime:
                     task=task,
                     message="已达到 V2 最大执行步数，系统主动停止以避免无限循环。",
                     trace_events=trace_events,
+                    aggregate_usage=aggregate_usage,
+                    aggregate_metrics=aggregate_metrics,
                     started_at=started_at,
                     step_count=executed_steps,
                     trace_recorder=trace_recorder,
@@ -230,6 +241,11 @@ class OrchestratorRuntime:
                 delegation_records=delegation_records,
                 delegation_start_event_ids=delegation_start_event_ids,
                 parent_event_id=run_started_event.id,
+            )
+            self._accumulate_agent_result(
+                aggregate_usage=aggregate_usage,
+                aggregate_metrics=aggregate_metrics,
+                result=result,
             )
             self._apply_agent_result(
                 result=result,
@@ -299,6 +315,8 @@ class OrchestratorRuntime:
                 task=task,
                 message=result.error_message or result.summary,
                 trace_events=trace_events,
+                aggregate_usage=aggregate_usage,
+                aggregate_metrics=aggregate_metrics,
                 started_at=started_at,
                 step_count=executed_steps,
                 trace_recorder=trace_recorder,
@@ -325,8 +343,8 @@ class OrchestratorRuntime:
             model=model,
             reasoning_mode=reasoning_mode,
             choices=[RunChoice(index=0, message=ChatMessage(role="assistant", content=final_output))],
-            usage=RunUsage(),
-            metrics=RunMetrics(duration_seconds=duration_seconds),
+            usage=aggregate_usage,
+            metrics=aggregate_metrics.model_copy(update={"duration_seconds": duration_seconds}),
             run_id=run_id,
             session_id=session_id,
             step_count=executed_steps,
@@ -398,6 +416,10 @@ class OrchestratorRuntime:
             delegation_tree=replay["delegation_tree"],  # type: ignore[arg-type]
         )
         return replay
+
+    def list_recent_runs_for_ui(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, object]]:
+        """返回最近若干次带 workspace 的 V2 运行摘要。"""
+        return self.v2_repository.list_recent_runs_with_workspace(limit=limit, offset=offset)
 
     def _call_agent(
         self,
@@ -719,11 +741,36 @@ class OrchestratorRuntime:
         delegation_records: list[DelegationRecord],
     ) -> str:
         lines = [f"目标：{workspace.user_goal}"]
-        if workspace.project_summary:
-            lines.append(f"项目分析：{workspace.project_summary}")
         analyst_context = workspace.private_context.get("analyst", {})
+        project_summary = str(analyst_context.get("project_summary") or workspace.project_summary).strip()
+        if project_summary:
+            lines.append(f"项目分析：{project_summary}")
+        module_responsibilities = analyst_context.get("module_responsibilities", {})
+        if isinstance(module_responsibilities, dict) and module_responsibilities:
+            pairs = [
+                f"{str(name)}: {str(summary)}"
+                for name, summary in list(module_responsibilities.items())[:6]
+                if str(name).strip() and str(summary).strip()
+            ]
+            if pairs:
+                lines.append(f"模块职责：{'；'.join(pairs)}")
         if analyst_context.get("entry_files"):
             lines.append(f"关键入口：{', '.join(str(item) for item in analyst_context['entry_files'][:5])}")
+        key_files = analyst_context.get("key_files", [])
+        if isinstance(key_files, list) and key_files:
+            key_file_labels: list[str] = []
+            for item in key_files[:5]:
+                if isinstance(item, dict) and item.get("path"):
+                    label = str(item["path"])
+                    reason = str(item.get("reason") or "").strip()
+                    key_file_labels.append(f"{label}({reason})" if reason else label)
+                elif isinstance(item, str):
+                    key_file_labels.append(item)
+            if key_file_labels:
+                lines.append(f"关键文件：{', '.join(key_file_labels)}")
+        coding_hints = analyst_context.get("coding_hints", [])
+        if isinstance(coding_hints, list) and coding_hints:
+            lines.append(f"开发提示：{'；'.join(str(item) for item in coding_hints[:3])}")
         if workspace.latest_patch_summary:
             lines.append(f"代码改动：{workspace.latest_patch_summary}")
         coder_context = workspace.private_context.get("coder", {})
@@ -750,6 +797,24 @@ class OrchestratorRuntime:
             lines.append(f"共执行 {len(delegation_records)} 次委派。")
         return "\n".join(lines)
 
+    def _accumulate_agent_result(
+        self,
+        *,
+        aggregate_usage: RunUsage,
+        aggregate_metrics: RunMetrics,
+        result: AgentResult,
+    ) -> None:
+        if result.usage is not None:
+            aggregate_usage.prompt_tokens += result.usage.prompt_tokens
+            aggregate_usage.completion_tokens += result.usage.completion_tokens
+            aggregate_usage.total_tokens += result.usage.total_tokens
+        if result.metrics is not None:
+            aggregate_metrics.llm_call_count += result.metrics.llm_call_count
+            aggregate_metrics.tool_call_count += result.metrics.tool_call_count
+            aggregate_metrics.tool_error_count += result.metrics.tool_error_count
+            aggregate_metrics.memory_write_count += result.metrics.memory_write_count
+            aggregate_metrics.fallback_count += result.metrics.fallback_count
+
     def _build_failure_result(
         self,
         *,
@@ -760,6 +825,8 @@ class OrchestratorRuntime:
         task: str,
         message: str,
         trace_events: list[TraceEvent],
+        aggregate_usage: RunUsage,
+        aggregate_metrics: RunMetrics,
         started_at: datetime,
         step_count: int,
         trace_recorder: JsonlTraceRecorder,
@@ -782,8 +849,8 @@ class OrchestratorRuntime:
             model=model,
             reasoning_mode=reasoning_mode,
             choices=[RunChoice(index=0, message=ChatMessage(role="assistant", content=message))],
-            usage=RunUsage(),
-            metrics=RunMetrics(duration_seconds=duration_seconds),
+            usage=aggregate_usage,
+            metrics=aggregate_metrics.model_copy(update={"duration_seconds": duration_seconds}),
             run_id=run_id,
             session_id=session_id,
             step_count=step_count,

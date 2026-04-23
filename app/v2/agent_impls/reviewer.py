@@ -12,6 +12,7 @@ from app.contracts.agent import (
     ReviewIssue,
     SharedWorkspace,
 )
+from app.contracts.run import RunMetrics, RunUsage
 from app.v2.agent_impls.llm_utils import chat_json, parse_tool_content
 from app.v2.agent_impls.payloads import ReviewOutputPayload
 from app.v2.base import AgentBase, AgentContext
@@ -51,7 +52,7 @@ class ReviewerAgent(AgentBase):
     ) -> AgentResult:
         coder_context = prompt_context.get("coder_context")
         analysis_context = prompt_context.get("analysis_context")
-        review_materials = self._collect_review_materials(
+        review_materials, tool_call_count = self._collect_review_materials(
             context=context,
             coder_context=coder_context if isinstance(coder_context, dict) else {},
             analysis_context=analysis_context if isinstance(analysis_context, dict) else {},
@@ -62,7 +63,7 @@ class ReviewerAgent(AgentBase):
             coder_context=coder_context if isinstance(coder_context, dict) else {},
             review_materials=review_materials,
         )
-        llm_review = self._build_llm_review(
+        llm_review, usage = self._build_llm_review(
             summary=workspace.latest_patch_summary,
             coder_context=coder_context if isinstance(coder_context, dict) else {},
             analysis_context=analysis_context,
@@ -90,6 +91,11 @@ class ReviewerAgent(AgentBase):
             agent_id=self.spec.agent_id,
             status="completed",
             summary=summary,
+            usage=usage,
+            metrics=RunMetrics(
+                llm_call_count=1 if usage is not None else 0,
+                tool_call_count=tool_call_count,
+            ),
             output_data=output_data,
             artifacts=[
                 AgentArtifact(
@@ -221,7 +227,7 @@ class ReviewerAgent(AgentBase):
         project_summary: str,
         review_materials: dict[str, dict[str, str]],
         context: AgentContext,
-    ) -> ReviewOutputPayload | None:
+    ) -> tuple[ReviewOutputPayload | None, RunUsage | None]:
         system_prompt = (
             "You are the Reviewer Agent for SimpleCodeAgent V2. "
             "Return only valid JSON with keys review_summary, issues, recommended_action. "
@@ -241,13 +247,13 @@ class ReviewerAgent(AgentBase):
                 "请做一次简洁但严格的 code review，指出 0-5 个最重要的问题。",
             ]
         )
-        payload = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
+        payload, llm_result = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
         if payload is None:
-            return None
+            return None, llm_result.usage if llm_result is not None else None
         try:
-            return ReviewOutputPayload.model_validate(payload)
+            return ReviewOutputPayload.model_validate(payload), llm_result.usage if llm_result is not None else None
         except Exception:
-            return None
+            return None, llm_result.usage if llm_result is not None else None
 
     def _merge_review_issues(
         self,
@@ -322,7 +328,7 @@ class ReviewerAgent(AgentBase):
         coder_context: dict[str, object],
         analysis_context: dict[str, object],
         task: AgentTask,
-    ) -> dict[str, dict[str, str]]:
+    ) -> tuple[dict[str, dict[str, str]], int]:
         diff_previews = {
             str(path): str(preview)
             for path, preview in (coder_context.get("diff_previews", {}) or {}).items()
@@ -333,7 +339,7 @@ class ReviewerAgent(AgentBase):
             values = coder_context.get(key, [])
             if isinstance(values, list):
                 changed_files.extend(str(value) for value in values if str(value).strip())
-        changed_file_snippets = self._read_file_snippets(
+        changed_file_snippets, changed_read_count = self._read_file_snippets(
             context=context,
             paths=changed_files[:4],
             task=task,
@@ -347,17 +353,20 @@ class ReviewerAgent(AgentBase):
                     key_files.append(str(item["path"]))
                 elif isinstance(item, str):
                     key_files.append(item)
-        key_file_snippets = self._read_file_snippets(
+        key_file_snippets, key_read_count = self._read_file_snippets(
             context=context,
             paths=key_files,
             task=task,
             prefix="review-key",
         )
-        return {
-            "diff_previews": diff_previews,
-            "changed_file_snippets": changed_file_snippets,
-            "key_file_snippets": key_file_snippets,
-        }
+        return (
+            {
+                "diff_previews": diff_previews,
+                "changed_file_snippets": changed_file_snippets,
+                "key_file_snippets": key_file_snippets,
+            },
+            changed_read_count + key_read_count,
+        )
 
     def _read_file_snippets(
         self,
@@ -366,16 +375,18 @@ class ReviewerAgent(AgentBase):
         paths: list[str],
         task: AgentTask,
         prefix: str,
-    ) -> dict[str, str]:
+    ) -> tuple[dict[str, str], int]:
         snippets: dict[str, str] = {}
+        read_call_count = 0
         for index, path in enumerate(paths, start=1):
             result = context.tool_registry.execute_tool(
                 tool_name="read_file",
                 arguments={"path": path, "max_chars": 1200},
                 tool_call_id=f"{task.task_id}-{prefix}-{index}",
             )
+            read_call_count += 1
             payload = parse_tool_content(result.content)
             content = str(payload.get("content") or "").strip()
             if content:
                 snippets[path] = content
-        return snippets
+        return snippets, read_call_count

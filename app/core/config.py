@@ -36,6 +36,18 @@ ENV_FILE = BASE_DIR / ".env"
 load_dotenv(ENV_FILE)
 
 
+def get_sqlite_database_path() -> Path:
+    """主业务 SQLite 文件路径（会话、runs、trace 索引、V2 等共用）。
+
+    与 Chroma 向量库存储（默认 ``.chroma/``）分离，不由本函数配置。
+    未设置环境变量时统一为仓库根目录下的 ``.simple_code_agent.sqlite3``。
+    """
+    custom = (os.getenv("SQLITE_DB_PATH") or "").strip()
+    if custom:
+        return Path(custom).expanduser()
+    return BASE_DIR / ".simple_code_agent.sqlite3"
+
+
 @dataclass(frozen=True)
 class Settings:
     """从环境变量中读取的强类型应用配置。"""

@@ -9,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.contracts.planner import Plan
+from app.contracts.run import RunMetrics, RunUsage
 
 AgentAvailability = Literal["enabled", "disabled"]
 AgentTaskStatus = Literal["pending", "running", "completed", "failed"]
@@ -86,6 +87,8 @@ class AgentResult(BaseModel):
     summary: str
     output_data: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[AgentArtifact] = Field(default_factory=list)
+    usage: RunUsage | None = None
+    metrics: RunMetrics | None = None
     error_message: str | None = None
     next_action: str | None = None
 

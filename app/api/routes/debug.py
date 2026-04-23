@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_trace_repository, get_v2_runtime
@@ -72,6 +72,31 @@ class SessionReplayResponse(BaseModel):
     teaching_view: dict[str, object] = Field(default_factory=dict)
 
 
+class V2RunHistoryItem(BaseModel):
+    """V2 单次运行在历史列表中的摘要。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    session_id: str
+    model: str
+    task: str
+    status: str | None = None
+    step_count: int = 0
+    final_output: str = ""
+    created_at: str
+    updated_at: str
+    user_goal: str = ""
+
+
+class V2RunHistoryResponse(BaseModel):
+    """V2 运行历史列表响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    runs: list[V2RunHistoryItem] = Field(default_factory=list)
+
+
 @router.get("/healthz", response_model=HealthResponse, status_code=status.HTTP_200_OK)
 def healthz() -> HealthResponse:
     """返回服务健康状态。"""
@@ -104,6 +129,16 @@ def get_root_trace(root_run_id: str) -> RootTraceQueryResponse:
         root_run_id=root_run_id,
         events=[event.model_dump() for event in events],
     )
+
+
+@router.get("/debug/v2/runs", response_model=V2RunHistoryResponse, status_code=status.HTTP_200_OK)
+def list_v2_runs(
+    limit: int = Query(default=50, ge=1, le=200, description="返回条数上限。"),
+    offset: int = Query(default=0, ge=0, description="分页偏移。"),
+) -> V2RunHistoryResponse:
+    """列出最近具备 V2 workspace 的运行（不含纯 v1 或无 workspace 的记录）。"""
+    rows = get_v2_runtime().list_recent_runs_for_ui(limit=limit, offset=offset)
+    return V2RunHistoryResponse(runs=[V2RunHistoryItem.model_validate(row) for row in rows])
 
 
 @router.get("/debug/v2/runs/{run_id}/replay", response_model=RunReplayResponse, status_code=status.HTTP_200_OK)

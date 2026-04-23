@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from app.contracts.message import ChatMessage
-from app.contracts.run import RunRequest
+from app.contracts.run import RunRequest, RunResult
 from app.v2.base import AgentContext
 
 
@@ -40,7 +40,7 @@ def chat_json(
     context: AgentContext,
     system_prompt: str,
     user_prompt: str,
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, RunResult | None]:
     """Call provider and parse JSON object output."""
     try:
         result = context.provider.chat(
@@ -55,8 +55,8 @@ def chat_json(
             )
         )
     except Exception:
-        return None
+        return None, None
     if not result.choices:
-        return None
+        return None, result
     content = result.choices[0].message.content or ""
-    return extract_json_object(content)
+    return extract_json_object(content), result

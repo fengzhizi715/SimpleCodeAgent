@@ -311,6 +311,30 @@ class V2Repository:
             for row in rows
         ]
 
+    def list_recent_runs_with_workspace(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """列出最近具备 V2 workspace 快照的运行（供 Web UI / 调试展示历史）。"""
+        rows = self.db.fetchall(
+            """
+            SELECT
+                r.run_id,
+                r.session_id,
+                r.model,
+                r.task,
+                r.status,
+                r.step_count,
+                r.final_output,
+                r.created_at,
+                r.updated_at,
+                w.user_goal
+            FROM runs r
+            INNER JOIN v2_workspaces w ON w.run_id = r.run_id
+            ORDER BY r.updated_at DESC, r.run_id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        return [dict(row) for row in rows]
+
     def list_run_replay(self, run_id: str) -> dict[str, Any]:
         """构造某个 run 的回放数据。"""
         run_row = self.db.fetchone(

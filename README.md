@@ -113,6 +113,7 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 - 如何触发 RAG 检索
 - `OpenVitamin` 接入建议
 - FastAPI 调用方式
+- 可选 `webui/` 浏览器界面（`v2` 演示，见 `usage_guide` 的「5.1 Web UI」）
 - Trace 查看
 - Coding demo 演示流程
 
@@ -140,6 +141,12 @@ python -m app.main "你好，介绍一下你自己" --version v1
 
 ```bash
 ./start.sh "你好，介绍一下你自己"
+```
+
+启动 Web UI（需已安装 Node.js，且 FastAPI 已监听 `8000`）：
+
+```bash
+./webui/start.sh
 ```
 
 ## 文档导航
