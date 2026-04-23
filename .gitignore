@@ -94,3 +94,6 @@ pids/
 *.pid.lock
 
 .qoder/
+
+webui/node_modules/
+webui/dist/
