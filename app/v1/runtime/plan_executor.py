@@ -255,14 +255,17 @@ class PlanExecutor:
             temperature=temperature,
             max_steps=max_steps,
             run_timeout_seconds=run_timeout_seconds,
-            tool_registry=tool_registry,
+            tool_registry=self._build_runtime_tool_registry(
+                tool_registry=tool_registry,
+                disable_tools=True,
+            ),
             session_memory=session_memory,
             summary_memory=summary_memory,
             persist_session_memory=False,
             root_run_id=effective_root_run_id,
             parent_run_id=effective_root_run_id,
         )
-        if session_memory is not None and summary_result.status == "completed":
+        if session_memory is not None and self._is_success_status(summary_result.status):
             session_memory.append(
                 session_id,
                 [
@@ -422,7 +425,7 @@ class PlanExecutor:
             if direct_result is not None:
                 last_result = direct_result
                 working_step = working_step.model_copy(update={"output_summary": direct_result.final_output})
-                if direct_result.status == "completed":
+                if self._is_success_status(direct_result.status):
                     working_step = working_step.model_copy(update={"status": "completed"})
                     return direct_result, working_step
                 continue
@@ -444,7 +447,10 @@ class PlanExecutor:
                 temperature=temperature,
                 max_steps=max_steps,
                 run_timeout_seconds=run_timeout_seconds,
-                tool_registry=tool_registry,
+                tool_registry=self._build_runtime_tool_registry(
+                    tool_registry=tool_registry,
+                    disable_tools=self._is_summary_step(working_step),
+                ),
                 session_memory=session_memory,
                 summary_memory=summary_memory,
                 persist_session_memory=False,
@@ -468,7 +474,7 @@ class PlanExecutor:
             if followup_direct_result is not None:
                 last_result = followup_direct_result
             working_step = working_step.model_copy(update={"output_summary": last_result.final_output})
-            if last_result.status == "completed":
+            if self._is_success_status(last_result.status):
                 working_step = working_step.model_copy(update={"status": "completed"})
                 return last_result, working_step
 
@@ -603,6 +609,26 @@ class PlanExecutor:
             if any(event.event_type == "tool_called" for event in result.trace):
                 return True
         return False
+
+    def _is_success_status(self, status: str | None) -> bool:
+        """判断运行结果是否可视为成功完成或可继续汇总。"""
+        return status in {"completed", "partial_completed"}
+
+    def _is_summary_step(self, step: PlanStep) -> bool:
+        """判断当前步骤是否是收口总结类步骤。"""
+        return "总结" in step.title or "总结" in step.description
+
+    def _build_runtime_tool_registry(
+        self,
+        *,
+        tool_registry: ToolRegistry | None,
+        disable_tools: bool,
+    ) -> ToolRegistry | None:
+        """按步骤语义裁剪运行时可见工具。"""
+        if not disable_tools:
+            return tool_registry
+        workspace_root = tool_registry.workspace_root if tool_registry is not None else None
+        return ToolRegistry(workspace_root=workspace_root)
 
     def _assess_write_file_outcome(
         self,

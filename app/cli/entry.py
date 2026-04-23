@@ -18,6 +18,7 @@ from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
 from app.v1.tools.registry import ToolRegistry
+from app.v2.factory import build_orchestrator_runtime
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,13 @@ def build_cli_parser(
         default=3,
         help="Maximum execution steps.",
     )
+    parser.add_argument(
+        "--run-timeout-seconds",
+        dest="run_timeout_seconds",
+        type=int,
+        default=120,
+        help="Per-run timeout in seconds for v1 execution.",
+    )
     if include_trace:
         parser.add_argument(
             "--trace",
@@ -87,12 +95,12 @@ def build_cli_parser(
     return parser
 
 
-def ensure_supported_version(version: str) -> Literal["v1"]:
+def ensure_supported_version(version: str) -> Literal["v1", "v2"]:
     """校验当前 CLI 支持的 Agent 版本。"""
     if version == "v1":
         return "v1"
     if version == "v2":
-        raise UnsupportedAgentVersionError("v2 入口已预留，但当前尚未实现。")
+        return "v2"
     raise UnsupportedAgentVersionError(f"不支持的 Agent 版本：{version}")
 
 
@@ -110,6 +118,7 @@ def run_agent_task(
     session_id: str,
     workdir: str,
     max_steps: int,
+    run_timeout_seconds: int,
     include_trace: bool = False,
 ) -> tuple:
     """执行一次 Agent 任务，供多个 CLI 入口复用。"""
@@ -142,42 +151,57 @@ def run_agent_task(
             include_trace,
         )
         repository = SQLiteMemoryRepository()
-        session_memory = SessionMemory(repository)
-        summary_memory = SummaryMemory(repository)
         tool_registry = ToolRegistry(workspace_root=workdir or None)
         tool_registry.register_default_tools()
-        planner = SimplePlanner()
-        loop = AgentLoop()
-
-        if planner.should_plan(task):
-            result = loop.run_with_plan(
+        if resolved_version == "v2":
+            runtime = build_orchestrator_runtime(SQLiteTraceRepository(repository.db))
+            result = runtime.run(
                 provider=provider,
                 model=model,
                 task=task,
-                system_prompt=system_prompt,
                 session_id=resolved_session_id,
-                reasoning_mode=reasoning_mode,
-                temperature=temperature,
-                max_steps=max_steps,
                 tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-                planner=planner,
+                workspace_root=workdir or ".",
+                reasoning_mode=reasoning_mode,
+                max_steps=max_steps,
             )
         else:
-            result = loop.run(
-                provider=provider,
-                model=model,
-                task=task,
-                system_prompt=system_prompt,
-                session_id=resolved_session_id,
-                reasoning_mode=reasoning_mode,
-                temperature=temperature,
-                max_steps=max_steps,
-                tool_registry=tool_registry,
-                session_memory=session_memory,
-                summary_memory=summary_memory,
-            )
+            session_memory = SessionMemory(repository)
+            summary_memory = SummaryMemory(repository)
+            planner = SimplePlanner()
+            loop = AgentLoop()
+
+            if planner.should_plan(task):
+                result = loop.run_with_plan(
+                    provider=provider,
+                    model=model,
+                    task=task,
+                    system_prompt=system_prompt,
+                    session_id=resolved_session_id,
+                    reasoning_mode=reasoning_mode,
+                    temperature=temperature,
+                    max_steps=max_steps,
+                    run_timeout_seconds=run_timeout_seconds,
+                    tool_registry=tool_registry,
+                    session_memory=session_memory,
+                    summary_memory=summary_memory,
+                    planner=planner,
+                )
+            else:
+                result = loop.run(
+                    provider=provider,
+                    model=model,
+                    task=task,
+                    system_prompt=system_prompt,
+                    session_id=resolved_session_id,
+                    reasoning_mode=reasoning_mode,
+                    temperature=temperature,
+                    max_steps=max_steps,
+                    run_timeout_seconds=run_timeout_seconds,
+                    tool_registry=tool_registry,
+                    session_memory=session_memory,
+                    summary_memory=summary_memory,
+                )
 
         trace_lines: list[str] = []
         if include_trace and result.run_id:

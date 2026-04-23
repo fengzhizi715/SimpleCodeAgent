@@ -13,6 +13,8 @@ from app.v1.memory.session_memory import SessionMemory
 from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
+from app.v2.factory import build_orchestrator_runtime
+from app.v2.runtime import OrchestratorRuntime
 
 logger = get_logger(__name__)
 
@@ -27,6 +29,12 @@ def get_memory_repository() -> SQLiteMemoryRepository:
 def get_agent_loop() -> AgentLoop:
     """返回共享的 AgentLoop。"""
     return AgentLoop()
+
+
+@lru_cache(maxsize=1)
+def get_v2_runtime() -> OrchestratorRuntime:
+    """返回共享的 V2 Orchestrator Runtime。"""
+    return build_orchestrator_runtime(get_trace_repository())
 
 
 @lru_cache(maxsize=1)

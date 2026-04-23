@@ -35,7 +35,8 @@ class Tool(ABC):
 
     def resolve_path(self, raw_path: str) -> Path:
         """解析路径并确保其位于工作区内。"""
-        path = Path(raw_path)
+        normalized_raw_path = self._normalize_workspace_alias(raw_path)
+        path = Path(normalized_raw_path)
         candidate = (self.workspace_root / path) if not path.is_absolute() else path
         resolved = candidate.resolve(strict=False)
         self._ensure_safe_path(candidate)
@@ -44,6 +45,18 @@ class Tool(ABC):
         except ValueError as exc:
             raise AppError(f"Path is outside workspace: {raw_path}") from exc
         return resolved
+
+    def _normalize_workspace_alias(self, raw_path: str) -> str:
+        """兼容模型常见的 `/workspace` 根目录别名。"""
+        stripped = raw_path.strip()
+        if not stripped:
+            return stripped
+        if stripped == "/workspace":
+            return str(self.workspace_root)
+        if stripped.startswith("/workspace/"):
+            suffix = stripped.removeprefix("/workspace/").lstrip("/")
+            return str(self.workspace_root / suffix)
+        return stripped
 
     def _ensure_safe_path(self, candidate: Path) -> None:
         """显式检查路径链路中的符号链接，避免工作区逃逸。"""

@@ -19,6 +19,14 @@ class TraceEvent(BaseModel):
     root_run_id: str | None = None
     parent_run_id: str | None = None
     session_id: str | None = None
+    actor: str | None = None
+    action: str | None = None
+    status: str | None = None
+    input_summary: str | None = None
+    output_summary: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    parent_event_id: str | None = None
     event_type: str
     message: str
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())

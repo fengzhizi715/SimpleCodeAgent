@@ -15,6 +15,7 @@ from app.api.deps import (
     get_session_memory,
     get_summary_memory,
     get_trace_repository,
+    get_v2_runtime,
 )
 from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
@@ -80,9 +81,7 @@ class AgentRunResponse(BaseModel):
 @router.post("/run", response_model=AgentRunResponse, status_code=status.HTTP_200_OK)
 def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     """执行一次 Agent 任务。"""
-    if request.version == "v2":
-        raise HTTPException(status_code=501, detail="v2 API 入口已预留，但当前尚未实现。")
-    if request.version != "v1":
+    if request.version not in {"v1", "v2"}:
         raise HTTPException(status_code=400, detail=f"不支持的 Agent 版本：{request.version}")
     resolved_model = request.model or settings.llm_model
     if not resolved_model:
@@ -115,45 +114,58 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                 service_token=request.service_token,
                 model=request.model,
             )
-            loop = get_agent_loop()
-            planner = get_planner()
-            session_memory = get_session_memory()
-            summary_memory = get_summary_memory()
             tool_registry = ToolRegistry(workspace_root=resolved_workdir)
             tool_registry.register_default_tools()
-
-            # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
-            if planner.should_plan(request.task):
-                result = loop.run_with_plan(
+            if request.version == "v2":
+                runtime = get_v2_runtime()
+                result = runtime.run(
                     provider=provider,
                     model=resolved_model,
                     task=request.task,
-                    system_prompt=request.system_prompt,
                     session_id=session_id,
-                    reasoning_mode=request.reasoning_mode,
-                    temperature=request.temperature,
-                    max_steps=request.max_steps,
-                    run_timeout_seconds=request.run_timeout_seconds,
                     tool_registry=tool_registry,
-                    session_memory=session_memory,
-                    summary_memory=summary_memory,
-                    planner=planner,
+                    workspace_root=resolved_workdir or settings.workdir or ".",
+                    reasoning_mode=request.reasoning_mode,
+                    max_steps=request.max_steps,
                 )
             else:
-                result = loop.run(
-                    provider=provider,
-                    model=resolved_model,
-                    task=request.task,
-                    system_prompt=request.system_prompt,
-                    session_id=session_id,
-                    reasoning_mode=request.reasoning_mode,
-                    temperature=request.temperature,
-                    max_steps=request.max_steps,
-                    run_timeout_seconds=request.run_timeout_seconds,
-                    tool_registry=tool_registry,
-                    session_memory=session_memory,
-                    summary_memory=summary_memory,
-                )
+                loop = get_agent_loop()
+                planner = get_planner()
+                session_memory = get_session_memory()
+                summary_memory = get_summary_memory()
+
+                # v1 仍然保留“简单任务直接执行，复杂任务先规划”的双路径。
+                if planner.should_plan(request.task):
+                    result = loop.run_with_plan(
+                        provider=provider,
+                        model=resolved_model,
+                        task=request.task,
+                        system_prompt=request.system_prompt,
+                        session_id=session_id,
+                        reasoning_mode=request.reasoning_mode,
+                        temperature=request.temperature,
+                        max_steps=request.max_steps,
+                        run_timeout_seconds=request.run_timeout_seconds,
+                        tool_registry=tool_registry,
+                        session_memory=session_memory,
+                        summary_memory=summary_memory,
+                        planner=planner,
+                    )
+                else:
+                    result = loop.run(
+                        provider=provider,
+                        model=resolved_model,
+                        task=request.task,
+                        system_prompt=request.system_prompt,
+                        session_id=session_id,
+                        reasoning_mode=request.reasoning_mode,
+                        temperature=request.temperature,
+                        max_steps=request.max_steps,
+                        run_timeout_seconds=request.run_timeout_seconds,
+                        tool_registry=tool_registry,
+                        session_memory=session_memory,
+                        summary_memory=summary_memory,
+                    )
         except UnsupportedAgentVersionError as exc:
             logger.error("Unsupported agent version in API request: %s", exc)
             raise HTTPException(status_code=400, detail=str(exc)) from exc

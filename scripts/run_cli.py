@@ -50,6 +50,7 @@ def main() -> None:
             session_id=args.session_id,
             workdir=args.workdir,
             max_steps=args.max_steps,
+            run_timeout_seconds=args.run_timeout_seconds,
             include_trace=args.trace,
         )
     except (AppError, LLMProviderError) as exc:

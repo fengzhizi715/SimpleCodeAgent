@@ -5,7 +5,7 @@
 当前仓库采用单仓库双版本结构：
 
 - `app/v1`：当前可运行的单 Agent 版本
-- `app/v2`：预留给后续多 Agent 编程智能体
+- `app/v2`：中心化多 Agent 版本，当前为 MVP 骨架阶段
 
 当前已经具备这些能力：
 
@@ -87,14 +87,14 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 ## 版本说明
 
 - `v1`：当前默认版本，已实现单 Agent runtime、planner、memory、tools、rag
-- `v2`：当前只预留目录和入口参数，尚未实现
+- `v2`：已具备多 Agent MVP 骨架，包括 orchestrator runtime、planner / analyst / coder / tester、shared workspace 与基础 trace，但仍未完成全部目标能力
 
 当前 CLI 与 API 都支持显式传 `version`：
 
 - CLI：`--version v1|v2`
 - API：请求体中的 `"version": "v1" | "v2"`
 
-目前传 `v2` 会返回“已预留但尚未实现”的明确错误，不会静默回退到 `v1`。
+当前 API 与 CLI 都已可进入 `v2`，但 `v2` 仍处于持续演进阶段。
 
 ## 使用说明
 
@@ -126,6 +126,7 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 
 - [docs/architecture.md](docs/architecture.md)
 - [docs/teaching_roadmap.md](docs/teaching_roadmap.md)
+- [docs/v2_status.md](docs/v2_status.md)
 
 ## 常用入口
 
@@ -150,9 +151,10 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
 - 演进路线：[`docs/teaching_roadmap.md`](docs/teaching_roadmap.md)
+- V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ## 当前限制
 
-- `v2` 入口只预留，还没有多 Agent 实现
+- `v2` 仍是 MVP 骨架，尚未完成全部多 Agent 能力
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入

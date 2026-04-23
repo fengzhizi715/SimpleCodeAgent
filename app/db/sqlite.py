@@ -29,6 +29,45 @@ class SQLiteDB:
             conn.execute("PRAGMA synchronous=NORMAL;")
             for statement in SCHEMA_STATEMENTS:
                 conn.execute(statement)
+            self._ensure_trace_index_columns(conn)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_trace_index_session_id_created_at
+                ON trace_index(session_id, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_trace_index_root_run_id_created_at
+                ON trace_index(root_run_id, created_at)
+                """
+            )
+
+    def _ensure_trace_index_columns(self, conn: sqlite3.Connection) -> None:
+        """为已有数据库补齐 trace_index 的结构化列。"""
+        existing_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trace_index)").fetchall()
+        }
+        required_columns = {
+            "session_id": "TEXT",
+            "root_run_id": "TEXT",
+            "parent_run_id": "TEXT",
+            "parent_event_id": "TEXT",
+            "actor": "TEXT",
+            "action": "TEXT",
+            "status": "TEXT",
+            "input_summary": "TEXT",
+            "output_summary": "TEXT",
+            "started_at": "TEXT",
+            "ended_at": "TEXT",
+        }
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            conn.execute(
+                f"ALTER TABLE trace_index ADD COLUMN {column_name} {column_type}"
+            )
 
     def connect(self) -> sqlite3.Connection:
         """打开或复用当前线程的 SQLite 连接。"""

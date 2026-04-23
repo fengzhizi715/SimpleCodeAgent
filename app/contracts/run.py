@@ -86,7 +86,7 @@ class RunResult(BaseModel):
     run_id: str | None = None
     session_id: str | None = None
     step_count: int = 0
-    status: Literal["completed", "failed", "max_steps_exceeded"] | None = None
+    status: Literal["completed", "partial_completed", "failed", "max_steps_exceeded"] | None = None
     final_output: str = ""
     plan: list[PlanStep] = Field(default_factory=list)
     trace: list[TraceEvent] = Field(default_factory=list)

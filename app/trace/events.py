@@ -16,6 +16,13 @@ TraceEventType = Literal[
     "run_finished",
     "run_failed",
     "step_started",
+    "agent_selected",
+    "delegation_started",
+    "delegation_finished",
+    "workspace_updated",
+    "replan_started",
+    "replan_finished",
+    "fallback_triggered",
 ]
 
 

@@ -6,9 +6,10 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from app.contracts.message import ChatMessage
+from app.contracts.tool import ToolResult
 from app.contracts.trace import TraceEvent
 
-AgentStatus = Literal["running", "completed", "failed", "max_steps_exceeded"]
+AgentStatus = Literal["running", "completed", "partial_completed", "failed", "max_steps_exceeded"]
 
 
 @dataclass
@@ -37,6 +38,7 @@ class AgentState:
     memory_write_count: int = 0
     fallback_count: int = 0
     trace_events: list[TraceEvent] = field(default_factory=list)
+    last_successful_tool_result: ToolResult | None = None
 
     @property
     def is_finished(self) -> bool:
@@ -48,4 +50,4 @@ class AgentState:
     def is_completed(self) -> bool:
         """返回当前任务是否已成功完成。"""
 
-        return self.status == "completed"
+        return self.status in {"completed", "partial_completed"}

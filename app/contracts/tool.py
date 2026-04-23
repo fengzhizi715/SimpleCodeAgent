@@ -24,10 +24,11 @@ class ToolCall(BaseModel):
     id: str
     type: Literal["function"] = "function"
     function: ToolFunction
+    index: int | None = None
 
     def to_provider_dict(self) -> dict[str, object]:
         """将工具调用转换为 provider 所需格式。"""
-        return self.model_dump()
+        return self.model_dump(exclude_none=True, exclude={"index"})
 
 
 class ToolDefinition(BaseModel):

@@ -29,24 +29,48 @@ class SQLiteTraceRepository:
             True 表示写入成功，False 表示写入失败（JSONL 可作为恢复源）。
         """
         payload = dict(event.payload)
-        if event.root_run_id:
-            payload["_root_run_id"] = event.root_run_id
-        if event.parent_run_id:
-            payload["_parent_run_id"] = event.parent_run_id
         try:
+            self._ensure_run_exists(run_id=run_id, session_id=event.session_id)
             self.db.execute(
                 """
                 INSERT OR REPLACE INTO trace_index (
-                    id, run_id, event_type, message, payload_json, created_at
+                    id,
+                    run_id,
+                    session_id,
+                    root_run_id,
+                    parent_run_id,
+                    parent_event_id,
+                    actor,
+                    action,
+                    status,
+                    input_summary,
+                    output_summary,
+                    event_type,
+                    message,
+                    payload_json,
+                    started_at,
+                    ended_at,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     run_id,
+                    event.session_id,
+                    event.root_run_id,
+                    event.parent_run_id,
+                    event.parent_event_id,
+                    event.actor,
+                    event.action,
+                    event.status,
+                    event.input_summary,
+                    event.output_summary,
                     event.event_type,
                     event.message,
                     json.dumps(payload, ensure_ascii=False),
+                    event.started_at,
+                    event.ended_at,
                     event.created_at,
                 ),
             )
@@ -68,28 +92,54 @@ class SQLiteTraceRepository:
             True 表示全部写入成功，False 表示写入失败。
         """
         def build_payload(event: TraceEvent) -> str:
-            payload = dict(event.payload)
-            if event.root_run_id:
-                payload["_root_run_id"] = event.root_run_id
-            if event.parent_run_id:
-                payload["_parent_run_id"] = event.parent_run_id
-            return json.dumps(payload, ensure_ascii=False)
+            return json.dumps(dict(event.payload), ensure_ascii=False)
 
         try:
+            self._ensure_run_exists(
+                run_id=run_id,
+                session_id=events[0].session_id if events else None,
+            )
             self.db.executemany(
                 """
                 INSERT OR REPLACE INTO trace_index (
-                    id, run_id, event_type, message, payload_json, created_at
+                    id,
+                    run_id,
+                    session_id,
+                    root_run_id,
+                    parent_run_id,
+                    parent_event_id,
+                    actor,
+                    action,
+                    status,
+                    input_summary,
+                    output_summary,
+                    event_type,
+                    message,
+                    payload_json,
+                    started_at,
+                    ended_at,
+                    created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         event.id,
                         run_id,
+                        event.session_id,
+                        event.root_run_id,
+                        event.parent_run_id,
+                        event.parent_event_id,
+                        event.actor,
+                        event.action,
+                        event.status,
+                        event.input_summary,
+                        event.output_summary,
                         event.event_type,
                         event.message,
                         build_payload(event),
+                        event.started_at,
+                        event.ended_at,
                         event.created_at,
                     )
                     for event in events
@@ -109,7 +159,24 @@ class SQLiteTraceRepository:
         """按时间顺序查询某次运行的 timeline。"""
         rows = self.db.fetchall(
             """
-            SELECT id, run_id, event_type, message, payload_json, created_at
+            SELECT
+                id,
+                run_id,
+                session_id,
+                root_run_id,
+                parent_run_id,
+                parent_event_id,
+                actor,
+                action,
+                status,
+                input_summary,
+                output_summary,
+                event_type,
+                message,
+                payload_json,
+                started_at,
+                ended_at,
+                created_at
             FROM trace_index
             WHERE run_id = ?
             ORDER BY created_at ASC, id ASC
@@ -122,12 +189,59 @@ class SQLiteTraceRepository:
         """按 root_run_id 查询整棵运行树的时间线，用于追踪 PlanExecutor 的完整执行流。"""
         rows = self.db.fetchall(
             """
-            SELECT id, run_id, event_type, message, payload_json, created_at
+            SELECT
+                id,
+                run_id,
+                session_id,
+                root_run_id,
+                parent_run_id,
+                parent_event_id,
+                actor,
+                action,
+                status,
+                input_summary,
+                output_summary,
+                event_type,
+                message,
+                payload_json,
+                started_at,
+                ended_at,
+                created_at
             FROM trace_index
-            WHERE payload_json LIKE ?
+            WHERE root_run_id = ?
             ORDER BY created_at ASC, id ASC
             """,
-            (f'%"_root_run_id": "{root_run_id}"%',),
+            (root_run_id,),
+        )
+        return self._rows_to_events(rows)
+
+    def query_timeline_by_session(self, session_id: str) -> list[TraceEvent]:
+        """按 session_id 查询会话时间线。"""
+        rows = self.db.fetchall(
+            """
+            SELECT
+                id,
+                run_id,
+                session_id,
+                root_run_id,
+                parent_run_id,
+                parent_event_id,
+                actor,
+                action,
+                status,
+                input_summary,
+                output_summary,
+                event_type,
+                message,
+                payload_json,
+                started_at,
+                ended_at,
+                created_at
+            FROM trace_index
+            WHERE session_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id,),
         )
         return self._rows_to_events(rows)
 
@@ -175,22 +289,64 @@ class SQLiteTraceRepository:
             logger.info("Reconciled trace events from JSONL: run_id=%s recovered=%s", run_id, recovered)
         return recovered
 
+    def _ensure_run_exists(self, *, run_id: str, session_id: str | None) -> None:
+        """在仅有 trace 先写入时，补一个最小 run/session 记录。"""
+        if not run_id:
+            return
+        effective_session_id = session_id or f"trace:{run_id}"
+        timestamp = self.db.now()
+        self.db.execute(
+            """
+            INSERT INTO sessions (id, created_at, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at
+            """,
+            (effective_session_id, timestamp, timestamp),
+        )
+        self.db.execute(
+            """
+            INSERT INTO runs (
+                run_id, session_id, model, task, status, step_count, final_output, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 0, '', ?, ?)
+            ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                updated_at = excluded.updated_at
+            """,
+            (
+                run_id,
+                effective_session_id,
+                "<trace-only>",
+                "<trace-only>",
+                "running",
+                timestamp,
+                timestamp,
+            ),
+        )
+
     def _rows_to_events(self, rows: list) -> list[TraceEvent]:
         """将数据库行转换为 TraceEvent 列表。"""
         events: list[TraceEvent] = []
         for row in rows:
             payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
-            root_run_id = payload.pop("_root_run_id", None)
-            parent_run_id = payload.pop("_parent_run_id", None)
             events.append(
                 TraceEvent.model_validate(
                     {
                         "id": row["id"],
                         "run_id": row["run_id"],
-                        "root_run_id": root_run_id,
-                        "parent_run_id": parent_run_id,
+                        "session_id": row["session_id"],
+                        "root_run_id": row["root_run_id"],
+                        "parent_run_id": row["parent_run_id"],
+                        "parent_event_id": row["parent_event_id"],
+                        "actor": row["actor"],
+                        "action": row["action"],
+                        "status": row["status"],
+                        "input_summary": row["input_summary"],
+                        "output_summary": row["output_summary"],
                         "event_type": row["event_type"],
                         "message": row["message"],
+                        "started_at": row["started_at"],
+                        "ended_at": row["ended_at"],
                         "created_at": row["created_at"],
                         "payload": payload,
                     }

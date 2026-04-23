@@ -48,6 +48,7 @@ def main() -> None:
             session_id=args.session_id,
             workdir=args.workdir,
             max_steps=args.max_steps,
+            run_timeout_seconds=args.run_timeout_seconds,
             include_trace=False,
         )
     except (AppError, LLMProviderError) as exc:

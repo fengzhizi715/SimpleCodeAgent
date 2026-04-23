@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from time import monotonic
 from uuid import uuid4
 
@@ -121,13 +122,10 @@ class AgentLoop:
 
             while state.step_count < context.max_steps:
                 if monotonic() - started_at >= context.run_timeout_seconds:
-                    return self._build_fallback_final_result(
+                    return self._build_timeout_result(
                         context=context,
                         state=state,
                         started_at=started_at,
-                        status="failed",
-                        message=f"运行超时，已在 {context.run_timeout_seconds} 秒后停止。",
-                        event_type="run_timeout",
                     )
 
                 state.step_count += 1
@@ -175,6 +173,14 @@ class AgentLoop:
 
                 tool_calls = extract_tool_calls(result)
                 if tool_calls:
+                    if not context.tool_registry.get_tool_definitions():
+                        return self._handle_hallucinated_tool_calls_without_registry(
+                            context=context,
+                            state=state,
+                            started_at=started_at,
+                            result=result,
+                            reasoning_mode=reasoning_mode,
+                        )
                     logger.info(
                         "LLM requested tool calls: step=%s tool_count=%s",
                         state.step_count,
@@ -416,6 +422,7 @@ class AgentLoop:
                     tool_result.tool_call_id,
                 )
             else:
+                state.last_successful_tool_result = tool_result
                 logger.info(
                     "Tool call completed: step=%s tool=%s tool_call_id=%s",
                     state.step_count,
@@ -434,6 +441,137 @@ class AgentLoop:
                     "is_error": tool_result.is_error,
                 },
             )
+
+    def _handle_hallucinated_tool_calls_without_registry(
+        self,
+        *,
+        context: RunContext,
+        state: AgentState,
+        started_at: float,
+        result: RunResult,
+        reasoning_mode: str,
+    ) -> RunResult:
+        """在当前步骤未暴露任何工具时，硬拦截 hallucinated tool calls。"""
+        tool_calls = extract_tool_calls(result)
+        self._append_trace_event(
+            context=context,
+            state=state,
+            event_type="tool_call_ignored",
+            message="Hallucinated tool calls were intercepted because no tools are available.",
+            payload={
+                "step_count": state.step_count,
+                "tool_count": len(tool_calls),
+            },
+        )
+        assistant_message = result.choices[0].message
+        if assistant_message.content and assistant_message.content.strip():
+            sanitized_message = assistant_message.model_copy(update={"tool_calls": []})
+            state.messages.append(sanitized_message)
+            state.status = "completed"
+            state.final_output = assistant_message.content.strip()
+            self._append_trace_event(
+                context=context,
+                state=state,
+                event_type="run_finished",
+                message="Agent run finished after intercepting hallucinated tool calls.",
+                payload={"step_count": state.step_count},
+            )
+            self._persist_session_messages(context, state)
+            final_result = result.model_copy(
+                update={
+                    "run_id": context.run_id,
+                    "session_id": context.session_id,
+                    "step_count": state.step_count,
+                    "status": state.status,
+                    "final_output": state.final_output,
+                    "reasoning_mode": reasoning_mode,
+                    "choices": [
+                        RunChoice(
+                            index=choice.index,
+                            message=sanitized_message if choice.index == 0 else choice.message,
+                            finish_reason=choice.finish_reason,
+                        )
+                        for choice in result.choices
+                    ],
+                    "metrics": self._build_metrics(state, started_at),
+                    "trace": list(state.trace_events),
+                }
+            )
+            self._persist_run_metadata(context, state, final_result)
+            return final_result
+        return self._build_fallback_final_result(
+            context=context,
+            state=state,
+            started_at=started_at,
+            status="failed",
+            message="当前步骤未暴露任何工具，但模型仍然发起了 tool call；系统已拦截该无效调用。",
+            event_type="tool_call_ignored",
+        )
+
+    def _build_timeout_result(
+        self,
+        *,
+        context: RunContext,
+        state: AgentState,
+        started_at: float,
+    ) -> RunResult:
+        partial_message = self._build_partial_timeout_message(context=context, state=state)
+        if partial_message is not None:
+            return self._build_fallback_final_result(
+                context=context,
+                state=state,
+                started_at=started_at,
+                status="partial_completed",
+                message=partial_message,
+                event_type="run_timeout",
+            )
+        return self._build_fallback_final_result(
+            context=context,
+            state=state,
+            started_at=started_at,
+            status="failed",
+            message=f"运行超时，已在 {context.run_timeout_seconds} 秒后停止。",
+            event_type="run_timeout",
+        )
+
+    def _build_partial_timeout_message(
+        self,
+        *,
+        context: RunContext,
+        state: AgentState,
+    ) -> str | None:
+        tool_result = state.last_successful_tool_result
+        if tool_result is None or tool_result.is_error or tool_result.name != "write_file":
+            return None
+        payload = self._parse_tool_result_payload(tool_result)
+        if payload is None:
+            return None
+        if payload.get("ok") is not True or payload.get("dry_run") is True:
+            return None
+        raw_path = payload.get("path")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            return None
+        display_path = raw_path.strip()
+        try:
+            resolved_path = context.tool_registry.workspace_root.joinpath(display_path).resolve()
+            if resolved_path.is_file():
+                display_path = str(resolved_path.relative_to(context.tool_registry.workspace_root.resolve()))
+        except Exception:
+            pass
+        created = payload.get("created")
+        created_message = "新建" if created is True else "更新"
+        return (
+            "本次运行在超时前已完成部分工作。"
+            f" 已通过 `write_file` 成功{created_message}文件：{display_path}。"
+            " 但后续总结阶段未完成，因此当前返回的是部分完成摘要，而不是完整最终答案。"
+        )
+
+    def _parse_tool_result_payload(self, tool_result) -> dict[str, object] | None:
+        try:
+            payload = json.loads(tool_result.content)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def _append_trace_event(
         self,
