@@ -1,6 +1,6 @@
 # 使用说明
 
-本文档用于说明如何在本地运行和演示 `Simple Code Agent` 的 `v1` 版本。
+本文档用于说明如何在本地运行和演示 `Simple Code Agent`（`v1` 主线 + `v2` MVP）。
 
 如果你准备继续维护项目实现，而不是只做使用验证，建议同时阅读：
 
@@ -145,11 +145,21 @@ LLM_REASONING_PARAM_STYLE=none
   --trace
 ```
 
-`v2` 入口已经预留，但当前还没有实现：
+查看 V2 默认 Agent 角色矩阵（教学/debug）：
+
+```bash
+.venv/bin/python scripts/run_cli.py debug agent-matrix
+```
+
+该命令会打印当前默认注册的角色、实现类和 capabilities，便于课堂展示 “planner / analyst / coder / tester / reviewer” 的分工。
+
+`v2` 已可运行（MVP 阶段），可以用下面命令快速验证：
 
 ```bash
 .venv/bin/python scripts/run_cli.py "hello" --version v2
 ```
+
+`v2` 当前定位是“中心化多 Agent MVP 骨架”，能力仍在持续增强，详细状态见 `docs/v2_status.md`。
 
 CLI 运行完成后还会额外输出：
 
@@ -427,7 +437,7 @@ LOG_LEVEL=INFO
 
 ## 10. 当前限制
 
-- `v2` 还没有正式实现
+- `v2` 仍是 MVP 骨架，尚未完成全部多 Agent 目标能力
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入
 - 当前文档以本地开发与演示为主，不是生产部署手册

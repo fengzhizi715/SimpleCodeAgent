@@ -21,7 +21,7 @@
 - `app/v1`
   - 当前单 Agent 版本实现
 - `app/v2`
-  - 后续多 Agent 编程智能体预留目录
+  - 中心化多 Agent MVP 实现目录（持续演进）
 
 这套结构的核心意图是：
 
@@ -35,7 +35,7 @@
 flowchart TB
   U[CLI / API 输入] --> A[app/api + app/main]
   A --> R1[app/v1 运行时]
-  A --> R2[app/v2 预留]
+  A --> R2[app/v2 多 Agent MVP]
 
   subgraph Shared[共享底座]
     C[app/contracts]

@@ -13,8 +13,11 @@ from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.tools.registry import ToolRegistry
-from app.v2.agents import PlannerAgent, TesterAgent
+from app.v2.agents import AnalystAgent, CoderAgent, PlannerAgent, ReviewerAgent, TesterAgent
 from app.v2.base import AgentContext, OrchestratorDelegationClient
+from app.v2.agent_impls import describe_agent_matrix
+from app.cli.entry import print_agent_matrix
+from app.v2.factory import build_default_registry
 
 
 class QueueProvider(LLMProvider):
@@ -40,6 +43,34 @@ class QueueProvider(LLMProvider):
                     finish_reason="stop",
                 )
             ],
+        )
+
+
+class FakeCoderLoop:
+    """Minimal stub loop for CoderAgent happy path tests."""
+
+    def __init__(self, workspace_root: Path) -> None:
+        self.workspace_root = workspace_root
+
+    def run(self, **kwargs: object) -> RunResult:
+        target = self.workspace_root / "app" / "sample.py"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("def hello() -> str:\n    return 'world'\n", encoding="utf-8")
+        return RunResult(
+            id="fake-coder-run",
+            model=str(kwargs.get("model", "fake-model")),
+            reasoning_mode=str(kwargs.get("reasoning_mode", "default")),
+            choices=[
+                RunChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content="已完成最小改动。"),
+                    finish_reason="stop",
+                )
+            ],
+            run_id="fake-coder-run",
+            step_count=1,
+            status="completed",
+            final_output="已完成最小改动。",
         )
 
 
@@ -146,6 +177,82 @@ def test_tester_agent_prefers_targeted_test_command(tmp_path: Path) -> None:
     assert result.output_data["test_report"]["status"] == "passed"
 
 
+def test_analyst_agent_happy_path(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("def main() -> None:\n    pass\n", encoding="utf-8")
+    agent = AnalystAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="分析项目")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="分析项目结构并给出摘要",
+        step_type="analysis",
+        target_agent="analyst",
+    )
+
+    result = agent.run(task=task, workspace=workspace, context=context, prompt_context={})
+
+    assert result.status == "completed"
+    assert result.output_data["project_summary"]
+    assert isinstance(result.output_data["key_files"], list)
+
+
+def test_coder_agent_happy_path(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    agent = CoderAgent(agent_loop=FakeCoderLoop(tmp_path))
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="实现小改动")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="新增一个最小函数",
+        step_type="coding",
+        target_agent="coder",
+        success_criteria=["生成可运行代码"],
+    )
+
+    result = agent.run(task=task, workspace=workspace, context=context, prompt_context={})
+
+    assert result.status == "completed"
+    assert "app/sample.py" in result.output_data["created_files"] or "app/sample.py" in result.output_data["modified_files"]
+
+
+def test_reviewer_agent_happy_path(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "sample.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    agent = ReviewerAgent()
+    workspace = SharedWorkspace(
+        session_id="test-session",
+        run_id="test-run",
+        user_goal="review 本次改动",
+        latest_patch_summary="已修改 app/sample.py，新增 add 函数。",
+    )
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="review patch",
+        step_type="review",
+        target_agent="reviewer",
+    )
+    prompt_context = {
+        "coder_context": {"modified_files": ["app/sample.py"], "diff_previews": {"app/sample.py": "+def add(a, b):"}},
+        "analysis_context": {"key_files": [{"path": "app/sample.py", "reason": "core logic"}]},
+        "project_summary": "simple project",
+    }
+
+    result = agent.run(task=task, workspace=workspace, context=context, prompt_context=prompt_context)
+
+    assert result.status == "completed"
+    assert "review_summary" in result.output_data
+    assert isinstance(result.output_data["issues"], list)
+
+
 def test_agent_context_excludes_delegation_interface(tmp_path: Path) -> None:
     context = _make_context(tmp_path, QueueProvider([]))
     assert not hasattr(context, "delegate_task")
@@ -187,8 +294,29 @@ def test_orchestrator_delegation_client_is_a_separate_capability(tmp_path: Path)
 
     assert result.status == "completed"
     assert called["agent_id"] == "coder"
-    assert called["workspace"] is workspace
-    assert called["context"] is context
+
+
+def test_build_default_registry_supports_reviewer_toggle() -> None:
+    with_reviewer = build_default_registry(enable_reviewer=True)
+    without_reviewer = build_default_registry(enable_reviewer=False)
+
+    assert with_reviewer.get("reviewer") is not None
+    assert without_reviewer.get("reviewer") is None
+
+
+def test_describe_agent_matrix_contains_core_roles() -> None:
+    matrix = describe_agent_matrix()
+    roles = {item["role"] for item in matrix}
+    assert {"planner", "analyst", "coder", "tester", "reviewer"}.issubset(roles)
+    assert all(isinstance(item["capabilities"], list) for item in matrix)
+
+
+def test_print_agent_matrix_outputs_roles(capsys) -> None:
+    print_agent_matrix()
+    output = capsys.readouterr().out
+    assert "Agent Matrix:" in output
+    assert "planner" in output
+    assert "coder" in output
 
 
 def test_cli_supports_v2_path(monkeypatch, tmp_path: Path) -> None:

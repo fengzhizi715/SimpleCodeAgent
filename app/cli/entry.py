@@ -18,6 +18,7 @@ from app.v1.memory.summary_memory import SummaryMemory
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
 from app.v1.tools.registry import ToolRegistry
+from app.v2.agent_impls import describe_agent_matrix
 from app.v2.factory import build_orchestrator_runtime
 
 logger = get_logger(__name__)
@@ -254,3 +255,16 @@ def print_run_result(
         print("Trace:")
         for line in trace_lines:
             print(f"- {line}")
+
+
+def print_agent_matrix() -> None:
+    """输出当前 V2 默认 Agent 角色矩阵，供 debug/教学展示。"""
+    rows = describe_agent_matrix()
+    print("Agent Matrix:")
+    for row in rows:
+        capabilities = ", ".join(str(item) for item in row["capabilities"])
+        print(
+            f"- {row['agent_id']} ({row['class_name']}): "
+            f"role={row['role']} availability={row['availability']} "
+            f"capabilities=[{capabilities}]"
+        )

@@ -68,6 +68,10 @@
    - `v2 Orchestrator` 负责多 Agent 编排。
    - `CoderAgent` 内部的 `v1 AgentLoop` 只负责单任务执行，不具备再次调度其他 Agent 的权力。
 
+5. `app/v2/agent_impls/common.py` 目前是兼容层（re-export），用于平滑拆分后的导入迁移。
+   - 新代码应优先直接从 `payloads.py / llm_utils.py / workspace_diff.py` 导入。
+   - 当仓库内不再有对 `common.py` 的直接引用后，可在后续版本移除该兼容层。
+
 ---
 
 ## 2. 已完成项
@@ -188,7 +192,11 @@
 
 对应文件：
 
-- `app/v2/agents.py`
+- `app/v2/agent_impls/planner.py`
+- `app/v2/agent_impls/analyst.py`
+- `app/v2/agent_impls/coder.py`
+- `app/v2/agent_impls/tester.py`
+- `app/v2/agent_impls/reviewer.py`
 
 #### Reviewer Agent
 

@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.cli.entry import build_cli_parser, print_run_result, run_agent_task
+from app.cli.entry import build_cli_parser, print_agent_matrix, print_run_result, run_agent_task
 from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.logger import configure_logging, get_logger
@@ -33,6 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """CLI 主入口。"""
+    if len(sys.argv) >= 3 and sys.argv[1] == "debug" and sys.argv[2] == "agent-matrix":
+        print_agent_matrix()
+        return
+
     parser = build_parser()
     args = parser.parse_args()
 

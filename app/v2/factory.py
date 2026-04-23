@@ -12,7 +12,7 @@ from app.v2.repository import V2Repository
 from app.v2.runtime import OrchestratorRuntime
 
 
-def build_default_registry() -> AgentRegistry:
+def build_default_registry(*, enable_reviewer: bool = True) -> AgentRegistry:
     """构造默认 Agent Registry。
 
     当前仍是静态装配式注册：
@@ -22,15 +22,20 @@ def build_default_registry() -> AgentRegistry:
     registry.register(PlannerAgent(SimplePlanner()))
     registry.register(AnalystAgent())
     registry.register(CoderAgent(AgentLoop()))
-    registry.register(ReviewerAgent())
+    if enable_reviewer:
+        registry.register(ReviewerAgent())
     registry.register(TesterAgent())
     return registry
 
 
-def build_orchestrator_runtime(trace_repository: SQLiteTraceRepository) -> OrchestratorRuntime:
+def build_orchestrator_runtime(
+    trace_repository: SQLiteTraceRepository,
+    *,
+    enable_reviewer: bool = True,
+) -> OrchestratorRuntime:
     """构造默认 V2 Orchestrator Runtime。"""
     return OrchestratorRuntime(
-        registry=build_default_registry(),
+        registry=build_default_registry(enable_reviewer=enable_reviewer),
         trace_repository=trace_repository,
         v2_repository=V2Repository(trace_repository.db),
         context_builder=ContextBuilder(),
