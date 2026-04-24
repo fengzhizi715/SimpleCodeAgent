@@ -5,7 +5,7 @@ from __future__ import annotations
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
-from app.v2.agents import AnalystAgent, CoderAgent, PlannerAgent, ReviewerAgent, TesterAgent
+from app.v2.agents import AnalystAgent, CoderAgent, OrchestratorAgent, PlannerAgent, ReviewerAgent, TesterAgent
 from app.v2.context import ContextBuilder
 from app.v2.registry import AgentRegistry
 from app.v2.repository import V2Repository
@@ -19,6 +19,7 @@ def build_default_registry(*, enable_reviewer: bool = True) -> AgentRegistry:
     适合课程演示和边界清晰的 MVP，不等价于动态服务发现或插件市场。
     """
     registry = AgentRegistry()
+    registry.register(OrchestratorAgent())
     registry.register(PlannerAgent(SimplePlanner()))
     registry.register(AnalystAgent())
     registry.register(CoderAgent(AgentLoop()))

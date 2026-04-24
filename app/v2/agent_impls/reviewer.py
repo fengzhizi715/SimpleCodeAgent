@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from typing import Literal
 
 from app.contracts.agent import (
     AgentArtifact,
@@ -16,6 +18,9 @@ from app.contracts.run import RunMetrics, RunUsage
 from app.v2.agent_impls.llm_utils import chat_json, parse_tool_content
 from app.v2.agent_impls.payloads import ReviewOutputPayload
 from app.v2.base import AgentBase, AgentContext
+
+DEFAULT_RULE_GROUPS = ("scope", "testing", "security", "maintainability", "boundaries", "api", "domain")
+TEST_FAILURE_MODES = {"off", "suggest", "block"}
 
 
 class ReviewerAgent(AgentBase):
@@ -52,6 +57,8 @@ class ReviewerAgent(AgentBase):
     ) -> AgentResult:
         coder_context = prompt_context.get("coder_context")
         analysis_context = prompt_context.get("analysis_context")
+        review_strategy = self._resolve_review_strategy(task=task, prompt_context=prompt_context)
+        latest_test_result = self._coerce_mapping(prompt_context.get("latest_test_result"))
         review_materials, tool_call_count = self._collect_review_materials(
             context=context,
             coder_context=coder_context if isinstance(coder_context, dict) else {},
@@ -62,6 +69,8 @@ class ReviewerAgent(AgentBase):
             summary=workspace.latest_patch_summary,
             coder_context=coder_context if isinstance(coder_context, dict) else {},
             review_materials=review_materials,
+            latest_test_result=latest_test_result,
+            review_strategy=review_strategy,
         )
         llm_review, usage = self._build_llm_review(
             summary=workspace.latest_patch_summary,
@@ -69,6 +78,8 @@ class ReviewerAgent(AgentBase):
             analysis_context=analysis_context,
             project_summary=str(prompt_context.get("project_summary") or workspace.project_summary),
             review_materials=review_materials,
+            latest_test_result=latest_test_result,
+            review_strategy=review_strategy,
             context=context,
         )
         review_issues = self._merge_review_issues(rule_issues=rule_issues, llm_review=llm_review)
@@ -84,7 +95,9 @@ class ReviewerAgent(AgentBase):
                 llm_review=llm_review,
             ),
             "rule_issue_count": len(rule_issues),
+            "rule_group_counts": self._count_rule_groups(review_issues),
             "llm_review_used": llm_review is not None,
+            "review_strategy": review_strategy,
         }
         return AgentResult(
             task_id=task.task_id,
@@ -114,6 +127,8 @@ class ReviewerAgent(AgentBase):
         summary: str,
         coder_context: dict[str, object],
         review_materials: dict[str, dict[str, str]],
+        latest_test_result: dict[str, object],
+        review_strategy: dict[str, object],
     ) -> list[ReviewIssue]:
         issues: list[ReviewIssue] = []
         modified_files = [str(item) for item in coder_context.get("modified_files", []) if str(item).strip()]
@@ -121,57 +136,69 @@ class ReviewerAgent(AgentBase):
         deleted_files = [str(item) for item in coder_context.get("deleted_files", []) if str(item).strip()]
         risk_notes = [str(item) for item in coder_context.get("risk_notes", []) if str(item).strip()]
         diff_previews = review_materials.get("diff_previews", {})
-        if not modified_files and not created_files and not deleted_files:
+        changed_file_snippets = review_materials.get("changed_file_snippets", {})
+        key_file_snippets = review_materials.get("key_file_snippets", {})
+        strictness = str(review_strategy.get("strictness") or "normal")
+        missing_test_severity: Literal["medium", "high"] = "high" if strictness == "strict" else "medium"
+        if self._rule_enabled(review_strategy, "scope") and not modified_files and not created_files and not deleted_files:
             issues.append(
                 ReviewIssue(
                     severity="medium",
                     title="未检测到实际文件改动",
                     detail="Coder 输出了摘要，但没有检测到文件变化，建议确认是否真的完成修改。",
+                    category="scope",
                 )
             )
-        if deleted_files:
+        if self._rule_enabled(review_strategy, "scope") and deleted_files:
             issues.append(
                 ReviewIssue(
                     severity="high",
                     title="存在文件删除",
                     detail="本次修改包含文件删除，请确认不会破坏现有行为或教学路径。",
                     file_path=deleted_files[0],
+                    category="scope",
                 )
             )
-        if len(modified_files) + len(created_files) > 6:
+        if self._rule_enabled(review_strategy, "scope") and len(modified_files) + len(created_files) > 6:
             issues.append(
                 ReviewIssue(
                     severity="medium",
                     title="改动范围偏大",
                     detail="当前改动涉及文件较多，建议检查是否偏离了“局部修改”的目标。",
+                    category="scope",
                 )
             )
-        if any("未检测到工作区文件变化" in note for note in risk_notes):
+        if self._rule_enabled(review_strategy, "scope") and any("未检测到工作区文件变化" in note for note in risk_notes):
             issues.append(
                 ReviewIssue(
                     severity="medium",
                     title="修改未落盘风险",
                     detail="存在仅生成建议未真正写入文件的风险，建议在测试前再次确认。",
+                    category="scope",
                 )
             )
-        if summary and "风险" in summary and not issues:
+        if self._rule_enabled(review_strategy, "maintainability") and summary and "风险" in summary and not issues:
             issues.append(
                 ReviewIssue(
                     severity="low",
                     title="需人工复核",
                     detail="Coder 摘要中提到了风险，建议在继续前做人工确认。",
+                    category="maintainability",
                 )
             )
-        if any(path.startswith("app/contracts/") for path in modified_files):
+        if self._rule_enabled(review_strategy, "boundaries") and any(path.startswith("app/contracts/") for path in modified_files):
             issues.append(
                 ReviewIssue(
                     severity="medium",
                     title="修改了共享协议层",
                     detail="本次改动涉及共享 contract，建议额外检查是否会影响 v1/v2 的边界稳定性。",
                     file_path=next(path for path in modified_files if path.startswith("app/contracts/")),
+                    category="boundaries",
                 )
             )
-        if any(path.startswith("app/v1/") for path in modified_files + created_files + deleted_files):
+        if self._rule_enabled(review_strategy, "boundaries") and any(
+            path.startswith("app/v1/") for path in modified_files + created_files + deleted_files
+        ):
             issues.append(
                 ReviewIssue(
                     severity="high",
@@ -182,40 +209,84 @@ class ReviewerAgent(AgentBase):
                         for path in modified_files + created_files + deleted_files
                         if path.startswith("app/v1/")
                     ),
+                    category="boundaries",
                 )
             )
-        if not any(path.startswith("tests/") for path in modified_files + created_files) and (
+        if self._rule_enabled(review_strategy, "testing") and not any(
+            path.startswith("tests/") for path in modified_files + created_files
+        ) and (
             modified_files or created_files or deleted_files
         ):
             issues.append(
                 ReviewIssue(
-                    severity="medium",
+                    severity=missing_test_severity,
                     title="缺少测试改动",
                     detail="当前代码发生了实际修改，但未检测到测试文件变更，建议确认是否已有足够覆盖。",
+                    category="testing",
                 )
             )
+        if self._rule_enabled(review_strategy, "testing"):
+            test_issue = self._build_test_feedback_issue(
+                summary=summary,
+                latest_test_result=latest_test_result,
+                mode=str(review_strategy.get("test_failure_mode") or "block"),
+            )
+            if test_issue is not None:
+                issues.append(test_issue)
         for path, preview in diff_previews.items():
             if not preview.strip():
                 continue
             lowered = preview.lower()
-            if "except Exception" in preview or "except:" in lowered:
+            if self._rule_enabled(review_strategy, "security"):
+                issues.extend(self._build_security_rule_issues(path=path, text=preview))
+            if self._rule_enabled(review_strategy, "maintainability") and (
+                "except Exception" in preview or "except:" in lowered
+            ):
                 issues.append(
                     ReviewIssue(
                         severity="medium",
                         title="存在宽泛异常捕获",
                         detail="diff 中出现了宽泛异常捕获，建议确认是否会掩盖真实错误。",
                         file_path=path,
+                        category="maintainability",
                     )
                 )
-            if "TODO" in preview or "FIXME" in preview:
+            if self._rule_enabled(review_strategy, "maintainability") and ("TODO" in preview or "FIXME" in preview):
                 issues.append(
                     ReviewIssue(
                         severity="low",
                         title="遗留 TODO/FIXME",
                         detail="本次改动中包含 TODO/FIXME 标记，建议确认是否适合作为当前阶段提交内容。",
                         file_path=path,
+                        category="maintainability",
                     )
                 )
+            if self._rule_enabled(review_strategy, "api") and self._looks_like_public_api_change(path=path, text=preview):
+                issues.append(
+                    ReviewIssue(
+                        severity="medium",
+                        title="公共接口变更需复核",
+                        detail="diff 显示公共函数/类签名发生变化，建议确认调用方和文档是否同步更新。",
+                        file_path=path,
+                        category="api",
+                    )
+                )
+        if self._rule_enabled(review_strategy, "security"):
+            for path, snippet in changed_file_snippets.items():
+                issues.extend(self._build_security_rule_issues(path=path, text=snippet))
+        if self._rule_enabled(review_strategy, "domain") and self._touches_auth_or_storage(
+            paths=modified_files + created_files + deleted_files,
+            summary=summary,
+            snippets={**changed_file_snippets, **key_file_snippets},
+        ) and not any(path.startswith("tests/") for path in modified_files + created_files):
+            issues.append(
+                ReviewIssue(
+                    severity="high" if strictness == "strict" else "medium",
+                    title="认证或存储改动缺少测试覆盖",
+                    detail="本次改动看起来触及认证、用户数据或持久化路径，但未检测到测试文件变更，建议补充回归验证。",
+                    category="domain",
+                )
+            )
         return issues
 
     def _build_llm_review(
@@ -226,13 +297,21 @@ class ReviewerAgent(AgentBase):
         analysis_context: object,
         project_summary: str,
         review_materials: dict[str, dict[str, str]],
+        latest_test_result: dict[str, object],
+        review_strategy: dict[str, object],
         context: AgentContext,
     ) -> tuple[ReviewOutputPayload | None, RunUsage | None]:
+        if not bool(review_strategy.get("llm_enabled", True)):
+            return None, None
+        max_issues = int(review_strategy.get("max_issues") or 5)
+        focus_areas = review_strategy.get("focus_areas") or []
         system_prompt = (
             "You are the Reviewer Agent for SimpleCodeAgent V2. "
             "Return only valid JSON with keys review_summary, issues, recommended_action. "
             "issues must be a list of objects with severity, title, detail, file_path. "
-            "Focus on correctness risk, maintainability, boundary violations, and missing validation. "
+            "Focus on correctness risk, test-result consistency, maintainability, boundary violations, "
+            "security-sensitive changes, and missing validation. "
+            "Respect enabled rule groups and review strategy. "
             "Do not restate the input unless it is relevant to a review concern."
         )
         user_prompt = "\n".join(
@@ -241,10 +320,13 @@ class ReviewerAgent(AgentBase):
                 f"代码改动摘要：{summary}",
                 f"Coder 上下文：{json.dumps(coder_context, ensure_ascii=False)}",
                 f"Analyst 上下文：{json.dumps(analysis_context, ensure_ascii=False)}",
+                f"最近测试结果：{json.dumps(latest_test_result, ensure_ascii=False)}",
+                f"Review 策略：{json.dumps(review_strategy, ensure_ascii=False)}",
                 f"Diff 预览：{json.dumps(review_materials.get('diff_previews', {}), ensure_ascii=False)}",
                 f"改动文件片段：{json.dumps(review_materials.get('changed_file_snippets', {}), ensure_ascii=False)}",
                 f"关键文件片段：{json.dumps(review_materials.get('key_file_snippets', {}), ensure_ascii=False)}",
-                "请做一次简洁但严格的 code review，指出 0-5 个最重要的问题。",
+                f"请做一次简洁但严格的 code review，指出 0-{max_issues} 个最重要的问题。",
+                f"优先关注：{', '.join(str(item) for item in focus_areas) if focus_areas else '默认工程风险'}。",
             ]
         )
         payload, llm_result = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
@@ -279,6 +361,8 @@ class ReviewerAgent(AgentBase):
             if existing is None:
                 merged[key] = candidate
                 continue
+            if candidate.category is None and existing.category is not None:
+                candidate.category = existing.category
             if severity_rank[candidate.severity] > severity_rank[existing.severity]:
                 merged[key] = candidate
             elif len(candidate.detail) > len(existing.detail):
@@ -320,6 +404,168 @@ class ReviewerAgent(AgentBase):
         if any(issue.severity == "medium" for issue in review_issues):
             return "建议优先处理中风险 review 问题，再继续后续验证。"
         return "可以继续进入测试验证。"
+
+    def _resolve_review_strategy(self, *, task: AgentTask, prompt_context: dict[str, object]) -> dict[str, object]:
+        raw = {}
+        prompt_strategy = prompt_context.get("review_strategy")
+        if isinstance(prompt_strategy, dict):
+            raw.update(prompt_strategy)
+        task_strategy = task.input_data.get("review_strategy") if isinstance(task.input_data, dict) else None
+        if isinstance(task_strategy, dict):
+            raw.update(task_strategy)
+        strictness = str(raw.get("strictness") or "normal").lower()
+        if strictness not in {"light", "normal", "strict"}:
+            strictness = "normal"
+        max_issues = raw.get("max_issues", 5)
+        try:
+            max_issues_int = int(max_issues)
+        except (TypeError, ValueError):
+            max_issues_int = 5
+        max_issues_int = min(max(max_issues_int, 1), 10)
+        focus_areas = raw.get("focus_areas", [])
+        if not isinstance(focus_areas, list):
+            focus_areas = []
+        return {
+            "llm_enabled": bool(raw.get("llm_enabled", True)),
+            "strictness": strictness,
+            "max_issues": max_issues_int,
+            "focus_areas": [str(item) for item in focus_areas if str(item).strip()][:8],
+            "rule_groups": self._normalize_rule_groups(raw.get("rule_groups")),
+            "test_failure_mode": self._normalize_test_failure_mode(raw.get("test_failure_mode")),
+        }
+
+    def _coerce_mapping(self, value: object) -> dict[str, object]:
+        return value if isinstance(value, dict) else {}
+
+    def _build_test_feedback_issue(
+        self,
+        *,
+        summary: str,
+        latest_test_result: dict[str, object],
+        mode: str,
+    ) -> ReviewIssue | None:
+        if mode == "off":
+            return None
+        if not latest_test_result:
+            lowered_summary = summary.lower()
+            if any(token in lowered_summary for token in ("测试通过", "编译成功", "build successful", "passed")):
+                return ReviewIssue(
+                    severity="low",
+                    title="验证结论缺少结构化测试记录",
+                    detail="Coder 摘要声称已验证通过，但 Reviewer 未收到 latest_test_result，建议确认验证结果是否已进入 trace/workspace。",
+                    category="testing",
+                )
+            return None
+        status = str(latest_test_result.get("status") or "").lower()
+        executed_command = str(latest_test_result.get("executed_command") or "")
+        test_summary = str(latest_test_result.get("summary") or "")
+        failure_type = str(latest_test_result.get("failure_type") or "")
+        if status == "passed":
+            return None
+        if failure_type in {"command_blocked", "no_tests_collected"}:
+            return ReviewIssue(
+                severity="medium",
+                title="验证未形成有效结论",
+                detail=f"最近验证未能形成有效测试结论（{executed_command}）：{test_summary}",
+                category="testing",
+            )
+        return ReviewIssue(
+            severity="high" if mode == "block" else "medium",
+            title="测试失败仍未解决",
+            detail=f"最近验证失败（{executed_command}）：{test_summary}。Reviewer 不应放行该改动。",
+            category="testing",
+        )
+
+    def _build_security_rule_issues(self, *, path: str, text: str) -> list[ReviewIssue]:
+        lowered = text.lower()
+        issues: list[ReviewIssue] = []
+        security_patterns: list[tuple[str, str, str]] = [
+            ("危险动态执行", r"\b(eval|exec)\s*\(", "diff 中出现 eval/exec，建议确认是否存在代码注入风险。"),
+            ("不安全反序列化", r"\bpickle\.loads?\s*\(", "diff 中出现 pickle 反序列化，建议确认输入是否完全可信。"),
+            ("不安全 YAML 加载", r"yaml\.load\s*\(", "diff 中出现 yaml.load，建议使用 safe_load 或显式 Loader。"),
+            ("Shell 注入风险", r"shell\s*=\s*True|os\.system\s*\(|subprocess\.(run|popen|call)\s*\(", "diff 中出现 shell/subprocess 调用，建议确认参数来源和转义策略。"),
+            ("疑似硬编码密钥", r"(api[_-]?key|secret|token|password)\s*=\s*['\"][^'\"]{8,}", "diff 中疑似出现硬编码密钥或密码。"),
+        ]
+        for title, pattern, detail in security_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                issues.append(ReviewIssue(severity="high", title=title, detail=detail, file_path=path, category="security"))
+        if "../" in text or "..\\" in text:
+            issues.append(
+                ReviewIssue(
+                    severity="medium",
+                    title="路径穿越风险",
+                    detail="diff 中出现上级目录路径片段，建议确认文件路径已限制在工作区内。",
+                    file_path=path,
+                    category="security",
+                )
+            )
+        if "chmod 777" in lowered:
+            issues.append(
+                ReviewIssue(
+                    severity="medium",
+                    title="文件权限过宽",
+                    detail="diff 中出现 chmod 777，建议使用更小权限范围。",
+                    file_path=path,
+                    category="security",
+                )
+            )
+        return issues
+
+    def _normalize_rule_groups(self, raw_groups: object) -> list[str]:
+        if not isinstance(raw_groups, list):
+            return list(DEFAULT_RULE_GROUPS)
+        selected = [str(item).strip().lower() for item in raw_groups if str(item).strip()]
+        return [group for group in DEFAULT_RULE_GROUPS if group in selected]
+
+    def _normalize_test_failure_mode(self, raw_mode: object) -> str:
+        mode = str(raw_mode or "block").strip().lower()
+        return mode if mode in TEST_FAILURE_MODES else "block"
+
+    def _rule_enabled(self, review_strategy: dict[str, object], group: str) -> bool:
+        raw_groups = review_strategy.get("rule_groups")
+        if not isinstance(raw_groups, list):
+            return True
+        return group in {str(item) for item in raw_groups}
+
+    def _count_rule_groups(self, issues: list[ReviewIssue]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for issue in issues:
+            category = issue.category or "uncategorized"
+            counts[category] = counts.get(category, 0) + 1
+        return counts
+
+    def _looks_like_public_api_change(self, *, path: str, text: str) -> bool:
+        if path.startswith("tests/"):
+            return False
+        return bool(re.search(r"^[+-]\s*(def|class|export\s+function|public\s+|fun\s+)\s+\w+", text, re.MULTILINE))
+
+    def _touches_auth_or_storage(
+        self,
+        *,
+        paths: list[str],
+        summary: str,
+        snippets: dict[str, str],
+    ) -> bool:
+        haystack = " ".join([summary, *paths, *snippets.values()]).lower()
+        return any(
+            token in haystack
+            for token in (
+                "auth",
+                "login",
+                "password",
+                "token",
+                "userrepository",
+                "storage",
+                "database",
+                "sqlite",
+                "persist",
+                "认证",
+                "登录",
+                "密码",
+                "存储",
+                "数据库",
+            )
+        )
 
     def _collect_review_materials(
         self,

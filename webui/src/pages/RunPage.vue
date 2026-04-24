@@ -92,6 +92,17 @@
       <p class="muted" style="margin: 8px 0 0">
         快速修复可只保留 Analyst + Coder；严格闭环建议启用 Tester，必要时启用 Reviewer。
       </p>
+
+      <div v-if="form.v2_enabled_agents.includes('reviewer')" class="reviewer-config-card">
+        <label>Reviewer 策略</label>
+        <p class="muted">
+          当前使用 `/agents` 中保存的 Reviewer 配置：
+          严格度 <code>{{ form.v2_review_strategy.strictness }}</code>，
+          测试失败 <code>{{ form.v2_review_strategy.test_failure_mode }}</code>，
+          规则分组 {{ form.v2_review_strategy.rule_groups.length }} 个。
+        </p>
+        <RouterLink class="btn-secondary btn-sm" to="/agents?agent=reviewer">前往配置 Reviewer</RouterLink>
+      </div>
     </div>
 
     <div class="row" style="margin-top: 14px">
@@ -112,9 +123,10 @@
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { runAgent } from "../api";
+import { loadReviewStrategy } from "../reviewerConfig";
 
 const router = useRouter();
 const loading = ref(false);
@@ -139,6 +151,11 @@ const form = reactive({
   include_trace: false,
   system_prompt: "You are a helpful assistant.",
   v2_enabled_agents: [...defaultV2Agents],
+  v2_review_strategy: loadReviewStrategy(),
+});
+
+onMounted(() => {
+  form.v2_review_strategy = loadReviewStrategy();
 });
 
 function toggleV2Agent(agentId) {
@@ -176,6 +193,9 @@ async function submitRun() {
       payload.system_prompt = form.system_prompt;
     } else {
       payload.v2_enabled_agents = [...form.v2_enabled_agents];
+      if (form.v2_enabled_agents.includes("reviewer")) {
+        payload.v2_review_strategy = loadReviewStrategy();
+      }
     }
     const result = await runAgent(payload);
     if (form.version === "v2") {

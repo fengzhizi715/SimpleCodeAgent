@@ -25,16 +25,19 @@
   - 多 Agent 基础协议
   - Registry / Workspace / Context Builder 基础版
   - Agent 实现已拆分到 `app/v2/agent_impls/*`，职责边界更清晰
-  - `Planner / Analyst / Coder / Tester` 四个角色的 P0 能力
-  - `ReviewerAgent` 基础版
+  - `Orchestrator / Planner / Analyst / Coder / Tester` 五个角色的 P0 能力
+  - `ReviewerAgent` 增强基础版
   - 中心化 `Orchestrator Runtime`
   - 一次 `Tester -> Coder` 失败回流
   - 基础 trace 事件
   - API 入口接入
   - CLI `v2` 入口接入
+  - WebUI 基础运行页、历史页、执行回放页
+  - 按次运行选择启用的 V2 Agent（Planner 固定启用，Analyst / Coder / Tester / Reviewer 可配置）
+  - V2 内部 Coder 子运行不再作为独立 V1 顶层历史展示
 - 还没有完成：
-  - 真正完整的 execution log / replay
-  - workspace 持久化与 artifact 治理增强版
+  - 真正完整的 execution log / replay 增强版
+  - workspace 与 artifact 治理增强版
   - 更完整的 CLI/demo 闭环
 
 因此，当前 `v2` 应被视为：
@@ -68,8 +71,16 @@
    - 它会带来两层 loop 的教学语义，因此必须明确边界：
    - `v2 Orchestrator` 负责多 Agent 编排。
    - `CoderAgent` 内部的 `v1 AgentLoop` 只负责单任务执行，不具备再次调度其他 Agent 的权力。
+   - 内层 `v1 AgentLoop` 产生的 run 会被标记为 `is_top_level=False`，并以 `parent_run_id` 关联外层 V2 run。
+   - 运行历史默认只展示用户发起的顶层 run；历史遗留的 `session_id LIKE '%:v2:coder'` 内部 run 会被回填/过滤，避免误显示为独立 V1 运行。
 
-5. `app/v2/agent_impls/common.py` 目前是兼容层（re-export），用于平滑拆分后的导入迁移。
+5. Tester / Reviewer 当前是“可配置参与”的协作角色，而不是每次 V2 运行都强制执行。
+   - Planner 始终启用。
+   - Analyst / Coder / Tester / Reviewer 可通过 API/WebUI 的运行级配置启用或禁用。
+   - 关闭 Tester 时，V2 可以用于“快速修复 / 只要代码改动”的场景，但最终答复应避免宣称已通过测试。
+   - 开启 Tester 时，系统会优先使用项目分析结果选择验证命令，但验证命令策略仍属于基础版。
+
+6. `app/v2/agent_impls/common.py` 目前是兼容层（re-export），用于平滑拆分后的导入迁移。
    - 新代码应优先直接从 `payloads.py / llm_utils.py / workspace_diff.py` 导入。
    - 当仓库内不再有对 `common.py` 的直接引用后，可在后续版本移除该兼容层。
 
@@ -194,8 +205,21 @@
 - 输出结构化测试报告
 - 在失败时给出 `suggested_next_action`
 
+#### Orchestrator Agent
+
+已支持：
+
+- 作为独立 `OrchestratorAgent` 注册进 Agent Registry
+- 在 Agent Matrix / `/debug/agents` / WebUI Agents 页中展示调度者身份
+- 输出中心化调度策略快照，包括启用 Agent、`max_steps`、`max_replans`、timeout、`review_strategy`
+- 将 orchestrator policy 写入 workspace 的 `private_context["orchestrator"]`
+- 在 `run_started` trace payload 中记录 orchestrator policy，便于后续回放和教学解释
+
+当前实现中，`OrchestratorRuntime` 仍负责稳定的执行主循环；`OrchestratorAgent` 先承担“身份 + 策略 + trace 视角”。这避免一次性重写主循环，同时为后续引入 orchestrator prompt / strategy profile 留出边界。
+
 对应文件：
 
+- `app/v2/agent_impls/orchestrator.py`
 - `app/v2/agent_impls/planner.py`
 - `app/v2/agent_impls/analyst.py`
 - `app/v2/agent_impls/coder.py`
@@ -208,12 +232,17 @@
 
 - Review 最新 patch 结果
 - 输出结构化 issues 列表
-- 规则库 review
-- 可选的 LLM 结构化 review
+- 增强版规则库 review
+- 可配置的 LLM 结构化 review
+- 可配置的规则分组（scope / testing / security / maintainability / boundaries / api / domain）
 - 规则与 LLM review 结果合并
+- 读取 diff previews、改动文件片段和关键文件片段
+- 联动最近测试结果进行复核，并支持 `off / suggest / block` 三种测试失败策略
+- 基础 review 策略配置（`llm_enabled / strictness / max_issues / focus_areas / rule_groups / test_failure_mode`）
+- WebUI `/agents` 页支持点击 Reviewer 配置策略，RunPage 会读取保存后的策略用于新运行
 - 将 review 结果写入 workspace / artifact / replay
 
-当前实现为“规则库 + 可选 LLM review”的基础版 reviewer，重点用于补齐工程闭环并提升 review 上限。
+当前实现为“增强规则库 + 可配置 LLM review”的 reviewer，重点用于补齐工程闭环并提升 review 上限。
 
 ### 2.6 Orchestrator Runtime
 
@@ -229,10 +258,19 @@
 已支持：
 
 - `max_steps`
+- `run_timeout_seconds`
 - 有限 `replan`
 - 一次 `Tester -> Coder` 回流
 - fail fast
 - final answer 汇总
+- 运行级 Agent 启用配置
+- 按启用 Agent 过滤 plan step
+- Reviewer 只在启用时自动跟随 Coder 执行
+
+当前默认教学链路倾向：
+
+- 修复/实现类任务：`Planner -> Analyst -> Coder -> Tester`
+- 快速修复模式：可通过运行配置关闭 `Tester / Reviewer`，形成 `Planner -> Analyst -> Coder`
 
 对应文件：
 
@@ -278,6 +316,12 @@
 
 其中 `v2` 已接入 `OrchestratorRuntime`。
 
+当前 V2 API 还支持：
+
+- `v2_enabled_agents`：按次运行控制启用的 Agent
+- `run_timeout_seconds`：控制运行超时
+- `workdir`：指定目标项目目录
+
 对应文件：
 
 - `app/api/routes/agent.py`
@@ -290,18 +334,43 @@
 - `SharedWorkspace` 落库
 - `DelegationRecord` 落库
 - `runs` 元数据与 `workspace / delegation / trace` 关联
+- `runs.workdir` 持久化
+- `runs.is_top_level / parent_run_id` 用于区分用户顶层运行与内部子运行
 - 按 `run` 回放主要执行数据
 - 按 `session` 聚合回放主要执行数据
 - 教学展示友好的 `teaching_view`
 - Debug API 的 replay 输出
 - artifact 内容持久化与回放
 - execution node 基础视图
+- 运行历史默认过滤 V2 Coder 内部复用 V1 loop 产生的非顶层 run
 
 对应文件：
 
 - `app/v2/repository.py`
 - `app/v2/runtime.py`
+- `app/db/sqlite.py`
 - `app/api/routes/debug.py`
+
+### 2.10 WebUI 基础版
+
+当前已支持：
+
+- 新建运行任务
+- 选择 `v1 / v2`
+- 配置 `workdir / max_steps / run_timeout_seconds`
+- V2 运行级 Agent 勾选配置
+- 查看运行历史
+- 查看 V2 执行回放
+- 查看 V2 trace 页面
+
+当前 WebUI 更适合作为教学/调试入口，而不是完整产品化控制台。
+
+对应文件：
+
+- `webui/src/pages/RunPage.vue`
+- `webui/src/pages/HistoryPage.vue`
+- `webui/src/pages/RunExecutionPage.vue`
+- `webui/src/pages/RunTracePage.vue`
 
 ---
 
@@ -327,17 +396,22 @@
 
 - 已能优先通过 LLM 生成结构化 plan
 - 结构化解析失败时会回退到 `v1 SimplePlanner`
+- 已有基础 plan policy，可将修复/实现类任务归一化为更适合教学的顺序
+- 已支持按运行级 Agent 配置过滤不可用步骤
 
 缺口：
 
 - replan 还不够智能
 - 步骤级策略解释能力还偏弱
+- 对“禁用某类 Agent 后如何调整计划目标”的语义解释仍较弱
 
 ### 3.3 Analyst Agent
 
 当前状态：
 
 - 已能输出项目摘要、模块职责、入口文件、关键文件和编码提示
+- 已能识别部分项目画像，例如 Gradle/Kotlin、Python、Node/generic
+- 对目录扫描、关键文件读取、结构总结等不同分析模式已有基础区分
 
 缺口：
 
@@ -350,11 +424,14 @@
 
 - 已能借助 `v1 AgentLoop` 做实际修改
 - 已输出文件变更、diff 预览和风险说明
+- 内层 `v1 AgentLoop` 已标记为非顶层 run，避免污染运行历史
+- 内层 run 通过 `root_run_id / parent_run_id` 保留追踪关系
 
 缺口：
 
 - diff / patch 仍是轻量预览版
 - patch artifact 版本治理仍然较弱
+- 仍需在教学中解释“两层 loop”的边界，避免误解为子 Agent 又拥有编排能力
 
 ### 3.5 Tester Agent
 
@@ -362,11 +439,14 @@
 
 - 已能跑命令并输出结构化测试报告
 - 已会优先选择更聚焦的测试命令
+- 已支持根据 Gradle/Kotlin 项目画像选择 `compileKotlin / compileKotlinJvm / test` 等候选命令
+- 已可通过运行级 Agent 配置跳过
 
 缺口：
 
 - 构建校验与测试范围控制仍然有限
 - 失败原因分类还比较粗糙
+- 项目类型识别和验证命令选择还需要更多技术栈覆盖
 
 ### 3.6 Retry / RePlan / Fallback
 
@@ -399,14 +479,22 @@
 
 ### 4.1 Reviewer Agent
 
-当前已实现基础版。
+当前已实现增强基础版。
+
+已具备：
+
+- 更丰富的规则库覆盖，包括 v1/v2 边界、共享 contract、缺少测试、宽泛异常捕获、公共接口变更、安全敏感模式等。
+- 可配置 LLM review 策略，可关闭 LLM 或调整严格度、问题数量与关注点。
+- 已支持规则分组开关，可按运行启用/禁用 scope、testing、security、maintainability、boundaries、api、domain。
+- 与最近测试结果联动，能识别“测试失败仍未解决”“验证未形成有效结论”等情况，并可配置 `off / suggest / block`。
+- 读取 diff preview、改动文件片段和关键文件片段，避免只基于 Coder summary 做 review。
+- WebUI `/agents` 页已有 Reviewer 策略配置面板。
 
 还没有：
 
-- 更强的规则库覆盖
-- 更丰富的 LLM review 策略
-- 与测试失败结果的联动复核
-- 更细粒度的 review 策略配置
+- 可保存/复用的 Reviewer strategy profile
+- run 详情页中的 review 分组统计展示
+- 与 Tester 失败回流策略的深度联动
 
 ### 4.2 CLI 的 v2 入口
 
@@ -449,13 +537,14 @@
 
 ### 4.5 更强的 capability-based 路由
 
-当前 registry 主要按 `agent_id` 获取。
+当前 registry 主要按 `agent_id` 获取，但已具备运行级 Agent 启用/禁用能力。
 
 还没有：
 
 - 按 capability 查询
 - 按任务类型自动选 Agent
-- 启用/禁用的管理接口
+- 独立的 Agent 管理接口
+- 更细粒度的权限/能力策略
 
 ### 4.6 Trace 落库的增强版
 
@@ -559,24 +648,30 @@
 - 支持按 `session / run` 回放主要过程
 - `workspace` 可持久化
 - delegation 可持久化
+- 运行历史可同时展示 `v1 / v2` 顶层 run
+- V2 内部 Coder 子运行已从运行历史中过滤
+- WebUI 支持 V2 Agent 运行级勾选配置
+- V2 运行记录持久化 `workdir`
 
 后续仍需继续：
 
 - 更清晰的 delegation tree 增强版
 - 更面向课程和 UI 的 replay 增强版
+- 更清楚地区分“已修改代码”和“已测试通过”的最终答复口径
 
 ### P2：进入增强版
 
 当前已完成基础版：
 
-- `ReviewerAgent`
+- `ReviewerAgent` 增强基础版
+- Reviewer 规则分组、WebUI Agent 配置页、测试失败联动策略
 - artifact 管理增强版（基础落库与回放）
 - execution node 基础视图
 
 后续仍可继续：
 
 - 升级 memory 策略
-- 继续增强 reviewer 的智能性
+- 继续把 Reviewer 策略从浏览器本地配置升级为后端 profile，并在 run 详情页展示分组统计
 - 为未来并行执行和 `v3` 事件驱动保留扩展点
 
 ---

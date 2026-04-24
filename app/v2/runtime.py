@@ -97,13 +97,21 @@ class OrchestratorRuntime:
         run_timeout_seconds: int = 120,
         max_replans: int = 1,
         enabled_agents: set[str] | list[str] | tuple[str, ...] | None = None,
+        review_strategy: dict[str, object] | None = None,
     ) -> RunResult:
         run_id = str(uuid4())
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         workspace = SharedWorkspace(session_id=session_id, run_id=run_id, user_goal=task)
         workspace_store = WorkspaceStore(workspace, workspace_root=workspace_root)
         allowed_agents = self._normalize_enabled_agents(enabled_agents)
-        workspace.private_context["orchestrator"] = {"enabled_agents": sorted(allowed_agents)}
+        orchestrator_policy = self._build_orchestrator_policy(
+            enabled_agents=allowed_agents,
+            max_steps=max_steps,
+            max_replans=max_replans,
+            run_timeout_seconds=run_timeout_seconds,
+            review_strategy=review_strategy,
+        )
+        workspace.private_context["orchestrator"] = orchestrator_policy
         context = AgentContext(
             provider=provider,
             model=model,
@@ -142,6 +150,7 @@ class OrchestratorRuntime:
             input_summary=task,
             event_type="run_started",
             message="V2 orchestrator run started.",
+            payload={"orchestrator_policy": orchestrator_policy},
         )
         self._record_trace(trace_events, trace_recorder, run_started_event)
 
@@ -257,6 +266,8 @@ class OrchestratorRuntime:
                 retry_count=step.retry_count,
                 max_retries=step.max_retries,
             )
+            if step_task.target_agent == "reviewer" and review_strategy:
+                step_task.input_data["review_strategy"] = review_strategy
             result = delegation_client.delegate(
                 agent_id=step_task.target_agent,
                 task=step_task,
@@ -295,13 +306,14 @@ class OrchestratorRuntime:
                     and self.registry.get("reviewer") is not None
                 ):
                     self._run_review_step(
-                    workspace=workspace,
-                    context=context,
-                    delegation_client=delegation_client,
-                    trace_events=trace_events,
-                    delegation_records=delegation_records,
-                    workspace_store=workspace_store,
+                        workspace=workspace,
+                        context=context,
+                        delegation_client=delegation_client,
+                        trace_events=trace_events,
+                        delegation_records=delegation_records,
+                        workspace_store=workspace_store,
                         step=step,
+                        review_strategy=review_strategy,
                     )
                 step.status = "completed"
                 step.output_summary = result.summary
@@ -632,6 +644,7 @@ class OrchestratorRuntime:
         delegation_records: list[DelegationRecord],
         workspace_store: WorkspaceStore,
         step,
+        review_strategy: dict[str, object] | None = None,
     ) -> None:
         review_task = AgentTask(
             session_id=context.session_id,
@@ -640,7 +653,7 @@ class OrchestratorRuntime:
             goal="Review 最新代码改动，检查明显风险和可维护性问题。",
             step_type="review",
             target_agent="reviewer",
-            input_data={},
+            input_data={"review_strategy": review_strategy or {}},
             success_criteria=["输出 review 摘要和 issues 列表"],
         )
         review_result = delegation_client.delegate(
@@ -815,7 +828,38 @@ class OrchestratorRuntime:
             allowed = {str(agent_id).strip() for agent_id in enabled_agents if str(agent_id).strip()}
             allowed &= registered
         allowed.add("planner")
+        allowed.add("orchestrator")
         return allowed
+
+    def _build_orchestrator_policy(
+        self,
+        *,
+        enabled_agents: set[str],
+        max_steps: int,
+        max_replans: int,
+        run_timeout_seconds: int,
+        review_strategy: dict[str, object] | None,
+    ) -> dict[str, object]:
+        agent = self.registry.get("orchestrator")
+        if agent is not None and hasattr(agent, "build_run_policy"):
+            return agent.build_run_policy(  # type: ignore[attr-defined]
+                enabled_agents=enabled_agents,
+                max_steps=max_steps,
+                max_replans=max_replans,
+                run_timeout_seconds=run_timeout_seconds,
+                review_strategy=review_strategy,
+            )
+        return {
+            "orchestrator_agent_id": "orchestrator",
+            "mode": "centralized",
+            "enabled_agents": sorted(enabled_agents),
+            "max_steps": max_steps,
+            "max_replans": max_replans,
+            "run_timeout_seconds": run_timeout_seconds,
+            "delegation_model": "orchestrator_only",
+            "sub_agent_delegation_allowed": False,
+            "review_strategy": review_strategy or {},
+        }
 
     def _enabled_agents_from_workspace(self, workspace: SharedWorkspace) -> set[str]:
         orchestrator_context = workspace.private_context.get("orchestrator", {})

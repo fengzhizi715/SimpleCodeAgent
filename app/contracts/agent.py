@@ -134,6 +134,7 @@ class ReviewIssue(BaseModel):
     title: str
     detail: str
     file_path: str | None = None
+    category: str | None = None
 
 
 class SharedWorkspace(BaseModel):

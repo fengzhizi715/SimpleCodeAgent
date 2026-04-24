@@ -31,6 +31,27 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
+class V2ReviewStrategyRequest(BaseModel):
+    """V2 Reviewer 运行级策略配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_enabled: bool = Field(default=True, description="是否启用 LLM review。")
+    strictness: Literal["light", "normal", "strict"] = Field(default="normal", description="规则严格度。")
+    max_issues: int = Field(default=5, ge=1, le=10, description="LLM review 最多返回的问题数。")
+    focus_areas: list[str] = Field(default_factory=list, max_length=8, description="LLM review 重点关注方向。")
+    rule_groups: list[
+        Literal["scope", "testing", "security", "maintainability", "boundaries", "api", "domain"]
+    ] = Field(
+        default_factory=lambda: ["scope", "testing", "security", "maintainability", "boundaries", "api", "domain"],
+        description="启用的规则分组。",
+    )
+    test_failure_mode: Literal["off", "suggest", "block"] = Field(
+        default="block",
+        description="Reviewer 对最新测试失败结果的联动策略。",
+    )
+
+
 class AgentRunRequest(BaseModel):
     """Agent 运行请求。"""
 
@@ -63,6 +84,10 @@ class AgentRunRequest(BaseModel):
     v2_enabled_agents: list[Literal["planner", "analyst", "coder", "tester", "reviewer"]] | None = Field(
         default=None,
         description="V2 可视化运行级 Agent 配置；planner 会始终启用。",
+    )
+    v2_review_strategy: V2ReviewStrategyRequest | None = Field(
+        default=None,
+        description="V2 Reviewer 运行级策略；仅在启用 reviewer 时生效。",
     )
 
 
@@ -134,6 +159,11 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                     max_steps=request.max_steps,
                     run_timeout_seconds=request.run_timeout_seconds,
                     enabled_agents=request.v2_enabled_agents,
+                    review_strategy=(
+                        request.v2_review_strategy.model_dump()
+                        if request.v2_review_strategy is not None
+                        else None
+                    ),
                 )
             else:
                 loop = get_agent_loop()

@@ -58,6 +58,9 @@ class ContextBuilder:
         if agent.agent_id == "reviewer":
             base_context["project_summary"] = workspace.project_summary
             base_context["latest_patch_summary"] = workspace.latest_patch_summary
+            base_context["latest_test_result"] = (
+                workspace.latest_test_result.model_dump() if workspace.latest_test_result else None
+            )
             base_context["coder_context"] = workspace.private_context.get("coder", {})
             base_context["analysis_context"] = workspace.private_context.get("analyst", {})
             return base_context

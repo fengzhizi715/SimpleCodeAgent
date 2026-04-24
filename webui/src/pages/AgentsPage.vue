@@ -1,7 +1,7 @@
 <template>
   <section class="panel">
     <h2>智能体列表</h2>
-    <p class="muted">只读视图：展示当前运行时注册的智能体与能力，不提供编辑操作。</p>
+    <p class="muted">展示当前运行时注册的智能体与能力；点击 Reviewer 可配置 review 策略。</p>
 
     <div class="row agents-toolbar">
       <span class="badge">总数：{{ totalLabel }}</span>
@@ -12,7 +12,13 @@
     <p v-if="!loading && !agents.length" class="muted">暂无智能体数据。</p>
 
     <div v-else class="agents-grid">
-      <article v-for="agent in agents" :key="agent.agent_id" class="agent-card">
+      <article
+        v-for="agent in agents"
+        :key="agent.agent_id"
+        class="agent-card"
+        :class="{ 'is-selected': selectedAgentId === agent.agent_id, 'is-configurable': agent.agent_id === 'reviewer' }"
+        @click="selectAgent(agent.agent_id)"
+      >
         <header class="agent-card-head">
           <code class="agent-id">{{ agent.agent_id }}</code>
           <span class="badge">{{ agent.availability || "unknown" }}</span>
@@ -27,18 +33,104 @@
       </article>
     </div>
   </section>
+
+  <section v-if="selectedAgentId === 'reviewer'" class="panel reviewer-settings-panel">
+    <div class="v2-agent-config-head">
+      <div>
+        <h3>Reviewer 策略配置</h3>
+        <p class="muted">
+          这里保存的是 WebUI 级默认策略。新建 V2 运行并启用 Reviewer 时，会自动带上这份配置。
+        </p>
+      </div>
+      <button type="button" class="btn-secondary btn-sm" @click="resetReviewerSettings">恢复默认</button>
+    </div>
+
+    <div class="grid-two">
+      <div>
+        <label>严格度</label>
+        <select v-model="reviewStrategy.strictness">
+          <option value="light">light（轻量提示）</option>
+          <option value="normal">normal（推荐）</option>
+          <option value="strict">strict（严格阻断）</option>
+        </select>
+      </div>
+      <div>
+        <label>测试失败联动</label>
+        <select v-model="reviewStrategy.test_failure_mode">
+          <option value="block">block：测试失败作为高风险</option>
+          <option value="suggest">suggest：测试失败作为建议</option>
+          <option value="off">off：不联动测试结果</option>
+        </select>
+      </div>
+      <label class="inline-toggle">
+        <input type="checkbox" v-model="reviewStrategy.llm_enabled" />
+        <span>启用 LLM Review</span>
+      </label>
+      <div>
+        <label>Max Issues</label>
+        <input v-model.number="reviewStrategy.max_issues" type="number" min="1" max="10" />
+      </div>
+    </div>
+
+    <div style="margin-top: 12px">
+      <label>规则分组</label>
+      <div class="review-rule-grid">
+        <label v-for="group in reviewRuleGroups" :key="group.id" class="review-rule-option">
+          <input
+            type="checkbox"
+            :checked="reviewStrategy.rule_groups.includes(group.id)"
+            @change="toggleReviewRuleGroup(group.id)"
+          />
+          <span>
+            <strong>{{ group.label }}</strong>
+            <small>{{ group.help }}</small>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <div style="margin-top: 12px">
+      <label>LLM 关注点（可选，逗号分隔）</label>
+      <input v-model="reviewFocusAreasText" placeholder="例如 security, tests, v1-boundary" />
+    </div>
+
+    <div class="row" style="margin-top: 14px">
+      <button type="button" class="btn-primary" @click="saveReviewerSettings">保存 Reviewer 配置</button>
+      <RouterLink class="btn-secondary" to="/run">去新建运行</RouterLink>
+      <span v-if="saveMessage" class="muted">{{ saveMessage }}</span>
+    </div>
+  </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { listAgents } from "../api";
+import {
+  defaultReviewRuleGroups,
+  loadReviewStrategy,
+  resetReviewStrategy,
+  reviewRuleGroups,
+  saveReviewStrategy,
+} from "../reviewerConfig";
 
 const loading = ref(false);
 const errorMsg = ref("");
 const agents = ref([]);
 const total = ref(0);
+const route = useRoute();
+const router = useRouter();
+const selectedAgentId = ref("");
+const saveMessage = ref("");
+const reviewStrategy = reactive(loadReviewStrategy());
+const reviewFocusAreasText = ref(reviewStrategy.focus_areas.join(", "));
 
 const totalLabel = computed(() => (typeof total.value === "number" ? `${total.value} 个` : "—"));
+
+function assignReviewStrategy(next) {
+  Object.assign(reviewStrategy, next);
+  reviewFocusAreasText.value = reviewStrategy.focus_areas.join(", ");
+}
 
 async function loadAgents() {
   loading.value = true;
@@ -57,7 +149,47 @@ async function loadAgents() {
   }
 }
 
-onMounted(loadAgents);
+function selectAgent(agentId) {
+  selectedAgentId.value = agentId === "reviewer" ? "reviewer" : agentId;
+  if (agentId === "reviewer") {
+    router.replace({ path: "/agents", query: { agent: "reviewer" } });
+  }
+}
+
+function toggleReviewRuleGroup(groupId) {
+  const selected = new Set(reviewStrategy.rule_groups);
+  if (selected.has(groupId)) {
+    selected.delete(groupId);
+  } else {
+    selected.add(groupId);
+  }
+  reviewStrategy.rule_groups = defaultReviewRuleGroups.filter((id) => selected.has(id));
+}
+
+function saveReviewerSettings() {
+  const saved = saveReviewStrategy({
+    ...reviewStrategy,
+    focus_areas: reviewFocusAreasText.value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .slice(0, 8),
+  });
+  assignReviewStrategy(saved);
+  saveMessage.value = "已保存，下一次 V2 Reviewer 运行会使用这份配置。";
+}
+
+function resetReviewerSettings() {
+  assignReviewStrategy(resetReviewStrategy());
+  saveMessage.value = "已恢复默认配置。";
+}
+
+onMounted(() => {
+  loadAgents();
+  if (route.query.agent === "reviewer") {
+    selectedAgentId.value = "reviewer";
+  }
+});
 </script>
 
 <style scoped>
@@ -82,6 +214,22 @@ onMounted(loadAgents);
   border-radius: var(--radius-sm, 8px);
   background: linear-gradient(180deg, #fafbfe 0%, #f4f6fb 100%);
   padding: 12px 14px;
+  cursor: default;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.agent-card.is-configurable {
+  cursor: pointer;
+}
+
+.agent-card.is-configurable:hover,
+.agent-card.is-selected {
+  border-color: var(--accent, #4f46e5);
+  box-shadow: 0 8px 26px rgba(79, 70, 229, 0.12);
+  transform: translateY(-1px);
 }
 
 .agent-card-head {
@@ -115,5 +263,9 @@ onMounted(loadAgents);
 .agent-caps strong {
   display: inline-block;
   margin-bottom: 2px;
+}
+
+.reviewer-settings-panel {
+  border-color: rgba(79, 70, 229, 0.18);
 }
 </style>
