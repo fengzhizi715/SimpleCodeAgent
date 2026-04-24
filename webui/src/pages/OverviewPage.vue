@@ -44,6 +44,25 @@
           </p>
         </template>
       </div>
+      <div class="overview-card">
+        <h3>当前智能体</h3>
+        <p v-if="agentsLoading" class="muted">加载中…</p>
+        <template v-else>
+          <p class="overview-stat">
+            <span class="overview-stat-label">已注册智能体</span>
+            <span class="overview-stat-value">{{ agentsTotal !== null ? `${agentsTotal} 个` : "—" }}</span>
+          </p>
+          <p v-if="agentNames.length" class="muted overview-meta">
+            {{ agentNames.join(" · ") }}
+          </p>
+          <p v-else class="muted overview-meta">
+            暂未获取到智能体列表。
+          </p>
+          <p class="muted overview-hint">
+            <RouterLink to="/agents">查看全部</RouterLink>
+          </p>
+        </template>
+      </div>
     </div>
   </section>
 </template>
@@ -51,13 +70,16 @@
 <script setup>
 import { onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { getHealthz, listV2Runs } from "../api";
+import { getHealthz, listAgents, listV2Runs } from "../api";
 
 const overviewLoading = ref(true);
 const statsLoading = ref(true);
 const apiOk = ref(false);
 const health = ref(null);
 const historyTotal = ref(null);
+const agentsLoading = ref(true);
+const agentsTotal = ref(null);
+const agentNames = ref([]);
 
 async function loadOverview() {
   overviewLoading.value = true;
@@ -83,6 +105,18 @@ async function loadOverview() {
   } finally {
     statsLoading.value = false;
   }
+
+  try {
+    const data = await listAgents();
+    const agents = Array.isArray(data.agents) ? data.agents : [];
+    agentsTotal.value = typeof data.total === "number" ? data.total : agents.length;
+    agentNames.value = agents.map((item) => item.agent_id).filter(Boolean);
+  } catch {
+    agentsTotal.value = null;
+    agentNames.value = [];
+  } finally {
+    agentsLoading.value = false;
+  }
 }
 
 onMounted(loadOverview);
@@ -101,7 +135,7 @@ onMounted(loadOverview);
 .overview-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 @media (max-width: 900px) {

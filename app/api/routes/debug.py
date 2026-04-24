@@ -115,6 +115,27 @@ class V2DeleteRunResponse(BaseModel):
     deleted: bool
 
 
+class AgentCatalogItem(BaseModel):
+    """当前可用智能体条目。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    role: str
+    description: str
+    capabilities: list[str] = Field(default_factory=list)
+    availability: str = "enabled"
+
+
+class AgentCatalogResponse(BaseModel):
+    """智能体目录响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    agents: list[AgentCatalogItem] = Field(default_factory=list)
+
+
 class RagFileItem(BaseModel):
     """RAG 文件分布统计项。"""
 
@@ -254,6 +275,23 @@ def list_runs(
 ) -> V2RunHistoryResponse:
     """列出最近运行历史，默认隐藏 v1 planner/direct-tool 内部子 run。"""
     return list_v2_runs(limit=limit, offset=offset)
+
+
+@router.get("/debug/agents", response_model=AgentCatalogResponse, status_code=status.HTTP_200_OK)
+def list_agents() -> AgentCatalogResponse:
+    """列出当前运行时注册的智能体。"""
+    specs = get_v2_runtime().registry.list_specs()
+    agents = [
+        AgentCatalogItem(
+            agent_id=spec.agent_id,
+            role=spec.role,
+            description=spec.description,
+            capabilities=list(spec.capabilities),
+            availability=spec.availability,
+        )
+        for spec in specs
+    ]
+    return AgentCatalogResponse(total=len(agents), agents=agents)
 
 
 @router.delete("/debug/v2/runs/{run_id}", response_model=V2DeleteRunResponse, status_code=status.HTTP_200_OK)

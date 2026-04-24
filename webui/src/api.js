@@ -73,6 +73,10 @@ export async function deleteRun(runId) {
   });
 }
 
+export async function listAgents() {
+  return requestJson("/debug/agents");
+}
+
 export const listV2Runs = listRuns;
 export const deleteV2Run = deleteRun;
 

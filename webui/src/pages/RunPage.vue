@@ -8,7 +8,13 @@
 
     <div>
       <label>任务描述</label>
-      <textarea v-model="form.task" />
+      <textarea
+        v-model="form.task"
+        placeholder="例如：先分析当前项目结构，再给出一个可落地的小范围优化建议。"
+      />
+      <p class="muted" style="margin: 6px 0 0">
+        请直接描述你的目标与约束（如技术栈、改动范围、是否需要运行测试）。
+      </p>
     </div>
 
     <div class="grid-two" style="margin-top: 12px">
@@ -48,6 +54,9 @@
       <label>System Prompt（v1）</label>
       <textarea v-model="form.system_prompt" />
     </div>
+    <p v-else class="muted" style="margin: 12px 0 0">
+      v2 采用内置的多 Agent 角色提示词，由编排器统一管理；当前页面不提供自定义 System Prompt。
+    </p>
 
     <div class="row" style="margin-top: 14px">
       <button class="btn-primary" :disabled="loading" @click="submitRun">
@@ -77,7 +86,7 @@ const error = ref("");
 const v1Result = ref(null);
 
 const form = reactive({
-  task: "请分析当前项目并给出一个小范围优化建议，然后尝试落地。",
+  task: "",
   version: "v2",
   model: "",
   session_id: "",
@@ -93,12 +102,18 @@ async function submitRun() {
   loading.value = true;
   try {
     const payload = {
-      ...form,
+      task: form.task,
+      version: form.version,
+      include_trace: form.include_trace,
+      max_steps: form.max_steps,
       session_id: form.session_id || null,
       workdir: form.workdir || null,
       model: form.model || null,
       temperature: 0,
     };
+    if (form.version === "v1") {
+      payload.system_prompt = form.system_prompt;
+    }
     const result = await runAgent(payload);
     if (form.version === "v2") {
       await router.push({
