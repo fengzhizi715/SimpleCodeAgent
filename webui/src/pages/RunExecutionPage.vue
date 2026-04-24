@@ -25,6 +25,12 @@
 
   <section class="panel" v-if="flowNodes.length">
     <h3>执行流程（可视化）</h3>
+    <div class="flow-legend">
+      <span class="flow-legend-item"><i class="dot dot-completed" /> completed</span>
+      <span class="flow-legend-item"><i class="dot dot-running" /> running</span>
+      <span class="flow-legend-item"><i class="dot dot-failed" /> failed</span>
+      <span class="flow-legend-item"><i class="dot dot-unknown" /> unknown</span>
+    </div>
     <div class="flow-layout">
       <div class="flow-lane">
         <div class="flow-chain">
@@ -38,8 +44,10 @@
               ]"
               @click="selectDelegation(node.id)"
             >
+              <span class="flow-node-index">#{{ index + 1 }}</span>
               <span class="flow-node-agent">{{ node.agent }}</span>
               <span class="flow-node-status">{{ node.status || "unknown" }}</span>
+              <span class="flow-node-time">{{ node.startedAtLabel }}</span>
             </button>
             <span v-if="index < flowNodes.length - 1" class="flow-arrow">→</span>
           </template>
@@ -48,11 +56,14 @@
       <aside class="flow-detail">
         <h4>节点摘要（只读）</h4>
         <template v-if="selectedDelegation">
-          <p class="muted"><strong>Agent：</strong>{{ selectedDelegation.target_agent || "—" }}</p>
-          <p class="muted"><strong>状态：</strong>{{ selectedDelegation.status || "—" }}</p>
-          <p class="muted"><strong>Step ID：</strong>{{ selectedDelegation.step_id || "—" }}</p>
-          <p class="muted"><strong>开始：</strong>{{ selectedDelegation.started_at || "—" }}</p>
-          <p class="muted"><strong>结束：</strong>{{ selectedDelegation.finished_at || "—" }}</p>
+          <div class="flow-detail-meta">
+            <p class="muted"><strong>Agent：</strong>{{ selectedDelegation.target_agent || "—" }}</p>
+            <p class="muted"><strong>状态：</strong>{{ selectedDelegation.status || "—" }}</p>
+            <p class="muted"><strong>Step ID：</strong>{{ selectedDelegation.step_id || "—" }}</p>
+            <p class="muted"><strong>开始：</strong>{{ formatTime(selectedDelegation.started_at) }}</p>
+            <p class="muted"><strong>结束：</strong>{{ formatTime(selectedDelegation.finished_at) }}</p>
+            <p class="muted"><strong>耗时：</strong>{{ durationLabel(selectedDelegation.started_at, selectedDelegation.finished_at) }}</p>
+          </div>
           <pre>{{ selectedDelegation.summary || "暂无摘要。" }}</pre>
         </template>
         <p v-else class="muted">点击左侧节点查看摘要。</p>
@@ -160,6 +171,7 @@ const flowNodes = computed(() => {
     id: item.delegation_id || item.task_id || `node-${index}`,
     agent: item.target_agent || "unknown",
     status: item.status || "unknown",
+    startedAtLabel: formatTime(item.started_at),
   }));
 });
 const selectedDelegation = computed(() => {
@@ -185,9 +197,19 @@ async function fetchReplay() {
     replay.delegations = data.delegations || [];
     replay.execution_log = data.execution_log || [];
     replay.teaching_view = data.teaching_view || null;
-    if (!selectedDelegationId.value && Array.isArray(replay.delegations) && replay.delegations.length) {
-      const first = replay.delegations[0];
-      selectedDelegationId.value = first.delegation_id || first.task_id || "node-0";
+    if (Array.isArray(replay.delegations) && replay.delegations.length) {
+      const currentExists = replay.delegations.some(
+        (item, index) =>
+          (item.delegation_id || item.task_id || `node-${index}`) === selectedDelegationId.value
+      );
+      if (!selectedDelegationId.value || !currentExists) {
+        const failed = replay.delegations.find(
+          (item) => String(item.status || "").toLowerCase() === "failed"
+        );
+        const fallback = failed || replay.delegations[0];
+        const fallbackIndex = replay.delegations.indexOf(fallback);
+        selectedDelegationId.value = fallback.delegation_id || fallback.task_id || `node-${fallbackIndex}`;
+      }
     }
     const status = data.run?.status;
     if (status === "completed" || status === "failed") {
@@ -228,6 +250,22 @@ function normalizeStatus(status) {
   return "unknown";
 }
 
+function formatTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function durationLabel(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) return "—";
+  const s = new Date(startedAt).getTime();
+  const e = new Date(finishedAt).getTime();
+  if (Number.isNaN(s) || Number.isNaN(e) || e < s) return "—";
+  const sec = Math.round((e - s) / 1000);
+  return `${sec}s`;
+}
+
 onMounted(async () => {
   await fetchReplay();
   if (polling.value) {
@@ -242,14 +280,40 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .flow-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
+
+.flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 14px;
+}
+
+.flow-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary, #5c6370);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot-completed { background: #10b981; }
+.dot-running { background: #3b82f6; }
+.dot-failed { background: #dc2626; }
+.dot-unknown { background: #94a3b8; }
 
 .flow-lane {
   overflow-x: auto;
-  padding-bottom: 6px;
+  padding: 8px 0 12px;
 }
 
 .flow-chain {
@@ -269,6 +333,13 @@ onBeforeUnmount(() => {
 
 .flow-node-btn.is-selected {
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.22);
+  transform: translateY(-1px);
+}
+
+.flow-node-index {
+  display: inline-block;
+  font-size: 0.6875rem;
+  color: var(--text-muted, #8b929e);
 }
 
 .flow-node-agent {
@@ -281,6 +352,13 @@ onBeforeUnmount(() => {
   display: block;
   margin-top: 2px;
   font-size: 0.75rem;
+  color: var(--text-muted, #8b929e);
+}
+
+.flow-node-time {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.6875rem;
   color: var(--text-muted, #8b929e);
 }
 
@@ -307,8 +385,9 @@ onBeforeUnmount(() => {
 .flow-detail {
   border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 14px 12px;
   background: #fafbfe;
+  margin-top: 6px;
 }
 
 .flow-detail h4 {
@@ -316,9 +395,11 @@ onBeforeUnmount(() => {
   font-size: 0.875rem;
 }
 
-@media (max-width: 980px) {
-  .flow-layout {
-    grid-template-columns: 1fr;
-  }
+.flow-detail-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 12px;
+  margin-bottom: 6px;
 }
+
 </style>
