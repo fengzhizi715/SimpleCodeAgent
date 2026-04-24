@@ -308,6 +308,7 @@ curl -s http://127.0.0.1:8000/agent/run \
     "base_url": "http://127.0.0.1:8000/v1",
     "service_token": "your-service-token",
     "max_steps": 5,
+    "run_timeout_seconds": 180,
     "include_trace": true
   }'
 ```
@@ -318,11 +319,27 @@ curl -s http://127.0.0.1:8000/agent/run \
 curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 ```
 
-列出最近若干次 **V2** 运行（仅含已写入 `v2_workspaces` 的记录，供 Web UI 历史页等）：
+列出最近运行（含 `v1/v2` 顶层记录，供 Web UI 历史页）：
 
 ```bash
-curl -s 'http://127.0.0.1:8000/debug/v2/runs?limit=50&offset=0'
+curl -s 'http://127.0.0.1:8000/debug/runs?limit=50&offset=0'
 ```
+
+在线更新全局 LLM 配置（概况页同源接口）：
+
+```bash
+curl -s http://127.0.0.1:8000/debug/settings/llm \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "llm_base_url": "http://127.0.0.1:8000/v1",
+    "llm_model": "your-model"
+  }'
+```
+
+说明：
+
+- 更新后立即对后续运行生效
+- 同时会写入项目根目录 `.env`，重启后仍保留
 
 ### 5.1 Web UI（V2 演示，可选）
 
@@ -354,11 +371,19 @@ npm run dev
 
 然后打开终端提示的本地地址（默认 `http://127.0.0.1:5173`）。`POST /agent/run` 的鉴权仍由后端读取环境变量或请求体；若你未在浏览器里传 `api_key` / `service_token`，请保证服务端已配置 `LLM_API_KEY` 或 `LLM_SERVICE_TOKEN`。
 
-当前页面是一个面向 `v2` 的最小演示前端：
+当前页面已覆盖常用调试流程，包含：
 
-- 依赖 `/agent` 与 `/debug` 的同源路径
+- `/overview`：系统概况、LLM 配置查看与在线更新
+- `/run`：新建运行（`v1/v2`、`max_steps`、`run_timeout_seconds`）
+- `/history`：历史分页、筛选、删除与回放入口
+- `/agents`：只读智能体列表
+- `/runs/:runId`：执行详情、运行摘要、流程可视化与节点摘要
+- `/runs/:runId/trace`：Trace 时间线
+
+前端与后端关系：
+
+- 依赖 `/agent` 与 `/debug` 同源路径
 - 开发态通过 Vite proxy 转发到 `127.0.0.1:8000`
-- 表单不会暴露当前 `v2` runtime 尚未消费的 `system_prompt`
 
 生产构建：
 
@@ -499,6 +524,22 @@ LOG_LEVEL=INFO
 - 当前默认 Provider 是 OpenAI-compatible 协议
 - streaming API 还没有接入
 - 当前文档以本地开发与演示为主，不是生产部署手册
+
+## 12. Web UI 操作提示
+
+### 12.1 运行超时
+
+`/run` 页支持 `运行超时（秒）`：
+
+- `v1`：透传到单 Agent runtime 的 `run_timeout_seconds`
+- `v2`：达到超时时间后，编排器会主动停止并返回失败原因
+
+### 12.2 执行详情中的工作目录
+
+`/runs/:runId` 的运行摘要会展示 `workdir`：
+
+- 新产生的 run 会持久化该字段
+- 历史旧 run 可能显示 `—`（创建时未写入）
 
 ## 11. 常见问题
 

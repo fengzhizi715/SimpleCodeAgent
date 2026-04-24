@@ -17,6 +17,7 @@
 - RAG 文档导入与检索
 - Trace 记录、查看与 API 查询
 - CLI 与 FastAPI 服务入口
+- Web UI（概况、运行、历史、智能体、执行详情/Trace）
 - 统一日志输出
 
 ## 快速开始
@@ -117,6 +118,14 @@ logs/           # 按天滚动的运行日志（默认保留 30 天）
 - Trace 查看
 - Coding demo 演示流程
 
+## Web UI 亮点（当前版本）
+
+- 概况页：显示 API 健康状态、`LLM_BASE_URL`、`LLM_MODEL`，并支持在线更新 LLM 配置
+- 运行页：支持 `v1/v2`，可设置 `max_steps` 与 `run_timeout_seconds`
+- 历史页：支持分页、筛选、删除与回放入口
+- 智能体页：只读展示当前注册智能体列表
+- 执行详情页：支持流程可视化（agent 交接链路、状态颜色、节点摘要）
+
 单文件导入示例：
 
 ```bash
@@ -147,6 +156,12 @@ python -m app.main "你好，介绍一下你自己" --version v1
 
 ```bash
 ./run-all.sh
+```
+
+若仅启动后端（用于 API / Swagger / Web UI 代理）：
+
+```bash
+.venv/bin/uvicorn app.api.server:app --host 127.0.0.1 --port 8000
 ```
 
 若你已手动启动了 `uvicorn`，只需 Web UI：
