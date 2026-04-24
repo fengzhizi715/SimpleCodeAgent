@@ -213,8 +213,83 @@ body {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.v2-agent-config {
+  margin-top: 12px;
+  padding: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, #f8fafc 0%, #f3f6fa 100%);
+}
+
+.v2-agent-config-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.v2-agent-config-head label {
+  margin-bottom: 2px;
+}
+
+.v2-agent-config-head p {
+  margin: 0;
+}
+
+.v2-agent-options {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.v2-agent-option {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  min-height: 74px;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.v2-agent-option:hover {
+  border-color: var(--accent);
+}
+
+.v2-agent-option input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.v2-agent-option strong,
+.v2-agent-option small {
+  display: block;
+}
+
+.v2-agent-option small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.v2-agent-option.is-locked {
+  cursor: not-allowed;
+  opacity: 0.78;
+}
+
 @media (max-width: 720px) {
   .grid-two {
+    grid-template-columns: 1fr;
+  }
+
+  .v2-agent-config-head {
+    flex-direction: column;
+  }
+
+  .v2-agent-options {
     grid-template-columns: 1fr;
   }
 

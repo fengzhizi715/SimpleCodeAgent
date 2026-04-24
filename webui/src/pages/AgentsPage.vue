@@ -5,9 +5,6 @@
 
     <div class="row agents-toolbar">
       <span class="badge">总数：{{ totalLabel }}</span>
-      <button type="button" class="btn-secondary btn-sm" :disabled="loading" @click="loadAgents">
-        {{ loading ? "刷新中…" : "刷新" }}
-      </button>
     </div>
 
     <p v-if="errorMsg" class="error">{{ errorMsg }}</p>

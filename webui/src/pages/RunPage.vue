@@ -48,15 +48,51 @@
           }}
         </p>
       </div>
+      <div>
+        <label>运行超时（秒）</label>
+        <input v-model.number="form.run_timeout_seconds" type="number" min="10" max="1800" />
+        <p class="muted" style="margin: 6px 0 0">
+          超时后系统会主动结束本次运行，避免复杂任务长时间阻塞。
+        </p>
+      </div>
     </div>
 
     <div v-if="form.version === 'v1'" style="margin-top: 12px">
       <label>System Prompt（v1）</label>
       <textarea v-model="form.system_prompt" />
     </div>
-    <p v-else class="muted" style="margin: 12px 0 0">
-      v2 采用内置的多 Agent 角色提示词，由编排器统一管理；当前页面不提供自定义 System Prompt。
-    </p>
+    <div v-else class="v2-agent-config">
+      <div class="v2-agent-config-head">
+        <div>
+          <label>V2 Agent 配置</label>
+          <p class="muted">Planner 始终启用；其余 Agent 可按本次运行选择。</p>
+        </div>
+        <button type="button" class="btn-secondary btn-sm" @click="resetV2Agents">恢复默认</button>
+      </div>
+      <div class="v2-agent-options">
+        <label class="v2-agent-option is-locked">
+          <input type="checkbox" checked disabled />
+          <span>
+            <strong>Planner</strong>
+            <small>生成计划，必选</small>
+          </span>
+        </label>
+        <label v-for="agent in configurableV2Agents" :key="agent.id" class="v2-agent-option">
+          <input
+            type="checkbox"
+            :checked="form.v2_enabled_agents.includes(agent.id)"
+            @change="toggleV2Agent(agent.id)"
+          />
+          <span>
+            <strong>{{ agent.label }}</strong>
+            <small>{{ agent.help }}</small>
+          </span>
+        </label>
+      </div>
+      <p class="muted" style="margin: 8px 0 0">
+        快速修复可只保留 Analyst + Coder；严格闭环建议启用 Tester，必要时启用 Reviewer。
+      </p>
+    </div>
 
     <div class="row" style="margin-top: 14px">
       <button class="btn-primary" :disabled="loading" @click="submitRun">
@@ -84,6 +120,13 @@ const router = useRouter();
 const loading = ref(false);
 const error = ref("");
 const v1Result = ref(null);
+const defaultV2Agents = ["planner", "analyst", "coder", "tester", "reviewer"];
+const configurableV2Agents = [
+  { id: "analyst", label: "Analyst", help: "识别项目结构和关键文件" },
+  { id: "coder", label: "Coder", help: "根据上下文修改代码" },
+  { id: "tester", label: "Tester", help: "运行编译/测试验证" },
+  { id: "reviewer", label: "Reviewer", help: "检查 patch 风险" },
+];
 
 const form = reactive({
   task: "",
@@ -92,9 +135,26 @@ const form = reactive({
   session_id: "",
   workdir: "",
   max_steps: 8,
+  run_timeout_seconds: 180,
   include_trace: false,
   system_prompt: "You are a helpful assistant.",
+  v2_enabled_agents: [...defaultV2Agents],
 });
+
+function toggleV2Agent(agentId) {
+  const selected = new Set(form.v2_enabled_agents);
+  if (selected.has(agentId)) {
+    selected.delete(agentId);
+  } else {
+    selected.add(agentId);
+  }
+  selected.add("planner");
+  form.v2_enabled_agents = defaultV2Agents.filter((id) => selected.has(id));
+}
+
+function resetV2Agents() {
+  form.v2_enabled_agents = [...defaultV2Agents];
+}
 
 async function submitRun() {
   error.value = "";
@@ -106,6 +166,7 @@ async function submitRun() {
       version: form.version,
       include_trace: form.include_trace,
       max_steps: form.max_steps,
+      run_timeout_seconds: form.run_timeout_seconds,
       session_id: form.session_id || null,
       workdir: form.workdir || null,
       model: form.model || null,
@@ -113,6 +174,8 @@ async function submitRun() {
     };
     if (form.version === "v1") {
       payload.system_prompt = form.system_prompt;
+    } else {
+      payload.v2_enabled_agents = [...form.v2_enabled_agents];
     }
     const result = await runAgent(payload);
     if (form.version === "v2") {

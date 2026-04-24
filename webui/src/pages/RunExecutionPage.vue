@@ -16,6 +16,7 @@
       <tbody>
         <tr><th>status</th><td>{{ replay.run.status }}</td></tr>
         <tr><th>session_id</th><td>{{ replay.run.session_id }}</td></tr>
+        <tr><th>workdir</th><td>{{ replay.run.workdir || "—" }}</td></tr>
         <tr><th>task</th><td>{{ replay.run.task }}</td></tr>
         <tr><th>model</th><td>{{ replay.run.model }}</td></tr>
         <tr><th>step_count</th><td>{{ replay.run.step_count }}</td></tr>
