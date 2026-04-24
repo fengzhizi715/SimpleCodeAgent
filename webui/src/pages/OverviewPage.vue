@@ -1,9 +1,19 @@
 <template>
   <section class="panel overview-panel">
-    <h2>系统概况</h2>
-    <p class="muted overview-lead">
-      本仓库演示<strong>单 Agent（V1）</strong>与<strong>多 Agent 编排（V2）</strong>的工程化路径；WebUI 当前以运行、观测与 RAG 管理为主，后续可扩展更多版本入口。
-    </p>
+    <div class="overview-head">
+      <div>
+        <h2>系统概况</h2>
+        <p class="muted overview-lead">
+          本仓库演示<strong>单 Agent（V1）</strong>与<strong>多 Agent 编排（V2）</strong>的工程化路径；WebUI 当前以运行、观测与 RAG 管理为主。
+        </p>
+      </div>
+      <div class="overview-head-actions">
+        <button class="btn-secondary btn-sm" :disabled="overviewLoading || statsLoading || agentsLoading" @click="loadOverview">
+          {{ overviewLoading || statsLoading || agentsLoading ? "刷新中…" : "刷新概况" }}
+        </button>
+        <span class="muted overview-updated">最近刷新：{{ lastUpdatedText }}</span>
+      </div>
+    </div>
     <div class="overview-grid">
       <div class="overview-card">
         <h3>后端服务</h3>
@@ -16,12 +26,22 @@
           <p v-if="apiOk && health" class="muted overview-meta">
             {{ health.app_name }} · {{ health.env }}
           </p>
-          <p v-if="apiOk && health" class="muted overview-meta">
-            LLM_BASE_URL：<code>{{ health.llm_base_url || "—" }}</code>
-          </p>
-          <p v-if="apiOk && health" class="muted overview-meta">
-            LLM_MODEL：<code>{{ health.llm_model || "—" }}</code>
-          </p>
+          <div v-if="apiOk && health" class="overview-kv">
+            <p><span>LLM_BASE_URL</span><code>{{ health.llm_base_url || "—" }}</code></p>
+            <p><span>LLM_MODEL</span><code>{{ health.llm_model || "—" }}</code></p>
+          </div>
+          <div v-if="apiOk" class="overview-llm-form">
+            <label>LLM_BASE_URL</label>
+            <input v-model="llmForm.llm_base_url" placeholder="https://api.openai.com/v1" />
+            <label>LLM_MODEL</label>
+            <input v-model="llmForm.llm_model" placeholder="gpt-4.1-mini" />
+            <div class="row">
+              <button class="btn-secondary btn-sm" :disabled="savingLLM" @click="saveLLMSettings">
+                {{ savingLLM ? "保存中…" : "保存 LLM 配置" }}
+              </button>
+              <span v-if="llmError" class="error">{{ llmError }}</span>
+            </div>
+          </div>
           <p v-else class="muted overview-meta">请在本机 <code>8000</code> 端口启动 FastAPI 后刷新本页。</p>
         </template>
       </div>
@@ -58,9 +78,10 @@
             <span class="overview-stat-label">已注册智能体</span>
             <span class="overview-stat-value">{{ agentsTotal !== null ? `${agentsTotal} 个` : "—" }}</span>
           </p>
-          <p v-if="agentNames.length" class="muted overview-meta">
-            {{ agentNames.join(" · ") }}
-          </p>
+          <div v-if="agentNames.length" class="overview-agent-chips">
+            <span v-for="name in shownAgentNames" :key="name" class="overview-agent-chip">{{ name }}</span>
+            <span v-if="hiddenAgentCount > 0" class="overview-agent-chip">+{{ hiddenAgentCount }}</span>
+          </div>
           <p v-else class="muted overview-meta">
             暂未获取到智能体列表。
           </p>
@@ -74,9 +95,9 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { getHealthz, listAgents, listV2Runs } from "../api";
+import { getHealthz, listAgents, listV2Runs, updateLLMSettings } from "../api";
 
 const overviewLoading = ref(true);
 const statsLoading = ref(true);
@@ -86,6 +107,20 @@ const historyTotal = ref(null);
 const agentsLoading = ref(true);
 const agentsTotal = ref(null);
 const agentNames = ref([]);
+const lastUpdatedAt = ref(null);
+const savingLLM = ref(false);
+const llmError = ref("");
+const llmForm = ref({
+  llm_base_url: "",
+  llm_model: "",
+});
+
+const shownAgentNames = computed(() => agentNames.value.slice(0, 6));
+const hiddenAgentCount = computed(() => Math.max(0, agentNames.value.length - shownAgentNames.value.length));
+const lastUpdatedText = computed(() => {
+  if (!lastUpdatedAt.value) return "—";
+  return lastUpdatedAt.value.toLocaleTimeString();
+});
 
 async function loadOverview() {
   overviewLoading.value = true;
@@ -94,6 +129,10 @@ async function loadOverview() {
     try {
       const h = await getHealthz();
       health.value = h;
+      llmForm.value = {
+        llm_base_url: h?.llm_base_url || "",
+        llm_model: h?.llm_model || "",
+      };
       apiOk.value = true;
     } catch {
       health.value = null;
@@ -123,6 +162,35 @@ async function loadOverview() {
   } finally {
     agentsLoading.value = false;
   }
+  lastUpdatedAt.value = new Date();
+}
+
+async function saveLLMSettings() {
+  llmError.value = "";
+  const llmBaseUrl = llmForm.value.llm_base_url.trim();
+  const llmModel = llmForm.value.llm_model.trim();
+  if (!llmBaseUrl || !llmModel) {
+    llmError.value = "LLM_BASE_URL 和 LLM_MODEL 不能为空。";
+    return;
+  }
+  savingLLM.value = true;
+  try {
+    const h = await updateLLMSettings({
+      llm_base_url: llmBaseUrl,
+      llm_model: llmModel,
+    });
+    health.value = h;
+    llmForm.value = {
+      llm_base_url: h?.llm_base_url || "",
+      llm_model: h?.llm_model || "",
+    };
+    apiOk.value = true;
+    lastUpdatedAt.value = new Date();
+  } catch (err) {
+    llmError.value = err instanceof Error ? err.message : "保存失败";
+  } finally {
+    savingLLM.value = false;
+  }
 }
 
 onMounted(loadOverview);
@@ -133,9 +201,26 @@ onMounted(loadOverview);
   margin-bottom: 6px;
 }
 
+.overview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.overview-head-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.overview-updated {
+  font-size: 0.75rem;
+}
+
 .overview-lead {
-  margin-bottom: 20px;
-  white-space: nowrap;
+  margin-bottom: 0;
 }
 
 .overview-grid {
@@ -193,6 +278,28 @@ onMounted(loadOverview);
   font-size: 0.8125rem;
 }
 
+.overview-kv p {
+  margin: 0 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+}
+
+.overview-kv span {
+  color: var(--text-muted, #8b929e);
+}
+
+.overview-llm-form {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-subtle, rgba(15, 20, 25, 0.08));
+}
+
+.overview-llm-form label {
+  margin-top: 6px;
+}
+
 .overview-list {
   margin: 0;
   padding-left: 1.15rem;
@@ -226,5 +333,33 @@ onMounted(loadOverview);
 .overview-hint {
   margin: 0;
   font-size: 0.8125rem;
+}
+
+.overview-agent-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.overview-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent-text, #4338ca);
+  background: var(--accent-soft, rgba(79, 70, 229, 0.12));
+  border: 1px solid rgba(79, 70, 229, 0.24);
+}
+
+@media (max-width: 900px) {
+  .overview-head {
+    flex-direction: column;
+  }
+  .overview-head-actions {
+    align-items: flex-start;
+  }
 }
 </style>

@@ -48,6 +48,13 @@ export async function getHealthz() {
   return requestJson("/healthz");
 }
 
+export async function updateLLMSettings(input) {
+  return requestJson("/debug/settings/llm", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function runAgent(input) {
   return requestJson("/agent/run", {
     method: "POST",

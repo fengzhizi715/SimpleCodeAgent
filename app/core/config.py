@@ -70,3 +70,49 @@ class Settings:
 
 
 settings = Settings()
+
+_runtime_llm_overrides: dict[str, str] = {}
+
+
+def get_effective_llm_base_url() -> str:
+    """获取当前生效的 LLM_BASE_URL（优先运行时覆盖）。"""
+    return _runtime_llm_overrides.get("llm_base_url") or settings.llm_base_url
+
+
+def get_effective_llm_model() -> str:
+    """获取当前生效的 LLM_MODEL（优先运行时覆盖）。"""
+    return _runtime_llm_overrides.get("llm_model") or settings.llm_model
+
+
+def update_llm_runtime_settings(*, llm_base_url: str, llm_model: str) -> None:
+    """更新运行时 LLM 配置，并持久化到 .env。"""
+    base_url = llm_base_url.strip()
+    model = llm_model.strip()
+    _runtime_llm_overrides["llm_base_url"] = base_url
+    _runtime_llm_overrides["llm_model"] = model
+    os.environ["LLM_BASE_URL"] = base_url
+    os.environ["LLM_MODEL"] = model
+    _upsert_env_value("LLM_BASE_URL", base_url)
+    _upsert_env_value("LLM_MODEL", model)
+
+
+def _upsert_env_value(key: str, value: str) -> None:
+    """在 .env 中更新或追加配置项。"""
+    lines: list[str]
+    if ENV_FILE.exists():
+        lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = []
+    updated = False
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        existing_key = stripped.split("=", 1)[0].strip()
+        if existing_key == key:
+            lines[idx] = f"{key}={value}"
+            updated = True
+            break
+    if not updated:
+        lines.append(f"{key}={value}")
+    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")

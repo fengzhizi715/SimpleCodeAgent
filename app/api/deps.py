@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.core.config import settings
+from app.core.config import (
+    get_effective_llm_base_url,
+    get_effective_llm_model,
+    settings,
+)
 from app.core.logger import get_logger
 from app.llm.client import OpenAICompatibleProvider
 from app.trace.repository import SQLiteTraceRepository
@@ -66,10 +70,10 @@ def get_provider(
     model: str | None = None,
 ) -> OpenAICompatibleProvider:
     """按请求参数构造 Provider。"""
-    resolved_base_url = base_url or settings.llm_base_url
+    resolved_base_url = base_url or get_effective_llm_base_url()
     resolved_api_key = api_key or settings.llm_api_key
     resolved_service_token = service_token or settings.llm_service_token
-    resolved_model = model or settings.llm_model
+    resolved_model = model or get_effective_llm_model()
     logger.info(
         "Building provider: base_url=%s model=%s auth_mode=%s has_api_key=%s has_service_token=%s",
         resolved_base_url,

@@ -9,7 +9,13 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_trace_repository, get_v2_runtime
-from app.core.config import BASE_DIR, settings
+from app.core.config import (
+    BASE_DIR,
+    get_effective_llm_base_url,
+    get_effective_llm_model,
+    settings,
+    update_llm_runtime_settings,
+)
 from app.v1.rag.vector_store import ChromaVectorStore
 from app.v1.rag.ingest import DocsIngestor
 
@@ -26,6 +32,15 @@ class HealthResponse(BaseModel):
     env: str
     llm_base_url: str = ""
     llm_model: str = ""
+
+
+class LLMSettingsUpdateRequest(BaseModel):
+    """更新全局 LLM 设置请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    llm_base_url: str = Field(min_length=1, description="新的 LLM_BASE_URL。")
+    llm_model: str = Field(min_length=1, description="新的 LLM_MODEL。")
 
 
 class TraceQueryResponse(BaseModel):
@@ -227,9 +242,19 @@ def healthz() -> HealthResponse:
         status="ok",
         app_name=settings.app_name,
         env=settings.app_env,
-        llm_base_url=settings.llm_base_url,
-        llm_model=settings.llm_model,
+        llm_base_url=get_effective_llm_base_url(),
+        llm_model=get_effective_llm_model(),
     )
+
+
+@router.post("/debug/settings/llm", response_model=HealthResponse, status_code=status.HTTP_200_OK)
+def update_llm_settings(request: LLMSettingsUpdateRequest) -> HealthResponse:
+    """更新全局 LLM_BASE_URL / LLM_MODEL（立即生效并写入 .env）。"""
+    update_llm_runtime_settings(
+        llm_base_url=request.llm_base_url,
+        llm_model=request.llm_model,
+    )
+    return healthz()
 
 
 @router.get("/debug/traces/{run_id}", response_model=TraceQueryResponse, status_code=status.HTTP_200_OK)
