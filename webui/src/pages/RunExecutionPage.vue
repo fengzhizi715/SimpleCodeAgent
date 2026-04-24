@@ -23,6 +23,43 @@
     </table>
   </section>
 
+  <section class="panel" v-if="flowNodes.length">
+    <h3>执行流程（可视化）</h3>
+    <div class="flow-layout">
+      <div class="flow-lane">
+        <div class="flow-chain">
+          <template v-for="(node, index) in flowNodes" :key="node.id">
+            <button
+              type="button"
+              class="flow-node-btn"
+              :class="[
+                `is-${normalizeStatus(node.status)}`,
+                selectedDelegationId === node.id ? 'is-selected' : '',
+              ]"
+              @click="selectDelegation(node.id)"
+            >
+              <span class="flow-node-agent">{{ node.agent }}</span>
+              <span class="flow-node-status">{{ node.status || "unknown" }}</span>
+            </button>
+            <span v-if="index < flowNodes.length - 1" class="flow-arrow">→</span>
+          </template>
+        </div>
+      </div>
+      <aside class="flow-detail">
+        <h4>节点摘要（只读）</h4>
+        <template v-if="selectedDelegation">
+          <p class="muted"><strong>Agent：</strong>{{ selectedDelegation.target_agent || "—" }}</p>
+          <p class="muted"><strong>状态：</strong>{{ selectedDelegation.status || "—" }}</p>
+          <p class="muted"><strong>Step ID：</strong>{{ selectedDelegation.step_id || "—" }}</p>
+          <p class="muted"><strong>开始：</strong>{{ selectedDelegation.started_at || "—" }}</p>
+          <p class="muted"><strong>结束：</strong>{{ selectedDelegation.finished_at || "—" }}</p>
+          <pre>{{ selectedDelegation.summary || "暂无摘要。" }}</pre>
+        </template>
+        <p v-else class="muted">点击左侧节点查看摘要。</p>
+      </aside>
+    </div>
+  </section>
+
   <section class="panel" v-if="finalOutput">
     <h3>最终答案</h3>
     <pre>{{ finalOutput }}</pre>
@@ -94,9 +131,11 @@ const polling = ref(true);
 const replay = reactive({
   run: null,
   workspace: null,
+  delegations: [],
   execution_log: [],
   teaching_view: null,
 });
+const selectedDelegationId = ref("");
 
 const recentLogs = computed(() => {
   const logs = Array.isArray(replay.execution_log) ? replay.execution_log : [];
@@ -115,6 +154,25 @@ const keyTakeaways = computed(() => {
   const items = teachingView.value?.key_takeaways;
   return Array.isArray(items) ? items : [];
 });
+const flowNodes = computed(() => {
+  const rows = Array.isArray(replay.delegations) ? replay.delegations : [];
+  return rows.map((item, index) => ({
+    id: item.delegation_id || item.task_id || `node-${index}`,
+    agent: item.target_agent || "unknown",
+    status: item.status || "unknown",
+  }));
+});
+const selectedDelegation = computed(() => {
+  const rows = Array.isArray(replay.delegations) ? replay.delegations : [];
+  if (!rows.length) {
+    return null;
+  }
+  const selected = rows.find(
+    (item, index) =>
+      (item.delegation_id || item.task_id || `node-${index}`) === selectedDelegationId.value
+  );
+  return selected || rows[0];
+});
 
 let timerId = null;
 
@@ -124,8 +182,13 @@ async function fetchReplay() {
     const data = await getRunReplay(props.runId);
     replay.run = data.run || null;
     replay.workspace = data.workspace || null;
+    replay.delegations = data.delegations || [];
     replay.execution_log = data.execution_log || [];
     replay.teaching_view = data.teaching_view || null;
+    if (!selectedDelegationId.value && Array.isArray(replay.delegations) && replay.delegations.length) {
+      const first = replay.delegations[0];
+      selectedDelegationId.value = first.delegation_id || first.task_id || "node-0";
+    }
     const status = data.run?.status;
     if (status === "completed" || status === "failed") {
       polling.value = false;
@@ -153,6 +216,18 @@ function goTrace() {
   router.push({ name: "trace", params: { runId: props.runId } });
 }
 
+function selectDelegation(id) {
+  selectedDelegationId.value = id;
+}
+
+function normalizeStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "completed";
+  if (s === "failed") return "failed";
+  if (s === "running") return "running";
+  return "unknown";
+}
+
 onMounted(async () => {
   await fetchReplay();
   if (polling.value) {
@@ -164,3 +239,86 @@ onBeforeUnmount(() => {
   stopPolling();
 });
 </script>
+
+<style scoped>
+.flow-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.flow-lane {
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+
+.flow-chain {
+  display: inline-flex;
+  align-items: center;
+  min-width: max-content;
+}
+
+.flow-node-btn {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  background: #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  min-width: 120px;
+  text-align: left;
+}
+
+.flow-node-btn.is-selected {
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.22);
+}
+
+.flow-node-agent {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.flow-node-status {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: var(--text-muted, #8b929e);
+}
+
+.flow-node-btn.is-completed {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.flow-node-btn.is-failed {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.flow-node-btn.is-running {
+  border-color: rgba(59, 130, 246, 0.35);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.flow-arrow {
+  margin: 0 8px;
+  color: var(--text-muted, #8b929e);
+}
+
+.flow-detail {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fafbfe;
+}
+
+.flow-detail h4 {
+  margin: 0 0 8px;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 980px) {
+  .flow-layout {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

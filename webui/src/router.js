@@ -19,14 +19,14 @@ const routes = [
     name: "execution",
     component: RunExecutionPage,
     props: true,
-    meta: { title: "执行详情" },
+    meta: { title: "执行详情", showBack: true },
   },
   {
     path: "/runs/:runId/trace",
     name: "trace",
     component: RunTracePage,
     props: true,
-    meta: { title: "Trace 时间线" },
+    meta: { title: "Trace 时间线", showBack: true },
   },
 ];
 

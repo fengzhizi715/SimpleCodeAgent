@@ -56,7 +56,7 @@ const pageTitle = computed(() => {
   return typeof t === "string" && t.length > 0 ? t : "控制台";
 });
 const showHeaderBack = computed(() => {
-  return route.name === "execution" || route.name === "trace";
+  return Boolean(route.meta?.showBack);
 });
 
 function goBack() {
