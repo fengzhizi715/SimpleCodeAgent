@@ -121,6 +121,7 @@ class SQLiteMemoryRepository(MemoryRepository):
         run: RunResult,
         task: str,
         *,
+        workdir: str | None = None,
         is_top_level: bool = True,
         parent_run_id: str | None = None,
     ) -> None:
@@ -137,14 +138,15 @@ class SQLiteMemoryRepository(MemoryRepository):
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
                 created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1')
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 model = excluded.model,
                 task = excluded.task,
+                workdir = COALESCE(excluded.workdir, runs.workdir),
                 is_top_level = excluded.is_top_level,
                 parent_run_id = excluded.parent_run_id,
                 status = excluded.status,
@@ -158,6 +160,7 @@ class SQLiteMemoryRepository(MemoryRepository):
                 run.session_id,
                 run.model,
                 task,
+                workdir,
                 1 if is_top_level else 0,
                 parent_run_id,
                 run.status,

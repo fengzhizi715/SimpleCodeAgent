@@ -62,6 +62,7 @@ class RunContext:
     max_steps: int = 3
     run_timeout_seconds: int = 120
     persist_session_memory: bool = True
+    is_top_level: bool = True
 
     @property
     def effective_system_prompt(self) -> str:

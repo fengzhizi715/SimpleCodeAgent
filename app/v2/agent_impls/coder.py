@@ -71,6 +71,7 @@ class CoderAgent(AgentBase):
             persist_session_memory=False,
             root_run_id=context.run_id,
             parent_run_id=context.run_id,
+            is_top_level=False,
         )
         after_snapshot = snapshot_workspace(context.workspace_root)
         modified_files, created_files, deleted_files, diff_previews = build_workspace_diff(

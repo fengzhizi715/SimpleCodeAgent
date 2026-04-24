@@ -60,6 +60,10 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
     run_timeout_seconds: int = Field(default=120, ge=1, le=600, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
+    v2_enabled_agents: list[Literal["planner", "analyst", "coder", "tester", "reviewer"]] | None = Field(
+        default=None,
+        description="V2 可视化运行级 Agent 配置；planner 会始终启用。",
+    )
 
 
 class AgentRunResponse(BaseModel):
@@ -128,6 +132,8 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                     workspace_root=resolved_workdir or settings.workdir or ".",
                     reasoning_mode=request.reasoning_mode,
                     max_steps=request.max_steps,
+                    run_timeout_seconds=request.run_timeout_seconds,
+                    enabled_agents=request.v2_enabled_agents,
                 )
             else:
                 loop = get_agent_loop()
@@ -177,7 +183,13 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         # v1 规划路径会在子步骤中多次 save_run，task 可能为步骤/摘要提示词；这里用用户原始 task 再落库一次，
         # 确保历史列表与 Web UI 展示的 run_id 一致且摘要列可读。
         if request.version == "v1" and result.run_id and result.session_id:
-            get_memory_repository().save_run(result, request.task, is_top_level=True, parent_run_id=None)
+            get_memory_repository().save_run(
+                result,
+                request.task,
+                workdir=resolved_workdir,
+                is_top_level=True,
+                parent_run_id=None,
+            )
 
         trace: list[dict[str, object]] = []
         if request.include_trace and result.run_id:

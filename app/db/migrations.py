@@ -29,6 +29,7 @@ SCHEMA_STATEMENTS = [
         session_id TEXT NOT NULL,
         model TEXT NOT NULL,
         task TEXT NOT NULL,
+        workdir TEXT,
         is_top_level INTEGER NOT NULL DEFAULT 1,
         parent_run_id TEXT,
         status TEXT,

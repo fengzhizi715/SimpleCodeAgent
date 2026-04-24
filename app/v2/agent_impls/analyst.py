@@ -134,6 +134,8 @@ class AnalystAgent(AgentBase):
                 "root_entries": entries,
                 "highlighted_files": matches[:5],
                 "analysis_mode": mode,
+                "repo_profile": repo_profile,
+                "build_system": self._infer_build_system(entries=entries, workspace_root=context.workspace_root),
             },
             artifacts=[
                 AgentArtifact(
@@ -147,6 +149,8 @@ class AnalystAgent(AgentBase):
                         "key_files": normalized_key_files,
                         "coding_hints": analysis_payload.coding_hints,
                         "analysis_mode": mode,
+                        "repo_profile": repo_profile,
+                        "build_system": self._infer_build_system(entries=entries, workspace_root=context.workspace_root),
                     },
                 )
             ],

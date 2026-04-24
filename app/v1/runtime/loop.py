@@ -61,6 +61,7 @@ class AgentLoop:
         persist_session_memory: bool = True,
         root_run_id: str | None = None,
         parent_run_id: str | None = None,
+        is_top_level: bool = True,
     ) -> RunResult:
         """执行最小 Agent 循环并返回标准化结果。"""
         run_id = str(uuid4())
@@ -91,6 +92,7 @@ class AgentLoop:
                 max_steps=max_steps,
                 run_timeout_seconds=run_timeout_seconds,
                 persist_session_memory=persist_session_memory,
+                is_top_level=is_top_level,
             )
             state = AgentState(
                 run_id=run_id,
@@ -371,7 +373,12 @@ class AgentLoop:
         """
         repository = context.session_memory.repository
         if hasattr(repository, "save_run"):
-            repository.save_run(result, state.task)
+            repository.save_run(
+                result,
+                state.task,
+                is_top_level=context.is_top_level,
+                parent_run_id=context.parent_run_id,
+            )
         if hasattr(repository, "save_trace_events"):
             repository.save_trace_events(context.run_id, state.trace_events)
 

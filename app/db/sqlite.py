@@ -65,6 +65,7 @@ class SQLiteDB:
             self._ensure_trace_index_columns(conn)
             self._ensure_runs_agent_version_column(conn)
             self._ensure_runs_hierarchy_columns(conn)
+            self._ensure_runs_workdir_column(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_trace_index_session_id_created_at
@@ -158,8 +159,17 @@ class SQLiteDB:
             SET is_top_level = 0
             WHERE task LIKE '[direct-tool] %'
                OR (task LIKE '总任务：%' AND task LIKE '%当前是第 %/% 步%')
+               OR session_id LIKE '%:v2:coder'
             """
         )
+
+    def _ensure_runs_workdir_column(self, conn: sqlite3.Connection) -> None:
+        """为 runs 表补齐 workdir 列。"""
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "workdir" not in existing_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN workdir TEXT")
 
     def connect(self) -> sqlite3.Connection:
         """打开或复用当前线程的 SQLite 连接。"""

@@ -43,3 +43,4 @@ class Plan(BaseModel):
     summary: str = ""
     steps: list[PlanStep] = Field(default_factory=list)
     replan_count: int = 0
+    metadata: dict[str, object] = Field(default_factory=dict)

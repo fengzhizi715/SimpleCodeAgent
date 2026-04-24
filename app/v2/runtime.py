@@ -94,12 +94,16 @@ class OrchestratorRuntime:
         workspace_root: str | Path,
         reasoning_mode: str = "default",
         max_steps: int = 8,
+        run_timeout_seconds: int = 120,
         max_replans: int = 1,
+        enabled_agents: set[str] | list[str] | tuple[str, ...] | None = None,
     ) -> RunResult:
         run_id = str(uuid4())
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         workspace = SharedWorkspace(session_id=session_id, run_id=run_id, user_goal=task)
         workspace_store = WorkspaceStore(workspace, workspace_root=workspace_root)
+        allowed_agents = self._normalize_enabled_agents(enabled_agents)
+        workspace.private_context["orchestrator"] = {"enabled_agents": sorted(allowed_agents)}
         context = AgentContext(
             provider=provider,
             model=model,
@@ -124,6 +128,7 @@ class OrchestratorRuntime:
             session_id=session_id,
             model=model,
             task=task,
+            workdir=str(Path(workspace_root).resolve()),
             status="running",
         )
         self.v2_repository.save_workspace(workspace)
@@ -168,6 +173,7 @@ class OrchestratorRuntime:
                 model=model,
                 reasoning_mode=reasoning_mode,
                 task=task,
+                workdir=str(Path(workspace_root).resolve()),
                 message=planner_result.error_message or planner_result.summary,
                 trace_events=trace_events,
                 aggregate_usage=aggregate_usage,
@@ -178,6 +184,7 @@ class OrchestratorRuntime:
             )
 
         plan = Plan.model_validate(planner_result.output_data.get("plan", {}))
+        plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=allowed_agents)
         workspace_store.set_plan(plan)
         workspace_store.add_artifact(key="plan", artifact_type="plan", summary=plan.summary)
         self.v2_repository.save_workspace(workspace)
@@ -202,6 +209,23 @@ class OrchestratorRuntime:
         replan_count = 0
         step_index = 0
         while workspace.current_plan and step_index < len(workspace.current_plan.steps):
+            elapsed_seconds = (datetime.now(UTC) - started_at).total_seconds()
+            if elapsed_seconds >= run_timeout_seconds:
+                return self._build_failure_result(
+                    run_id=run_id,
+                    session_id=session_id,
+                    model=model,
+                    reasoning_mode=reasoning_mode,
+                    task=task,
+                    workdir=str(Path(workspace_root).resolve()),
+                    message=f"已达到运行超时时间（{run_timeout_seconds}s），系统已主动停止。",
+                    trace_events=trace_events,
+                    aggregate_usage=aggregate_usage,
+                    aggregate_metrics=aggregate_metrics,
+                    started_at=started_at,
+                    step_count=executed_steps,
+                    trace_recorder=trace_recorder,
+                )
             if executed_steps >= max_steps:
                 return self._build_failure_result(
                     run_id=run_id,
@@ -209,6 +233,7 @@ class OrchestratorRuntime:
                     model=model,
                     reasoning_mode=reasoning_mode,
                     task=task,
+                    workdir=str(Path(workspace_root).resolve()),
                     message="已达到 V2 最大执行步数，系统主动停止以避免无限循环。",
                     trace_events=trace_events,
                     aggregate_usage=aggregate_usage,
@@ -264,7 +289,11 @@ class OrchestratorRuntime:
                     ),
                 )
             if result.status == "completed":
-                if step_task.target_agent == "coder" and self.registry.get("reviewer") is not None:
+                if (
+                    step_task.target_agent == "coder"
+                    and "reviewer" in allowed_agents
+                    and self.registry.get("reviewer") is not None
+                ):
                     self._run_review_step(
                     workspace=workspace,
                     context=context,
@@ -313,6 +342,7 @@ class OrchestratorRuntime:
                 model=model,
                 reasoning_mode=reasoning_mode,
                 task=task,
+                workdir=str(Path(workspace_root).resolve()),
                 message=result.error_message or result.summary,
                 trace_events=trace_events,
                 aggregate_usage=aggregate_usage,
@@ -323,6 +353,26 @@ class OrchestratorRuntime:
             )
 
         final_output = self._compose_final_answer(workspace=workspace, delegation_records=delegation_records)
+        incomplete_reason = self._assess_incomplete_reason(
+            workspace=workspace,
+            delegation_records=delegation_records,
+        )
+        if incomplete_reason:
+            return self._build_failure_result(
+                run_id=run_id,
+                session_id=session_id,
+                model=model,
+                reasoning_mode=reasoning_mode,
+                task=task,
+                workdir=str(Path(workspace_root).resolve()),
+                message=f"{final_output}\n\n未完成原因：{incomplete_reason}",
+                trace_events=trace_events,
+                aggregate_usage=aggregate_usage,
+                aggregate_metrics=aggregate_metrics,
+                started_at=started_at,
+                step_count=executed_steps,
+                trace_recorder=trace_recorder,
+            )
         finished_event = self._make_trace_event(
             run_id=run_id,
             session_id=session_id,
@@ -353,7 +403,7 @@ class OrchestratorRuntime:
             plan=list(workspace.current_plan.steps) if workspace.current_plan else [],
             trace=trace_events,
         )
-        self.v2_repository.save_run(final_result, task)
+        self.v2_repository.save_run(final_result, task, workdir=str(Path(workspace_root).resolve()))
         self.v2_repository.save_workspace(workspace)
         return final_result
 
@@ -717,6 +767,7 @@ class OrchestratorRuntime:
         if planner_result.status != "completed":
             return False
         plan = Plan.model_validate(planner_result.output_data.get("plan", {}))
+        plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=self._enabled_agents_from_workspace(workspace))
         plan.replan_count = (workspace.current_plan.replan_count if workspace.current_plan else 0) + 1
         workspace.current_plan = plan
         self.v2_repository.save_workspace(workspace)
@@ -745,8 +796,6 @@ class OrchestratorRuntime:
             vcmd = getattr(step, "verification_command", None)
             if isinstance(vcmd, str) and vcmd.strip():
                 input_data["command"] = vcmd.strip()
-            else:
-                input_data["command"] = "pytest -q"
         input_data["step_title"] = str(getattr(step, "title", "") or "")
         input_summary = getattr(step, "input_summary", None)
         if input_summary:
@@ -757,6 +806,41 @@ class OrchestratorRuntime:
         if step_type == "analysis":
             input_data["analysis_mode"] = self._infer_analysis_mode(step)
         return input_data
+
+    def _normalize_enabled_agents(self, enabled_agents: set[str] | list[str] | tuple[str, ...] | None) -> set[str]:
+        registered = {spec.agent_id for spec in self.registry.list_specs()}
+        if enabled_agents is None:
+            allowed = set(registered)
+        else:
+            allowed = {str(agent_id).strip() for agent_id in enabled_agents if str(agent_id).strip()}
+            allowed &= registered
+        allowed.add("planner")
+        return allowed
+
+    def _enabled_agents_from_workspace(self, workspace: SharedWorkspace) -> set[str]:
+        orchestrator_context = workspace.private_context.get("orchestrator", {})
+        if isinstance(orchestrator_context, dict):
+            raw = orchestrator_context.get("enabled_agents")
+            if isinstance(raw, list):
+                return self._normalize_enabled_agents(raw)
+        return self._normalize_enabled_agents(None)
+
+    def _filter_plan_by_enabled_agents(self, *, plan: Plan, enabled_agents: set[str]) -> Plan:
+        plan.metadata["enabled_agents"] = sorted(enabled_agents)
+        kept_steps = [
+            step
+            for step in plan.steps
+            if not step.suggested_agent or step.suggested_agent in enabled_agents
+        ]
+        skipped = [
+            step.suggested_agent
+            for step in plan.steps
+            if step.suggested_agent and step.suggested_agent not in enabled_agents
+        ]
+        if skipped:
+            plan.metadata["skipped_disabled_agents"] = skipped
+        plan.steps = kept_steps
+        return plan
 
     def _infer_analysis_mode(self, step) -> str:
         title = str(getattr(step, "title", "") or "").lower()
@@ -832,6 +916,58 @@ class OrchestratorRuntime:
             lines.append(f"共执行 {len(delegation_records)} 次委派。")
         return "\n".join(lines)
 
+    def _assess_incomplete_reason(
+        self,
+        *,
+        workspace: SharedWorkspace,
+        delegation_records: list[DelegationRecord],
+    ) -> str | None:
+        if workspace.latest_test_result is not None and workspace.latest_test_result.status != "passed":
+            return (
+                "最后一次验证未通过，不能将本次运行标记为完成。"
+                f" 验证命令：{workspace.latest_test_result.executed_command}。"
+                f" 结果：{workspace.latest_test_result.summary}"
+            )
+
+        if not self._looks_like_code_change_goal(workspace.user_goal):
+            return None
+
+        coder_context = workspace.private_context.get("coder", {})
+        changed_files: list[str] = []
+        if isinstance(coder_context, dict):
+            for key in ("modified_files", "created_files", "deleted_files"):
+                values = coder_context.get(key, [])
+                if isinstance(values, list):
+                    changed_files.extend(str(value) for value in values if str(value).strip())
+        has_completed_coder = any(
+            record.target_agent == "coder" and record.status == "completed"
+            for record in delegation_records
+        )
+        if not workspace.latest_patch_summary and not changed_files and not has_completed_coder:
+            return "用户目标属于代码修改/修复类任务，但本次运行没有产生 Coder 改动或补丁摘要。"
+        return None
+
+    def _looks_like_code_change_goal(self, goal: str) -> bool:
+        normalized = goal.lower()
+        change_keywords = (
+            "修复",
+            "bug",
+            "实现",
+            "增加",
+            "新增",
+            "修改",
+            "改动",
+            "优化",
+            "fix",
+            "bugfix",
+            "implement",
+            "add ",
+            "change",
+            "update",
+            "refactor",
+        )
+        return any(keyword in normalized for keyword in change_keywords)
+
     def _accumulate_agent_result(
         self,
         *,
@@ -858,6 +994,7 @@ class OrchestratorRuntime:
         model: str,
         reasoning_mode: str,
         task: str,
+        workdir: str | None,
         message: str,
         trace_events: list[TraceEvent],
         aggregate_usage: RunUsage,
@@ -893,7 +1030,11 @@ class OrchestratorRuntime:
             final_output=message,
             trace=trace_events,
         )
-        self.v2_repository.save_run(failed_result, task)
+        self.v2_repository.save_run(
+            failed_result,
+            task,
+            workdir=workdir,
+        )
         return failed_result
 
     def _prepare_artifacts(

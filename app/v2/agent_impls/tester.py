@@ -145,6 +145,14 @@ class TesterAgent(AgentBase):
                 values = coder_context.get(key, [])
                 if isinstance(values, list):
                     changed_files.extend(str(value) for value in values)
+        if self._looks_like_gradle_kotlin_project(prompt_context):
+            wrapper = self._gradle_command_prefix(prompt_context)
+            goal = task.goal.lower()
+            if "test" in goal or "测试" in task.goal:
+                candidates.append(f"{wrapper} test")
+            candidates.append(f"{wrapper} compileKotlin")
+            candidates.append(f"{wrapper} compileKotlinJvm")
+            candidates.append(f"{wrapper} test")
         test_files = [path for path in changed_files if path.startswith("tests/") and path.endswith(".py")]
         if test_files:
             candidates.append(f"pytest -q {' '.join(test_files[:5])}")
@@ -157,6 +165,52 @@ class TesterAgent(AgentBase):
             if candidate not in deduped:
                 deduped.append(candidate)
         return deduped
+
+    def _looks_like_gradle_kotlin_project(self, prompt_context: dict[str, object]) -> bool:
+        analysis_context = prompt_context.get("analysis_context")
+        if not isinstance(analysis_context, dict):
+            analysis_context = {}
+        repo_profile = str(analysis_context.get("repo_profile") or "").lower()
+        if repo_profile == "gradle_kotlin":
+            return True
+        project_summary = str(prompt_context.get("project_summary") or "").lower()
+        build_system = str(analysis_context.get("build_system") or "").lower()
+        if "gradle" in project_summary or "gradle" in build_system:
+            return True
+        key_files = analysis_context.get("key_files", [])
+        if isinstance(key_files, list):
+            for item in key_files:
+                if isinstance(item, dict):
+                    path = str(item.get("path") or "")
+                else:
+                    path = str(item)
+                if path.endswith(("build.gradle.kts", "settings.gradle.kts")):
+                    return True
+        root_entries = analysis_context.get("root_entries", [])
+        if isinstance(root_entries, list):
+            names = {
+                str(item.get("name"))
+                for item in root_entries
+                if isinstance(item, dict) and item.get("name")
+            }
+            if {"build.gradle.kts", "settings.gradle.kts", "gradlew"} & names:
+                return True
+        return False
+
+    def _gradle_command_prefix(self, prompt_context: dict[str, object]) -> str:
+        analysis_context = prompt_context.get("analysis_context")
+        if not isinstance(analysis_context, dict):
+            return "./gradlew"
+        root_entries = analysis_context.get("root_entries", [])
+        if isinstance(root_entries, list):
+            names = {
+                str(item.get("name"))
+                for item in root_entries
+                if isinstance(item, dict) and item.get("name")
+            }
+            if "gradlew" not in names:
+                return "gradle"
+        return "./gradlew"
 
     def _infer_failure_type(self, *, stdout: str, stderr: str) -> str:
         combined = f"{stdout}\n{stderr}".lower()

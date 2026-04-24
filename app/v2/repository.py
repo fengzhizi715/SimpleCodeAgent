@@ -35,6 +35,7 @@ class V2Repository:
         session_id: str,
         model: str,
         task: str,
+        workdir: str | None = None,
         is_top_level: bool = True,
         parent_run_id: str | None = None,
         status: str = "running",
@@ -45,10 +46,10 @@ class V2Repository:
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
                 created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, 'v2')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, 'v2')
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 model = CASE
@@ -58,6 +59,10 @@ class V2Repository:
                 task = CASE
                     WHEN excluded.task = '<artifact-only>' THEN runs.task
                     ELSE excluded.task
+                END,
+                workdir = CASE
+                    WHEN excluded.task = '<artifact-only>' THEN runs.workdir
+                    ELSE COALESCE(excluded.workdir, runs.workdir)
                 END,
                 is_top_level = CASE
                     WHEN excluded.task = '<artifact-only>' THEN runs.is_top_level
@@ -76,6 +81,7 @@ class V2Repository:
                 session_id,
                 model,
                 task,
+                workdir,
                 1 if is_top_level else 0,
                 parent_run_id,
                 status,
@@ -89,6 +95,7 @@ class V2Repository:
         result: RunResult,
         task: str,
         *,
+        workdir: str | None = None,
         is_top_level: bool = True,
         parent_run_id: str | None = None,
     ) -> None:
@@ -100,12 +107,13 @@ class V2Repository:
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
                 created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
             ON CONFLICT(run_id) DO UPDATE SET
                 task = excluded.task,
+                workdir = COALESCE(excluded.workdir, runs.workdir),
                 is_top_level = excluded.is_top_level,
                 parent_run_id = excluded.parent_run_id,
                 status = excluded.status,
@@ -119,6 +127,7 @@ class V2Repository:
                 result.session_id,
                 result.model,
                 task,
+                workdir,
                 1 if is_top_level else 0,
                 parent_run_id,
                 result.status,
@@ -373,12 +382,16 @@ class V2Repository:
             LEFT JOIN v2_workspaces w ON w.run_id = r.run_id
             WHERE r.task NOT IN ('<trace-only>', '<artifact-only>')
               AND COALESCE(r.is_top_level, 1) = 1
+              AND r.session_id NOT LIKE '%:v2:coder'
             ORDER BY r.updated_at DESC, r.run_id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
         )
-        return [dict(row) for row in rows]
+        return [
+            self._with_effective_status(dict(row), self.get_workspace(row["run_id"]))
+            for row in rows
+        ]
 
     def count_runs_with_workspace(self) -> int:
         """统计运行历史总数（含 v1/v2；过滤 trace/artifact 占位记录）。"""
@@ -388,6 +401,7 @@ class V2Repository:
             FROM runs
             WHERE task NOT IN ('<trace-only>', '<artifact-only>')
               AND COALESCE(is_top_level, 1) = 1
+              AND session_id NOT LIKE '%:v2:coder'
             """
         )
         return int(row["cnt"]) if row is not None else 0
@@ -409,7 +423,7 @@ class V2Repository:
         """构造某个 run 的回放数据。"""
         run_row = self.db.fetchone(
             """
-            SELECT run_id, session_id, model, task, status, step_count, final_output, created_at, updated_at
+            SELECT run_id, session_id, model, task, workdir, status, step_count, final_output, created_at, updated_at
             FROM runs
             WHERE run_id = ?
             """,
@@ -417,16 +431,25 @@ class V2Repository:
         )
         if run_row is None:
             return {}
+        workspace = self.get_workspace(run_id)
         return {
-            "run": dict(run_row),
-            "workspace": (
-                self.get_workspace(run_id).model_dump()
-                if self.get_workspace(run_id) is not None
-                else None
-            ),
+            "run": self._with_effective_status(dict(run_row), workspace),
+            "workspace": workspace.model_dump() if workspace is not None else None,
             "delegations": [record.model_dump() for record in self.list_delegations_for_run(run_id)],
             "artifacts": [artifact.model_dump() for artifact in self.list_artifacts_for_run(run_id)],
         }
+
+    def _with_effective_status(
+        self,
+        row: dict[str, Any],
+        workspace: SharedWorkspace | None,
+    ) -> dict[str, Any]:
+        """为 UI/replay 派生展示状态，兼容旧 run 中误标 completed 的记录。"""
+        if row.get("status") != "completed" or workspace is None:
+            return row
+        if workspace.latest_test_result is not None and workspace.latest_test_result.status != "passed":
+            row["status"] = "failed"
+        return row
 
     def list_session_replay(self, session_id: str) -> dict[str, Any]:
         """按 session 聚合 run / workspace / delegation 回放。"""
