@@ -632,6 +632,13 @@ class OrchestratorRuntime:
         test_result = workspace.latest_test_result
         if test_result is None:
             return False
+        # 未收集到任何用例时，Coder 没有可修复的断言/栈，回流只会空转打满步数；交给 RePlan / 新计划处理。
+        if test_result.failure_type == "no_tests_collected":
+            return False
+        for line in test_result.key_logs:
+            low = line.lower()
+            if "no tests ran" in low or "collected 0 items" in low or "0 tests collected" in low:
+                return False
         feedback_task = AgentTask(
             session_id=context.session_id,
             run_id=context.run_id,
@@ -735,7 +742,11 @@ class OrchestratorRuntime:
         input_data: dict[str, object] = {}
         step_type = getattr(step, "type", "")
         if step_type == "testing":
-            input_data["command"] = "pytest -q"
+            vcmd = getattr(step, "verification_command", None)
+            if isinstance(vcmd, str) and vcmd.strip():
+                input_data["command"] = vcmd.strip()
+            else:
+                input_data["command"] = "pytest -q"
         input_data["step_title"] = str(getattr(step, "title", "") or "")
         input_summary = getattr(step, "input_summary", None)
         if input_summary:

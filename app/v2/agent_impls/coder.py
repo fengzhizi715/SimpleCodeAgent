@@ -52,8 +52,8 @@ class CoderAgent(AgentBase):
         coder_task = self._build_task_prompt(task=task, prompt_context=prompt_context, workspace=workspace)
         # 内层 V1 每步 = 一次「模型思考 + 可能工具」；修 bug/登录等通常需要多轮读文件、改代码、再跑测试。
         # 原先 max(max_retries+2, 3) 在测试失败回流时极易 3 步就触顶，表现为「死循环」类提示。
-        _inner_cap = 24
-        _inner_steps = min(_inner_cap, max(12, (task.max_retries or 0) + 8))
+        _inner_cap = 32
+        _inner_steps = min(_inner_cap, max(20, (task.max_retries or 0) + 12))
         result = self.agent_loop.run(
             provider=context.provider,
             model=context.model,

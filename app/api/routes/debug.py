@@ -24,6 +24,8 @@ class HealthResponse(BaseModel):
     status: str
     app_name: str
     env: str
+    llm_base_url: str = ""
+    llm_model: str = ""
 
 
 class TraceQueryResponse(BaseModel):
@@ -225,6 +227,8 @@ def healthz() -> HealthResponse:
         status="ok",
         app_name=settings.app_name,
         env=settings.app_env,
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model,
     )
 
 

@@ -31,6 +31,7 @@ class PlannerStepPayload(BaseModel):
     input_requirements: list[str] = Field(default_factory=list)
     success_criteria: list[str] = Field(default_factory=list)
     max_retries: int = 1
+    verification_command: str | None = None
 
 
 class PlannerOutputPayload(BaseModel):

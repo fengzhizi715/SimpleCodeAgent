@@ -30,6 +30,8 @@ class PlanStep(BaseModel):
     tool_name: str | None = None
     input_summary: str | None = None
     output_summary: str | None = None
+    # 可选：验证步骤在 workspace 根目录下执行的 shell 命令（如 ./gradlew test、pytest tests/）
+    verification_command: str | None = None
 
 
 class Plan(BaseModel):

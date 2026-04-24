@@ -11,6 +11,7 @@ from app.v1.planner.simple_planner import SimplePlanner
 from app.v2.agent_impls.llm_utils import chat_json
 from app.v2.agent_impls.payloads import PLANNER_TOOL_HINTS, PlannerOutputPayload
 from app.v2.base import AgentBase, AgentContext
+from app.v2.plan_policy import apply_step_list_policy
 
 
 class PlannerAgent(AgentBase):
@@ -51,6 +52,11 @@ class PlannerAgent(AgentBase):
             workspace=workspace,
             context=context,
             prompt_context=prompt_context,
+        )
+        raw_plan = apply_step_list_policy(
+            raw_plan,
+            user_goal=task.goal,
+            project_summary=workspace.project_summary or "",
         )
         plan = Plan(
             summary=f"Plan for: {task.goal}",
@@ -112,8 +118,11 @@ class PlannerAgent(AgentBase):
             "Return only valid JSON with keys summary and steps. "
             "Each step must contain title, goal, type, description, suggested_agent, "
             "input_requirements, success_criteria, and max_retries. "
+            "Optional per step: verification_command (string shell command for testing/validation steps only; "
+            "e.g. pytest tests/, ./gradlew test, mvn test — use when the repo is not plain Python pytest at root). "
             "type must be one of analysis, coding, testing, planning, validation, general. "
             "suggested_agent must be one of analyst, coder, tester. "
+            "System may prepend an analysis step if the first step is unsafe; prefer analyst before coder/tester. "
             "Do not include markdown or explanations outside JSON."
         )
         user_prompt = "\n".join(
@@ -122,7 +131,7 @@ class PlannerAgent(AgentBase):
                 f"当前计划：{json.dumps(prompt_context.get('current_plan'), ensure_ascii=False)}",
                 f"项目摘要：{prompt_context.get('project_summary', '')}",
                 f"最近测试结果：{json.dumps(prompt_context.get('latest_test_result'), ensure_ascii=False)}",
-                "请输出 2-5 个可执行步骤，优先保持中心化调度、先分析再编码再验证。",
+                "请输出 2-5 个可执行步骤；典型顺序是：分析/理解 → 实现 → 验证（可省略与目标无关的步）。",
             ]
         )
         payload, llm_result = chat_json(context=context, system_prompt=system_prompt, user_prompt=user_prompt)
@@ -144,6 +153,7 @@ class PlannerAgent(AgentBase):
                 input_requirements=item.input_requirements,
                 success_criteria=item.success_criteria,
                 max_retries=item.max_retries,
+                verification_command=item.verification_command,
             )
             for item in parsed.steps
         ], llm_result

@@ -16,6 +16,12 @@
           <p v-if="apiOk && health" class="muted overview-meta">
             {{ health.app_name }} · {{ health.env }}
           </p>
+          <p v-if="apiOk && health" class="muted overview-meta">
+            LLM_BASE_URL：<code>{{ health.llm_base_url || "—" }}</code>
+          </p>
+          <p v-if="apiOk && health" class="muted overview-meta">
+            LLM_MODEL：<code>{{ health.llm_model || "—" }}</code>
+          </p>
           <p v-else class="muted overview-meta">请在本机 <code>8000</code> 端口启动 FastAPI 后刷新本页。</p>
         </template>
       </div>

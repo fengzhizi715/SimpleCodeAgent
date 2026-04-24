@@ -17,7 +17,7 @@ class TesterAgent(AgentBase):
     - context.tool_registry：必须可用 shell_run。
 
     输出契约：
-    - AgentResult.status：completed / retryable / failed。
+    - AgentResult.status：completed；测试未通过时多为 retryable；若未收集到任何用例则为 failed（no_tests_collected）。
     - output_data.test_report：结构化 TestReport（status、failure_type、key_logs 等）。
     - artifacts：latest_test_result 工件。
     """
@@ -85,18 +85,28 @@ class TesterAgent(AgentBase):
             )
         ok = bool(payload.get("ok"))
         key_logs = [line for line in (stdout + "\n" + stderr).splitlines() if line.strip()][:12]
+        failure_type = None if ok else self._infer_failure_type(stdout=stdout, stderr=stderr)
+        if not ok and failure_type == "no_tests_collected":
+            summary = (
+                "未在仓库中收集到可运行的测试用例（常见于根目录直接 pytest 但项目为 Gradle/Maven 等）。"
+                " 请调整验证命令或先由分析步骤确认构建/测试入口。"
+            )
+            suggested = "不要按普通测试失败回流 Coder；应更新测试命令（如 ./gradlew test）或先分析项目结构。"
+        else:
+            summary = "测试通过。" if ok else "测试失败，需要根据日志继续修复。"
+            suggested = None if ok else "将失败日志回流给 Coder 进行修复。"
         report = TestReport(
             status="passed" if ok else "failed",
             executed_command=command,
-            summary="测试通过。" if ok else "测试失败，需要根据日志继续修复。",
-            failure_type=None if ok else self._infer_failure_type(stdout=stdout, stderr=stderr),
+            summary=summary,
+            failure_type=failure_type,
             key_logs=key_logs,
-            suggested_next_action=None if ok else "将失败日志回流给 Coder 进行修复。",
+            suggested_next_action=suggested,
         )
         return AgentResult(
             task_id=task.task_id,
             agent_id=self.spec.agent_id,
-            status="completed" if ok else "retryable",
+            status="completed" if ok else ("failed" if failure_type == "no_tests_collected" else "retryable"),
             summary=report.summary,
             metrics=RunMetrics(tool_call_count=1),
             output_data={
@@ -150,6 +160,12 @@ class TesterAgent(AgentBase):
 
     def _infer_failure_type(self, *, stdout: str, stderr: str) -> str:
         combined = f"{stdout}\n{stderr}".lower()
+        if (
+            "no tests ran" in combined
+            or "collected 0 items" in combined
+            or "0 tests collected" in combined
+        ):
+            return "no_tests_collected"
         if "timed out" in combined or "timeout" in combined:
             return "timeout"
         if "assert" in combined:
