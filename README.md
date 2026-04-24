@@ -143,7 +143,13 @@ python -m app.main "你好，介绍一下你自己" --version v1
 ./start.sh "你好，介绍一下你自己"
 ```
 
-启动 Web UI（需已安装 Node.js，且 FastAPI 已监听 `8000`）：
+一键启动 **API（8000）+ Web UI（5173）**（推荐，避免只开 Vite 时出现代理 `ECONNREFUSED`）：
+
+```bash
+./run-all.sh
+```
+
+若你已手动启动了 `uvicorn`，只需 Web UI：
 
 ```bash
 ./webui/start.sh
