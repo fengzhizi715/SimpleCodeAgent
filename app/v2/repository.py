@@ -35,6 +35,8 @@ class V2Repository:
         session_id: str,
         model: str,
         task: str,
+        is_top_level: bool = True,
+        parent_run_id: str | None = None,
         status: str = "running",
     ) -> None:
         """确保 run 记录存在，供 trace/workspace/delegation 提前关联。"""
@@ -43,20 +45,53 @@ class V2Repository:
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, status, step_count, final_output, created_at, updated_at
+                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, 0, '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, 'v2')
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
-                model = excluded.model,
-                task = excluded.task,
+                model = CASE
+                    WHEN excluded.model = '<artifact-only>' THEN runs.model
+                    ELSE excluded.model
+                END,
+                task = CASE
+                    WHEN excluded.task = '<artifact-only>' THEN runs.task
+                    ELSE excluded.task
+                END,
+                is_top_level = CASE
+                    WHEN excluded.task = '<artifact-only>' THEN runs.is_top_level
+                    ELSE excluded.is_top_level
+                END,
+                parent_run_id = CASE
+                    WHEN excluded.task = '<artifact-only>' THEN runs.parent_run_id
+                    ELSE excluded.parent_run_id
+                END,
                 status = excluded.status,
+                agent_version = 'v2',
                 updated_at = excluded.updated_at
             """,
-            (run_id, session_id, model, task, status, timestamp, timestamp),
+            (
+                run_id,
+                session_id,
+                model,
+                task,
+                1 if is_top_level else 0,
+                parent_run_id,
+                status,
+                timestamp,
+                timestamp,
+            ),
         )
 
-    def save_run(self, result: RunResult, task: str) -> None:
+    def save_run(
+        self,
+        result: RunResult,
+        task: str,
+        *,
+        is_top_level: bool = True,
+        parent_run_id: str | None = None,
+    ) -> None:
         """持久化 V2 run 元数据。"""
         if not result.run_id or not result.session_id:
             return
@@ -65,13 +100,18 @@ class V2Repository:
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, status, step_count, final_output, created_at, updated_at
+                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
             ON CONFLICT(run_id) DO UPDATE SET
+                task = excluded.task,
+                is_top_level = excluded.is_top_level,
+                parent_run_id = excluded.parent_run_id,
                 status = excluded.status,
                 step_count = excluded.step_count,
                 final_output = excluded.final_output,
+                agent_version = 'v2',
                 updated_at = excluded.updated_at
             """,
             (
@@ -79,6 +119,8 @@ class V2Repository:
                 result.session_id,
                 result.model,
                 task,
+                1 if is_top_level else 0,
+                parent_run_id,
                 result.status,
                 result.step_count,
                 result.final_output,
@@ -312,7 +354,7 @@ class V2Repository:
         ]
 
     def list_recent_runs_with_workspace(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
-        """列出最近具备 V2 workspace 快照的运行（供 Web UI / 调试展示历史）。"""
+        """列出最近运行历史（含 v1/v2；过滤 trace/artifact 占位记录）。"""
         rows = self.db.fetchall(
             """
             SELECT
@@ -325,15 +367,43 @@ class V2Repository:
                 r.final_output,
                 r.created_at,
                 r.updated_at,
-                w.user_goal
+                COALESCE(w.user_goal, r.task) AS user_goal,
+                COALESCE(r.agent_version, CASE WHEN w.run_id IS NOT NULL THEN 'v2' ELSE 'v1' END) AS agent_version
             FROM runs r
-            INNER JOIN v2_workspaces w ON w.run_id = r.run_id
+            LEFT JOIN v2_workspaces w ON w.run_id = r.run_id
+            WHERE r.task NOT IN ('<trace-only>', '<artifact-only>')
+              AND COALESCE(r.is_top_level, 1) = 1
             ORDER BY r.updated_at DESC, r.run_id DESC
             LIMIT ? OFFSET ?
             """,
             (limit, offset),
         )
         return [dict(row) for row in rows]
+
+    def count_runs_with_workspace(self) -> int:
+        """统计运行历史总数（含 v1/v2；过滤 trace/artifact 占位记录）。"""
+        row = self.db.fetchone(
+            """
+            SELECT COUNT(1) AS cnt
+            FROM runs
+            WHERE task NOT IN ('<trace-only>', '<artifact-only>')
+              AND COALESCE(is_top_level, 1) = 1
+            """
+        )
+        return int(row["cnt"]) if row is not None else 0
+
+    def delete_run_for_ui(self, run_id: str) -> bool:
+        """删除单条 run 及其 V2 关联数据。"""
+        run = self.db.fetchone("SELECT run_id FROM runs WHERE run_id = ?", (run_id,))
+        if run is None:
+            return False
+        # 由于 schema 未配置 ON DELETE CASCADE，需要按依赖顺序手动删除子表记录。
+        self.db.execute("DELETE FROM v2_artifacts WHERE run_id = ?", (run_id,))
+        self.db.execute("DELETE FROM v2_delegations WHERE run_id = ?", (run_id,))
+        self.db.execute("DELETE FROM v2_workspaces WHERE run_id = ?", (run_id,))
+        self.db.execute("DELETE FROM trace_index WHERE run_id = ?", (run_id,))
+        self.db.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+        return True
 
     def list_run_replay(self, run_id: str) -> dict[str, Any]:
         """构造某个 run 的回放数据。"""

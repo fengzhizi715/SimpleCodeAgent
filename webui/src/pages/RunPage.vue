@@ -1,23 +1,24 @@
 <template>
   <section class="panel">
-    <h2>Run V2 Task</h2>
+    <h2>新建运行任务</h2>
     <p class="muted">
-      提交任务后会跳转到执行页，并自动轮询回放数据。
+      选择版本后提交任务：<code>v2</code> 会跳转执行页并轮询回放；<code>v1</code> 会在当前页直接展示结果。
       <RouterLink to="/history">查看历史运行</RouterLink>
     </p>
 
-    <div class="grid-two">
-      <div>
-        <label>任务描述</label>
-        <textarea v-model="form.task" />
-      </div>
-      <div>
-        <label>系统提示词</label>
-        <textarea v-model="form.system_prompt" />
-      </div>
+    <div>
+      <label>任务描述</label>
+      <textarea v-model="form.task" />
     </div>
 
     <div class="grid-two" style="margin-top: 12px">
+      <div>
+        <label>版本</label>
+        <select v-model="form.version">
+          <option value="v1">v1（单 Agent）</option>
+          <option value="v2">v2（多 Agent）</option>
+        </select>
+      </div>
       <div>
         <label>Model</label>
         <input v-model="form.model" placeholder="例如 gpt-4.1-mini" />
@@ -33,7 +34,19 @@
       <div>
         <label>Max Steps</label>
         <input v-model.number="form.max_steps" type="number" min="1" max="20" />
+        <p class="muted" style="margin: 6px 0 0">
+          {{
+            form.version === "v2"
+              ? "v2：用于限制多 Agent 委派与重规划步数，避免运行过长。"
+              : "v1：用于限制单 Agent 主循环步数，建议先从 3~8 步开始。"
+          }}
+        </p>
       </div>
+    </div>
+
+    <div v-if="form.version === 'v1'" style="margin-top: 12px">
+      <label>System Prompt（v1）</label>
+      <textarea v-model="form.system_prompt" />
     </div>
 
     <div class="row" style="margin-top: 14px">
@@ -42,6 +55,14 @@
       </button>
       <span v-if="error" class="error">{{ error }}</span>
     </div>
+  </section>
+
+  <section v-if="v1Result" class="panel">
+    <h3>V1 运行结果</h3>
+    <p class="muted">
+      run_id: <code>{{ v1Result.run_id }}</code> · session_id: <code>{{ v1Result.session_id }}</code>
+    </p>
+    <pre>{{ v1Result.answer }}</pre>
   </section>
 </template>
 
@@ -53,6 +74,7 @@ import { runAgent } from "../api";
 const router = useRouter();
 const loading = ref(false);
 const error = ref("");
+const v1Result = ref(null);
 
 const form = reactive({
   task: "请分析当前项目并给出一个小范围优化建议，然后尝试落地。",
@@ -60,13 +82,14 @@ const form = reactive({
   model: "",
   session_id: "",
   workdir: "",
-  system_prompt: "You are a helpful assistant.",
   max_steps: 8,
   include_trace: false,
+  system_prompt: "You are a helpful assistant.",
 });
 
 async function submitRun() {
   error.value = "";
+  v1Result.value = null;
   loading.value = true;
   try {
     const payload = {
@@ -77,11 +100,15 @@ async function submitRun() {
       temperature: 0,
     };
     const result = await runAgent(payload);
-    await router.push({
-      name: "execution",
-      params: { runId: result.run_id },
-      query: { sessionId: result.session_id || "" },
-    });
+    if (form.version === "v2") {
+      await router.push({
+        name: "execution",
+        params: { runId: result.run_id },
+        query: { sessionId: result.session_id || "" },
+      });
+      return;
+    }
+    v1Result.value = result;
   } catch (err) {
     error.value = err instanceof Error ? err.message : "运行失败";
   } finally {

@@ -18,6 +18,29 @@
         <tr><th>session_id</th><td>{{ replay.run.session_id }}</td></tr>
         <tr><th>task</th><td>{{ replay.run.task }}</td></tr>
         <tr><th>model</th><td>{{ replay.run.model }}</td></tr>
+        <tr><th>step_count</th><td>{{ replay.run.step_count }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel" v-if="finalOutput">
+    <h3>最终答案</h3>
+    <pre>{{ finalOutput }}</pre>
+  </section>
+
+  <section class="panel" v-if="teachingView">
+    <h3>教学视图</h3>
+    <table>
+      <tbody>
+        <tr v-if="teachingView.summary"><th>summary</th><td>{{ teachingView.summary }}</td></tr>
+        <tr v-if="keyTakeaways.length">
+          <th>key_takeaways</th>
+          <td>
+            <ul class="flat-list">
+              <li v-for="item in keyTakeaways" :key="item">{{ item }}</li>
+            </ul>
+          </td>
+        </tr>
       </tbody>
     </table>
   </section>
@@ -72,11 +95,25 @@ const replay = reactive({
   run: null,
   workspace: null,
   execution_log: [],
+  teaching_view: null,
 });
 
 const recentLogs = computed(() => {
   const logs = Array.isArray(replay.execution_log) ? replay.execution_log : [];
   return logs.slice(-10).reverse();
+});
+
+const finalOutput = computed(() => {
+  return typeof replay.run?.final_output === "string" ? replay.run.final_output : "";
+});
+
+const teachingView = computed(() => {
+  return replay.teaching_view && typeof replay.teaching_view === "object" ? replay.teaching_view : null;
+});
+
+const keyTakeaways = computed(() => {
+  const items = teachingView.value?.key_takeaways;
+  return Array.isArray(items) ? items : [];
 });
 
 let timerId = null;
@@ -88,6 +125,7 @@ async function fetchReplay() {
     replay.run = data.run || null;
     replay.workspace = data.workspace || null;
     replay.execution_log = data.execution_log || [];
+    replay.teaching_view = data.teaching_view || null;
     const status = data.run?.status;
     if (status === "completed" || status === "failed") {
       polling.value = false;

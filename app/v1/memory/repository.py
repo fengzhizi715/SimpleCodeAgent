@@ -116,7 +116,14 @@ class SQLiteMemoryRepository(MemoryRepository):
             (session_id, summary, timestamp),
         )
 
-    def save_run(self, run: RunResult, task: str) -> None:
+    def save_run(
+        self,
+        run: RunResult,
+        task: str,
+        *,
+        is_top_level: bool = True,
+        parent_run_id: str | None = None,
+    ) -> None:
         """持久化运行元数据。"""
         timestamp = self.db.now()
         self.db.execute(
@@ -130,13 +137,20 @@ class SQLiteMemoryRepository(MemoryRepository):
         self.db.execute(
             """
             INSERT INTO runs (
-                run_id, session_id, model, task, status, step_count, final_output, created_at, updated_at
+                run_id, session_id, model, task, is_top_level, parent_run_id, status, step_count, final_output,
+                created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1')
             ON CONFLICT(run_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                model = excluded.model,
+                task = excluded.task,
+                is_top_level = excluded.is_top_level,
+                parent_run_id = excluded.parent_run_id,
                 status = excluded.status,
                 step_count = excluded.step_count,
                 final_output = excluded.final_output,
+                agent_version = 'v1',
                 updated_at = excluded.updated_at
             """,
             (
@@ -144,6 +158,8 @@ class SQLiteMemoryRepository(MemoryRepository):
                 run.session_id,
                 run.model,
                 task,
+                1 if is_top_level else 0,
+                parent_run_id,
                 run.status,
                 run.step_count,
                 run.final_output,

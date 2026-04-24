@@ -25,9 +25,10 @@ const BACKEND_HINT =
 async function requestJson(path, options = {}) {
   let response;
   try {
+    const isFormDataBody = options.body instanceof FormData;
     response = await fetch(path, {
       headers: {
-        "Content-Type": "application/json",
+        ...(isFormDataBody ? {} : { "Content-Type": "application/json" }),
         ...(options.headers || {}),
       },
       ...options,
@@ -43,6 +44,10 @@ async function requestJson(path, options = {}) {
   return payload;
 }
 
+export async function getHealthz() {
+  return requestJson("/healthz");
+}
+
 export async function runAgent(input) {
   return requestJson("/agent/run", {
     method: "POST",
@@ -54,10 +59,60 @@ export async function getRunReplay(runId) {
   return requestJson(`/debug/v2/runs/${encodeURIComponent(runId)}/replay`);
 }
 
-export async function listV2Runs({ limit = 50, offset = 0 } = {}) {
+export async function listRuns({ limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
   });
-  return requestJson(`/debug/v2/runs?${params.toString()}`);
+  return requestJson(`/debug/runs?${params.toString()}`);
+}
+
+export async function deleteRun(runId) {
+  return requestJson(`/debug/runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+  });
+}
+
+export const listV2Runs = listRuns;
+export const deleteV2Run = deleteRun;
+
+export async function getRagOverview({ limit = 20, offset = 0 } = {}) {
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return requestJson(`/debug/rag/overview?${params.toString()}`);
+}
+
+export async function deleteRagSource(source) {
+  return requestJson("/debug/rag/delete-source", {
+    method: "POST",
+    body: JSON.stringify({ source }),
+  });
+}
+
+export async function reindexRagSource(source) {
+  return requestJson("/debug/rag/reindex-source", {
+    method: "POST",
+    body: JSON.stringify({ source }),
+  });
+}
+
+export async function uploadRagFile(file, sourceDir = "uploads") {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const contentBase64 = btoa(binary);
+
+  return requestJson("/debug/rag/upload", {
+    method: "POST",
+    body: JSON.stringify({
+      filename: file.name,
+      source_dir: sourceDir,
+      content_base64: contentBase64,
+    }),
+  });
 }

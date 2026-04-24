@@ -99,7 +99,7 @@ class OrchestratorRuntime:
         run_id = str(uuid4())
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         workspace = SharedWorkspace(session_id=session_id, run_id=run_id, user_goal=task)
-        workspace_store = WorkspaceStore(workspace)
+        workspace_store = WorkspaceStore(workspace, workspace_root=workspace_root)
         context = AgentContext(
             provider=provider,
             model=model,
@@ -421,6 +421,14 @@ class OrchestratorRuntime:
         """返回最近若干次带 workspace 的 V2 运行摘要。"""
         return self.v2_repository.list_recent_runs_with_workspace(limit=limit, offset=offset)
 
+    def count_runs_for_ui(self) -> int:
+        """返回带 workspace 的 V2 运行总数。"""
+        return self.v2_repository.count_runs_with_workspace()
+
+    def delete_run_for_ui(self, run_id: str) -> bool:
+        """删除单条 V2 run 及其关联记录。"""
+        return self.v2_repository.delete_run_for_ui(run_id)
+
     def _call_agent(
         self,
         *,
@@ -518,18 +526,17 @@ class OrchestratorRuntime:
         workspace_store.append_note(f"{step_task.target_agent}: {result.summary}")
         workspace_store.upsert_agent_artifacts(result.artifacts)
         if step_task.target_agent == "analyst":
-            summary = str(result.output_data.get("project_summary") or result.summary)
-            workspace_store.write_project_summary(summary)
+            merged_analysis = workspace_store.merge_analyst_context(result.output_data)
+            summary = str(merged_analysis.get("project_summary") or result.summary)
             workspace_store.add_artifact(
                 key="project_summary",
                 artifact_type="analysis",
                 summary="项目分析摘要",
                 metadata={
-                    "entry_files": result.output_data.get("entry_files", []),
-                    "key_files": result.output_data.get("key_files", []),
+                    "entry_files": merged_analysis.get("entry_files", []),
+                    "key_files": merged_analysis.get("key_files", []),
                 },
             )
-            workspace_store.upsert_private_context("analyst", result.output_data)
             return
         if step_task.target_agent == "coder":
             workspace_store.write_patch_summary(result.summary)
@@ -654,7 +661,7 @@ class OrchestratorRuntime:
         self._apply_agent_result(
             result=coder_result,
             step_task=feedback_task,
-            workspace_store=WorkspaceStore(workspace),
+            workspace_store=WorkspaceStore(workspace, workspace_root=context.workspace_root),
         )
         return True
 
@@ -726,13 +733,30 @@ class OrchestratorRuntime:
 
     def _build_step_input(self, step) -> dict[str, object]:
         input_data: dict[str, object] = {}
-        if step.type == "testing":
+        step_type = getattr(step, "type", "")
+        if step_type == "testing":
             input_data["command"] = "pytest -q"
-        if step.input_summary:
-            input_data["input_summary"] = step.input_summary
-        if step.tool_name:
-            input_data["tool_name"] = step.tool_name
+        input_data["step_title"] = str(getattr(step, "title", "") or "")
+        input_summary = getattr(step, "input_summary", None)
+        if input_summary:
+            input_data["input_summary"] = input_summary
+        tool_name = getattr(step, "tool_name", None)
+        if tool_name:
+            input_data["tool_name"] = tool_name
+        if step_type == "analysis":
+            input_data["analysis_mode"] = self._infer_analysis_mode(step)
         return input_data
+
+    def _infer_analysis_mode(self, step) -> str:
+        title = str(getattr(step, "title", "") or "").lower()
+        goal = str(getattr(step, "goal", "") or "").lower()
+        tool_name = str(getattr(step, "tool_name", "") or "").lower()
+        haystack = " ".join(part for part in [title, goal, tool_name] if part)
+        if any(token in haystack for token in ("总结", "汇总", "概述", "summary", "summar", "final")):
+            return "summary"
+        if any(token in haystack for token in ("read_file", "读取", "关键文件", "配置文件", "入口文件")):
+            return "key_file_read"
+        return "directory_scan"
 
     def _compose_final_answer(
         self,

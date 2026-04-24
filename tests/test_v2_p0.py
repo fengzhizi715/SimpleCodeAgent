@@ -195,6 +195,22 @@ def test_planner_agent_routes_summary_steps_to_analyst(tmp_path: Path) -> None:
     assert step["tool_name"] == "file_search"
 
 
+def test_runtime_infers_analysis_mode_from_step_semantics(tmp_path: Path) -> None:
+    runtime = build_default_registry  # keep import used for module coverage
+    del runtime
+    from app.v2.runtime import OrchestratorRuntime
+    from app.v2.registry import AgentRegistry
+
+    orchestrator = OrchestratorRuntime(registry=AgentRegistry(), trace_repository=SQLiteTraceRepository(SQLiteDB(tmp_path / "mode.sqlite3")))
+    directory_step = type("Step", (), {"type": "analysis", "title": "查看目录结构", "goal": "识别顶层目录", "tool_name": "list_dir"})()
+    key_file_step = type("Step", (), {"type": "analysis", "title": "读取关键文件", "goal": "读取配置和入口文件", "tool_name": "read_file"})()
+    summary_step = type("Step", (), {"type": "analysis", "title": "总结结构", "goal": "总结模块职责", "tool_name": None})()
+
+    assert orchestrator._build_step_input(directory_step)["analysis_mode"] == "directory_scan"
+    assert orchestrator._build_step_input(key_file_step)["analysis_mode"] == "key_file_read"
+    assert orchestrator._build_step_input(summary_step)["analysis_mode"] == "summary"
+
+
 def test_tester_agent_prefers_targeted_test_command(tmp_path: Path) -> None:
     provider = QueueProvider([])
     context = _make_context(tmp_path, provider)
@@ -252,6 +268,86 @@ def test_analyst_agent_happy_path(tmp_path: Path) -> None:
     assert "构建方式" in result.output_data["project_summary"]
     assert result.metrics is not None
     assert result.metrics.tool_call_count >= 2
+
+
+def test_analyst_agent_prioritizes_gradle_kotlin_files(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    (tmp_path / "README.md").write_text("# Monica\n", encoding="utf-8")
+    (tmp_path / "build.gradle.kts").write_text("plugins { kotlin(\"jvm\") version \"2.0.0\" }\n", encoding="utf-8")
+    (tmp_path / "settings.gradle.kts").write_text("rootProject.name = \"Monica\"\n", encoding="utf-8")
+    (tmp_path / "src" / "main" / "kotlin").mkdir(parents=True)
+    (tmp_path / "src" / "main" / "kotlin" / "Main.kt").write_text(
+        "fun main() { println(\"Monica\") }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "domain").mkdir()
+    (tmp_path / "domain" / "Layer.kt").write_text("class Layer\n", encoding="utf-8")
+
+    agent = AnalystAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="分析 Kotlin 项目")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="读取关键文件并分析项目结构",
+        step_type="analysis",
+        target_agent="analyst",
+        input_data={"tool_name": "read_file"},
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={"analysis_context": {}},
+    )
+
+    key_paths = [item["path"] for item in result.output_data["key_files"]]
+    assert result.status == "completed"
+    assert "build.gradle.kts" in key_paths
+    assert "settings.gradle.kts" in key_paths
+    assert any(path.endswith(".kt") for path in key_paths)
+    assert not any(path.startswith("app/") for path in key_paths)
+    assert any(path.endswith(".kts") for path in result.output_data["entry_files"])
+
+
+def test_analyst_agent_summary_mode_uses_existing_context(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    (tmp_path / "README.md").write_text("# Monica\n", encoding="utf-8")
+    (tmp_path / "build.gradle.kts").write_text("plugins { kotlin(\"jvm\") version \"2.0.0\" }\n", encoding="utf-8")
+    (tmp_path / "settings.gradle.kts").write_text("rootProject.name = \"Monica\"\n", encoding="utf-8")
+
+    agent = AnalystAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="总结项目结构")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="总结目录结构、模块职责和开发约定",
+        step_type="analysis",
+        target_agent="analyst",
+        input_data={"tool_name": "summary", "analysis_mode": "summary"},
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={
+            "analysis_context": {
+                "project_summary": "前序分析指出这是一个 Gradle Kotlin 项目。",
+                "key_files": [{"path": "build.gradle.kts", "reason": "构建入口"}],
+            }
+        },
+    )
+
+    assert result.status == "completed"
+    assert "前序分析结论" in result.output_data["project_summary"]
+    assert "build.gradle.kts" in [item["path"] for item in result.output_data["key_files"]]
+    assert result.metrics is not None
+    assert result.metrics.tool_call_count >= 1
 
 
 def test_coder_agent_happy_path(tmp_path: Path) -> None:

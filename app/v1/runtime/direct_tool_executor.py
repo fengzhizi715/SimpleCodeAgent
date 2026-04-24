@@ -274,7 +274,12 @@ class DirectToolExecutor:
                 trace=trace_events,
             )
             if hasattr(repository, "save_run"):
-                repository.save_run(result, f"[direct-tool] {step.title}")
+                repository.save_run(
+                    result,
+                    f"[direct-tool] {step.title}",
+                    is_top_level=False,
+                    parent_run_id=parent_run_id or root_run_id,
+                )
             if hasattr(repository, "save_trace_events"):
                 repository.save_trace_events(run_id, trace_events)
             return result
@@ -322,7 +327,12 @@ class DirectToolExecutor:
             trace=trace_events,
         )
         if hasattr(repository, "save_run"):
-            repository.save_run(result, f"[direct-tool] {step.title}")
+            repository.save_run(
+                result,
+                f"[direct-tool] {step.title}",
+                is_top_level=False,
+                parent_run_id=parent_run_id or root_run_id,
+            )
         if hasattr(repository, "save_trace_events"):
             repository.save_trace_events(run_id, trace_events)
         return result

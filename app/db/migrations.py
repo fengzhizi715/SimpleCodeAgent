@@ -29,11 +29,14 @@ SCHEMA_STATEMENTS = [
         session_id TEXT NOT NULL,
         model TEXT NOT NULL,
         task TEXT NOT NULL,
+        is_top_level INTEGER NOT NULL DEFAULT 1,
+        parent_run_id TEXT,
         status TEXT,
         step_count INTEGER NOT NULL DEFAULT 0,
         final_output TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        agent_version TEXT,
         FOREIGN KEY(session_id) REFERENCES sessions(id)
     )
     """,

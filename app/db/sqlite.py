@@ -63,6 +63,8 @@ class SQLiteDB:
             for statement in SCHEMA_STATEMENTS:
                 conn.execute(statement)
             self._ensure_trace_index_columns(conn)
+            self._ensure_runs_agent_version_column(conn)
+            self._ensure_runs_hierarchy_columns(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_trace_index_session_id_created_at
@@ -101,6 +103,63 @@ class SQLiteDB:
             conn.execute(
                 f"ALTER TABLE trace_index ADD COLUMN {column_name} {column_type}"
             )
+
+    def _ensure_runs_agent_version_column(self, conn: sqlite3.Connection) -> None:
+        """为 runs 表补齐 agent_version，并回填含 workspace 的 V2 记录。"""
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "agent_version" not in existing_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN agent_version TEXT")
+        conn.execute(
+            """
+            UPDATE runs
+            SET agent_version = 'v2'
+            WHERE run_id IN (SELECT run_id FROM v2_workspaces)
+              AND (agent_version IS NULL OR agent_version = '')
+            """
+        )
+
+    def _ensure_runs_hierarchy_columns(self, conn: sqlite3.Connection) -> None:
+        """为 runs 表补齐层级字段，并尽力回填旧数据。"""
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        if "is_top_level" not in existing_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN is_top_level INTEGER NOT NULL DEFAULT 1")
+        if "parent_run_id" not in existing_columns:
+            conn.execute("ALTER TABLE runs ADD COLUMN parent_run_id TEXT")
+        conn.execute(
+            """
+            UPDATE runs
+            SET parent_run_id = (
+                    SELECT ti.root_run_id
+                    FROM trace_index ti
+                    WHERE ti.run_id = runs.run_id
+                      AND ti.root_run_id IS NOT NULL
+                      AND ti.root_run_id != runs.run_id
+                    ORDER BY ti.created_at DESC
+                    LIMIT 1
+                ),
+                is_top_level = 0
+            WHERE EXISTS (
+                SELECT 1
+                FROM trace_index ti
+                WHERE ti.run_id = runs.run_id
+                  AND ti.root_run_id IS NOT NULL
+                  AND ti.root_run_id != runs.run_id
+            )
+            """
+        )
+        # trace 缺失时的兜底回填：旧版本曾使用 task 文案标记 planner/direct-tool 子运行。
+        conn.execute(
+            """
+            UPDATE runs
+            SET is_top_level = 0
+            WHERE task LIKE '[direct-tool] %'
+               OR (task LIKE '总任务：%' AND task LIKE '%当前是第 %/% 步%')
+            """
+        )
 
     def connect(self) -> sqlite3.Connection:
         """打开或复用当前线程的 SQLite 连接。"""

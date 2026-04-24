@@ -35,6 +35,7 @@ class ContextBuilder:
             return base_context
         if agent.agent_id == "analyst":
             base_context["project_summary"] = workspace.project_summary
+            base_context["analysis_context"] = workspace.private_context.get("analyst", {})
             base_context["artifacts_index"] = [item.model_dump() for item in workspace.artifacts_index]
             base_context["current_plan"] = (
                 workspace.current_plan.model_dump() if workspace.current_plan else None

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import (
     get_agent_loop,
+    get_memory_repository,
     get_planner,
     get_provider,
     get_session_memory,
@@ -172,6 +173,11 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         except (AppError, LLMProviderError) as exc:
             logger.exception("API agent run failed: %s", exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        # v1 规划路径会在子步骤中多次 save_run，task 可能为步骤/摘要提示词；这里用用户原始 task 再落库一次，
+        # 确保历史列表与 Web UI 展示的 run_id 一致且摘要列可读。
+        if request.version == "v1" and result.run_id and result.session_id:
+            get_memory_repository().save_run(result, request.task, is_top_level=True, parent_run_id=None)
 
         trace: list[dict[str, object]] = []
         if request.include_trace and result.run_id:

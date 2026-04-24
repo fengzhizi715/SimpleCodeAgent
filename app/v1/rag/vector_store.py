@@ -66,3 +66,45 @@ class ChromaVectorStore:
                 }
             )
         return rows
+
+    def inspect(self) -> dict[str, Any]:
+        """返回集合概览信息（用于调试页展示）。"""
+        total_chunks = int(self.collection.count())
+        payload = self.collection.get(include=["metadatas"])
+        metadatas = payload.get("metadatas") or []
+        ids = payload.get("ids") or []
+
+        source_to_chunks: dict[str, int] = {}
+        for metadata in metadatas:
+            source = ""
+            if isinstance(metadata, dict):
+                source = str(metadata.get("source") or "").strip()
+            key = source or "(unknown)"
+            source_to_chunks[key] = source_to_chunks.get(key, 0) + 1
+
+        files = [
+            {"source": source, "chunk_count": chunk_count}
+            for source, chunk_count in sorted(source_to_chunks.items(), key=lambda item: (-item[1], item[0]))
+        ]
+
+        return {
+            "collection_name": self.collection.name,
+            "persist_dir": str(self.persist_dir),
+            "total_chunks": total_chunks,
+            "file_count": len(source_to_chunks),
+            "sampled_chunk_count": len(ids),
+            "files": files,
+        }
+
+    def delete_by_source(self, source: str) -> int:
+        """按 source 删除对应分块并返回删除数量。"""
+        normalized = source.strip()
+        if not normalized:
+            return 0
+
+        matched = self.collection.get(where={"source": normalized}, include=[])
+        ids = matched.get("ids") or []
+        if not ids:
+            return 0
+        self.collection.delete(ids=ids)
+        return len(ids)

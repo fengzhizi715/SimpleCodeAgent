@@ -340,6 +340,12 @@ npm run dev
 ./webui/start.sh
 ```
 
+**推荐（一次起全栈）**：若尚未开 `uvicorn`，可直接在仓库根目录执行；脚本会在需要时后台拉起 API，再启动 Vite，避免仅开前端时 `/agent/run` 代理报 `ECONNREFUSED`：
+
+```bash
+./run-all.sh
+```
+
 传给 Vite 的额外参数会原样透传，例如指定监听地址：
 
 ```bash
@@ -348,13 +354,26 @@ npm run dev
 
 然后打开终端提示的本地地址（默认 `http://127.0.0.1:5173`）。`POST /agent/run` 的鉴权仍由后端读取环境变量或请求体；若你未在浏览器里传 `api_key` / `service_token`，请保证服务端已配置 `LLM_API_KEY` 或 `LLM_SERVICE_TOKEN`。
 
+当前页面是一个面向 `v2` 的最小演示前端：
+
+- 依赖 `/agent` 与 `/debug` 的同源路径
+- 开发态通过 Vite proxy 转发到 `127.0.0.1:8000`
+- 表单不会暴露当前 `v2` runtime 尚未消费的 `system_prompt`
+
 生产构建：
 
 ```bash
 cd webui
 npm run build
-# 产物在 webui/dist/，可交给任意静态资源服务器托管
+# 产物在 webui/dist/
 ```
+
+注意：当前产物**不能直接丢给任意纯静态托管**就工作。要么：
+
+- 让静态资源和 FastAPI 部署在同一域名/同一路径前缀下
+- 要么在前面加反向代理，把 `/agent`、`/debug`、`/healthz` 转发到 FastAPI
+
+如果只是单独打开静态文件或部署到没有 API 代理的静态站点，页面请求会失败。
 
 ## 6. Trace 查看
 
