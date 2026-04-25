@@ -65,11 +65,18 @@
       <div class="v2-agent-config-head">
         <div>
           <label>V2 Agent 配置</label>
-          <p class="muted">Planner 始终启用；其余 Agent 可按本次运行选择。</p>
+          <p class="muted">Orchestrator / Planner 始终启用；其余 Agent 可按本次运行选择。</p>
         </div>
         <button type="button" class="btn-secondary btn-sm" @click="resetV2Agents">恢复默认</button>
       </div>
       <div class="v2-agent-options">
+        <label class="v2-agent-option is-locked">
+          <input type="checkbox" checked disabled />
+          <span>
+            <strong>Orchestrator</strong>
+            <small>中心化调度，必选</small>
+          </span>
+        </label>
         <label class="v2-agent-option is-locked">
           <input type="checkbox" checked disabled />
           <span>

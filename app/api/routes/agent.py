@@ -81,9 +81,9 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
     run_timeout_seconds: int = Field(default=120, ge=1, le=600, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
-    v2_enabled_agents: list[Literal["planner", "analyst", "coder", "tester", "reviewer"]] | None = Field(
+    v2_enabled_agents: list[Literal["orchestrator", "planner", "analyst", "coder", "tester", "reviewer"]] | None = Field(
         default=None,
-        description="V2 可视化运行级 Agent 配置；planner 会始终启用。",
+        description="V2 可视化运行级 Agent 配置；orchestrator / planner 会始终启用。",
     )
     v2_review_strategy: V2ReviewStrategyRequest | None = Field(
         default=None,
