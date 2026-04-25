@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.contracts.agent import AgentArtifact, SharedWorkspace
+from app.contracts.agent import AgentArtifact, SharedWorkspace, TestReport
 from app.contracts.message import ChatMessage
 from app.contracts.run import RunChoice, RunResult
 from app.db.sqlite import SQLiteDB
@@ -119,3 +119,95 @@ def test_list_recent_runs_hides_v1_internal_plan_runs(tmp_path) -> None:
     assert [row["run_id"] for row in rows] == ["top-run"]
     assert repo.count_runs_with_workspace() == 1
     assert rows[0]["agent_version"] == "v1"
+
+
+def test_list_recent_runs_hides_v2_coder_inner_v1_runs(tmp_path) -> None:
+    db = SQLiteDB(tmp_path / "hist-v2-coder-inner.sqlite3")
+    memory_repo = SQLiteMemoryRepository(db_path=db.db_path)
+    v2_repo = V2Repository(db)
+
+    common = {
+        "model": "fake-model",
+        "status": "completed",
+        "step_count": 1,
+        "choices": [RunChoice(index=0, message=ChatMessage(role="assistant", content="ok"))],
+    }
+    v2_repo.ensure_run(
+        run_id="v2-top-run",
+        session_id="sess@project",
+        model="fake-model",
+        task="修复登录 bug",
+        status="completed",
+    )
+    memory_repo.save_run(
+        RunResult(
+            id="inner-coder-run",
+            run_id="inner-coder-run",
+            session_id="sess@project:v2:coder",
+            final_output="内部 coder 结果",
+            **common,
+        ),
+        "任务目标：基于错误原因做最小代码修改。",
+    )
+
+    rows = v2_repo.list_recent_runs_with_workspace(limit=10, offset=0)
+
+    assert [row["run_id"] for row in rows] == ["v2-top-run"]
+    assert v2_repo.count_runs_with_workspace() == 1
+
+
+def test_sqlite_startup_marks_v2_coder_inner_runs_as_non_top_level(tmp_path) -> None:
+    db = SQLiteDB(tmp_path / "hist-v2-coder-startup.sqlite3")
+    memory_repo = SQLiteMemoryRepository(db_path=db.db_path)
+    common = {
+        "model": "fake-model",
+        "status": "completed",
+        "step_count": 1,
+        "choices": [RunChoice(index=0, message=ChatMessage(role="assistant", content="ok"))],
+    }
+    memory_repo.save_run(
+        RunResult(
+            id="inner-coder-run",
+            run_id="inner-coder-run",
+            session_id="sess@project:v2:coder",
+            final_output="内部 coder 结果",
+            **common,
+        ),
+        "任务目标：写入代码。",
+    )
+
+    SQLiteDB(db.db_path)
+    row = db.fetchone("SELECT is_top_level FROM runs WHERE run_id = ?", ("inner-coder-run",))
+
+    assert row is not None
+    assert row["is_top_level"] == 0
+
+
+def test_list_recent_runs_derives_failed_status_from_workspace_test_result(tmp_path) -> None:
+    db = SQLiteDB(tmp_path / "hist-derived-status.sqlite3")
+    repo = V2Repository(db)
+    repo.ensure_run(
+        run_id="run-completed-but-failed-test",
+        session_id="sess-1",
+        model="m1",
+        task="修复登录 bug",
+        status="completed",
+    )
+    repo.save_workspace(
+        SharedWorkspace(
+            session_id="sess-1",
+            run_id="run-completed-but-failed-test",
+            user_goal="修复登录 bug",
+            latest_test_result=TestReport(
+                status="failed",
+                executed_command="pytest -q",
+                summary="未收集到测试。",
+            ),
+        )
+    )
+
+    rows = repo.list_recent_runs_with_workspace(limit=10, offset=0)
+    replay = repo.list_run_replay("run-completed-but-failed-test")
+
+    assert rows[0]["status"] == "failed"
+    assert replay["run"]["status"] == "failed"

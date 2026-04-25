@@ -5,15 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.cli.entry import run_agent_task
-from app.contracts.agent import AgentResult, AgentTask, SharedWorkspace
+from app.contracts.agent import AgentResult, AgentTask, SharedWorkspace, TestReport
 from app.contracts.message import ChatMessage
+from app.contracts.planner import PlanStep
 from app.contracts.run import RunChoice, RunMetrics, RunRequest, RunResult, RunUsage
+from app.contracts.tool import ToolResult
 from app.db.sqlite import SQLiteDB
 from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.tools.registry import ToolRegistry
-from app.v2.agents import AnalystAgent, CoderAgent, PlannerAgent, ReviewerAgent, TesterAgent
+from app.v2.agents import AnalystAgent, CoderAgent, OrchestratorAgent, PlannerAgent, ReviewerAgent, TesterAgent
 from app.v2.base import AgentContext, OrchestratorDelegationClient
 from app.v2.agent_impls import describe_agent_matrix
 from app.cli.entry import print_agent_matrix
@@ -51,8 +53,10 @@ class FakeCoderLoop:
 
     def __init__(self, workspace_root: Path) -> None:
         self.workspace_root = workspace_root
+        self.last_kwargs: dict[str, object] = {}
 
     def run(self, **kwargs: object) -> RunResult:
+        self.last_kwargs = dict(kwargs)
         target = self.workspace_root / "app" / "sample.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def hello() -> str:\n    return 'world'\n", encoding="utf-8")
@@ -195,6 +199,24 @@ def test_planner_agent_routes_summary_steps_to_analyst(tmp_path: Path) -> None:
     assert step["tool_name"] == "file_search"
 
 
+def test_planner_agent_routes_retrieve_docs_to_analyst(tmp_path: Path) -> None:
+    agent = PlannerAgent()
+    step = PlanStep(
+        title="检索相关文档",
+        goal="先检索相关文档，根据知识库内容准备 OpenCV C++ 直方图匹配算法。",
+        type="coding",
+        description="使用知识库检索相关算法资料",
+        suggested_agent="coder",
+        tool_name="retrieve_docs",
+    )
+
+    enriched = agent._enrich_step(step)
+
+    assert enriched.type == "analysis"
+    assert enriched.suggested_agent == "analyst"
+    assert enriched.tool_name == "retrieve_docs"
+
+
 def test_runtime_infers_analysis_mode_from_step_semantics(tmp_path: Path) -> None:
     runtime = build_default_registry  # keep import used for module coverage
     del runtime
@@ -242,6 +264,35 @@ def test_tester_agent_prefers_targeted_test_command(tmp_path: Path) -> None:
     assert result.output_data["test_report"]["status"] == "passed"
     assert result.metrics is not None
     assert result.metrics.tool_call_count == 1
+
+
+def test_tester_agent_prefers_gradle_kotlin_validation_from_analysis_context() -> None:
+    tester = TesterAgent()
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="验证登录修复",
+        step_type="testing",
+        target_agent="tester",
+    )
+
+    candidates = tester._select_command_candidates(
+        task=task,
+        prompt_context={
+            "project_summary": "这是一个 Gradle/Kotlin 项目。",
+            "analysis_context": {
+                "repo_profile": "gradle_kotlin",
+                "root_entries": [
+                    {"name": "gradlew", "type": "file"},
+                    {"name": "build.gradle.kts", "type": "file"},
+                ],
+            },
+            "coder_context": {},
+        },
+    )
+
+    assert candidates[:3] == ["./gradlew compileKotlin", "./gradlew compileKotlinJvm", "./gradlew test"]
+    assert "pytest -q" not in candidates[:3]
 
 
 def test_analyst_agent_happy_path(tmp_path: Path) -> None:
@@ -350,6 +401,114 @@ def test_analyst_agent_summary_mode_uses_existing_context(tmp_path: Path) -> Non
     assert result.metrics.tool_call_count >= 1
 
 
+def test_analyst_agent_uses_retrieve_docs_mode(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    called: list[tuple[str, dict[str, object]]] = []
+    original_execute_tool = context.tool_registry.execute_tool
+
+    def fake_execute_tool(*, tool_name: str, arguments: dict[str, object], tool_call_id: str = "direct-tool-call") -> ToolResult:
+        called.append((tool_name, arguments))
+        if tool_name == "retrieve_docs":
+            return ToolResult(
+                tool_call_id=tool_call_id,
+                name=tool_name,
+                content=(
+                    '{"query":"OpenCV C++ 直方图匹配","match_count":1,'
+                    '"matches":[{"title":"Histogram Matching",'
+                    '"content":"Use cv::calcHist, normalize CDFs, build a lookup table, then cv::LUT."}]}'
+                ),
+            )
+        return original_execute_tool(tool_name=tool_name, arguments=arguments, tool_call_id=tool_call_id)
+
+    context.tool_registry.execute_tool = fake_execute_tool  # type: ignore[method-assign]
+    agent = AnalystAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写 OpenCV 算法")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="先检索相关文档根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        step_type="analysis",
+        target_agent="analyst",
+        input_data={"tool_name": "retrieve_docs"},
+    )
+
+    result = agent.run(task=task, workspace=workspace, context=context, prompt_context={})
+
+    assert result.status == "completed"
+    assert result.output_data["analysis_mode"] == "rag_retrieval"
+    assert result.output_data["docs_context"]["match_count"] == 1
+    assert any(name == "retrieve_docs" for name, _ in called)
+    assert "知识库检索命中 1 条相关片段" in result.output_data["project_summary"]
+    assert result.output_data["key_files"] == []
+
+
+def test_workspace_merge_preserves_docs_context() -> None:
+    from app.v2.workspace import WorkspaceStore
+
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写算法")
+    store = WorkspaceStore(workspace)
+
+    store.merge_analyst_context(
+        {
+            "project_summary": "知识库检索完成。",
+            "analysis_mode": "rag_retrieval",
+            "docs_context": {
+                "query": "OpenCV 直方图匹配",
+                "match_count": 1,
+                "matches": [{"title": "Histogram Matching", "content": "calcHist + CDF + LUT"}],
+            },
+        }
+    )
+    merged = store.merge_analyst_context(
+        {
+            "project_summary": "总结完成。",
+            "analysis_mode": "summary",
+            "key_files": [{"path": "README.md", "reason": "项目说明"}],
+        }
+    )
+
+    assert merged["docs_context"]["match_count"] == 1
+    assert merged["docs_context"]["matches"][0]["title"] == "Histogram Matching"
+
+
+def test_coder_prompt_uses_docs_context_for_algorithm_answers(tmp_path: Path) -> None:
+    agent = CoderAgent(agent_loop=FakeCoderLoop(tmp_path))
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写 OpenCV 算法")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        step_type="coding",
+        target_agent="coder",
+    )
+
+    prompt = agent._build_task_prompt(
+        task=task,
+        prompt_context={
+            "analysis_context": {
+                "docs_context": {
+                    "query": "OpenCV C++ 直方图匹配",
+                    "match_count": 1,
+                    "matches": [
+                        {
+                            "title": "Histogram Matching",
+                            "content": "Use cv::calcHist, normalize CDFs, build a lookup table, then cv::LUT.",
+                        }
+                    ],
+                }
+            }
+        },
+        workspace=workspace,
+    )
+
+    assert "知识库检索结果" in prompt
+    assert "C++ 示例代码" in prompt
+    assert "不要反问缺少具体编程任务" in prompt
+    assert "未写入文件" in prompt
+
+
 def test_coder_agent_happy_path(tmp_path: Path) -> None:
     provider = QueueProvider([])
     context = _make_context(tmp_path, provider)
@@ -367,7 +526,21 @@ def test_coder_agent_happy_path(tmp_path: Path) -> None:
     result = agent.run(task=task, workspace=workspace, context=context, prompt_context={})
 
     assert result.status == "completed"
+    assert agent.agent_loop.last_kwargs["is_top_level"] is False
+    assert agent.agent_loop.last_kwargs["parent_run_id"] == "test-run"
     assert "app/sample.py" in result.output_data["created_files"] or "app/sample.py" in result.output_data["modified_files"]
+    assert result.output_data["patch_id"]
+    assert result.output_data["base_snapshot_id"]
+    assert result.output_data["head_snapshot_id"]
+    assert result.output_data["patch_stats"]["files_changed"] >= 1
+    assert result.output_data["patch_stats"]["insertions"] >= 2
+    assert "app/sample.py" in result.output_data["patch_diffs"]
+    assert result.output_data["patch_artifact"]["schema_version"] == "v2.patch_artifact.v1"
+    assert result.output_data["patch_artifact"]["stats"] == result.output_data["patch_stats"]
+    assert result.output_data["loop_boundary"]["is_second_orchestrator"] is False
+    assert result.output_data["loop_boundary"]["delegation_allowed"] is False
+    assert "不拥有多 Agent 调度权" in result.output_data["loop_boundary"]["explanation"]
+    assert any(artifact.key == "patch_summary" and artifact.content["patch_id"] for artifact in result.artifacts)
     assert result.usage is not None
     assert result.usage.total_tokens == 15
     assert result.metrics is not None
@@ -405,6 +578,129 @@ def test_reviewer_agent_happy_path(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert "review_summary" in result.output_data
     assert isinstance(result.output_data["issues"], list)
+
+
+def test_reviewer_agent_links_failed_test_result_and_security_rules(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "auth.py").write_text(
+        "def login(username, password):\n    return eval(password)\n",
+        encoding="utf-8",
+    )
+    agent = ReviewerAgent()
+    workspace = SharedWorkspace(
+        session_id="test-session",
+        run_id="test-run",
+        user_goal="修复登录 bug",
+        latest_patch_summary="已修改 app/auth.py，登录逻辑修复完成，测试通过。",
+        latest_test_result=TestReport(
+            status="failed",
+            executed_command="pytest -q tests/test_auth.py",
+            summary="认证测试失败。",
+            failure_type="assertion_error",
+            key_logs=["AssertionError: login failed"],
+        ),
+    )
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="review patch",
+        step_type="review",
+        target_agent="reviewer",
+        input_data={"review_strategy": {"llm_enabled": False, "strictness": "strict", "focus_areas": ["security"]}},
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={
+            "coder_context": {
+                "modified_files": ["app/auth.py"],
+                "diff_previews": {"app/auth.py": "+def login(username, password):\n+    return eval(password)"},
+            },
+            "latest_test_result": workspace.latest_test_result.model_dump(),
+            "project_summary": "认证模块项目",
+        },
+    )
+
+    issues = result.output_data["issues"]
+    assert result.output_data["llm_review_used"] is False
+    assert result.output_data["review_strategy"]["strictness"] == "strict"
+    assert result.output_data["review_strategy"]["rule_groups"] == [
+        "scope",
+        "testing",
+        "security",
+        "maintainability",
+        "boundaries",
+        "api",
+        "domain",
+    ]
+    assert result.output_data["rule_group_counts"]["testing"] >= 2
+    assert result.output_data["rule_group_counts"]["security"] >= 1
+    assert any(issue["title"] == "测试失败仍未解决" and issue["severity"] == "high" for issue in issues)
+    assert any(issue["title"] == "测试失败仍未解决" and issue["category"] == "testing" for issue in issues)
+    assert any(issue["title"] == "危险动态执行" and issue["severity"] == "high" for issue in issues)
+    assert any(issue["title"] == "危险动态执行" and issue["category"] == "security" for issue in issues)
+    assert any(issue["title"] == "认证或存储改动缺少测试覆盖" for issue in issues)
+    assert any(issue["title"] == "缺少测试改动" and issue["severity"] == "high" for issue in issues)
+
+
+def test_reviewer_agent_rule_groups_and_test_failure_mode_are_configurable(tmp_path: Path) -> None:
+    provider = QueueProvider([])
+    context = _make_context(tmp_path, provider)
+    context.tool_registry.register_default_tools()
+    agent = ReviewerAgent()
+    workspace = SharedWorkspace(
+        session_id="test-session",
+        run_id="test-run",
+        user_goal="修复支付 bug",
+        latest_patch_summary="修改了 payment.py。",
+        latest_test_result=TestReport(
+            status="failed",
+            executed_command="pytest -q tests/test_payment.py",
+            summary="支付测试失败。",
+            failure_type="assertion_error",
+            key_logs=["AssertionError"],
+        ),
+    )
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="review patch",
+        step_type="review",
+        target_agent="reviewer",
+        input_data={
+            "review_strategy": {
+                "llm_enabled": False,
+                "rule_groups": ["testing"],
+                "test_failure_mode": "suggest",
+            }
+        },
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={
+            "coder_context": {
+                "modified_files": ["payment.py"],
+                "diff_previews": {"payment.py": "+def pay(user_input):\n+    return eval(user_input)"},
+            },
+            "latest_test_result": workspace.latest_test_result.model_dump(),
+        },
+    )
+
+    issues = result.output_data["issues"]
+    assert result.output_data["review_strategy"]["rule_groups"] == ["testing"]
+    assert result.output_data["review_strategy"]["test_failure_mode"] == "suggest"
+    assert any(issue["title"] == "测试失败仍未解决" and issue["severity"] == "medium" for issue in issues)
+    assert any(issue["title"] == "缺少测试改动" for issue in issues)
+    assert not any(issue["title"] == "危险动态执行" for issue in issues)
+    assert set(result.output_data["rule_group_counts"]) == {"testing"}
 
 
 def test_agent_context_excludes_delegation_interface(tmp_path: Path) -> None:
@@ -450,10 +746,126 @@ def test_orchestrator_delegation_client_is_a_separate_capability(tmp_path: Path)
     assert called["agent_id"] == "coder"
 
 
+def test_orchestrator_agent_exposes_identity_and_policy(tmp_path: Path) -> None:
+    agent = OrchestratorAgent()
+    context = _make_context(tmp_path, QueueProvider([]))
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="demo")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="prepare orchestrator policy",
+        step_type="orchestration",
+        target_agent="orchestrator",
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={
+            "enabled_agents": ["planner", "analyst", "coder"],
+            "max_steps": 8,
+            "max_replans": 1,
+            "run_timeout_seconds": 120,
+            "review_strategy": {"strictness": "normal"},
+        },
+    )
+
+    policy = result.output_data["policy"]
+    strategy_profile = result.output_data["strategy_profile"]
+    assert result.status == "completed"
+    assert result.agent_id == "orchestrator"
+    assert policy["delegation_model"] == "orchestrator_only"
+    assert policy["sub_agent_delegation_allowed"] is False
+    assert policy["enabled_agents"] == ["analyst", "coder", "planner"]
+    assert "Orchestrator Agent" in result.output_data["system_prompt"]
+    assert strategy_profile["name"] == "fast_fix"
+    assert strategy_profile["tester_enabled"] is False
+    assert any(artifact.key == "orchestrator_strategy_profile" for artifact in result.artifacts)
+
+
+def test_planner_replan_fallback_uses_failure_context(tmp_path: Path) -> None:
+    provider = QueueProvider(["not json"])
+    context = _make_context(tmp_path, provider)
+    agent = PlannerAgent()
+    workspace = SharedWorkspace(
+        session_id="test-session",
+        run_id="test-run",
+        user_goal="修复登录 bug",
+        latest_patch_summary="已修改登录模块。",
+        latest_test_result=TestReport(
+            status="failed",
+            executed_command="pytest -q tests/test_auth.py",
+            summary="登录断言失败。",
+            failure_type="assertion_error",
+            key_logs=["AssertionError"],
+        ),
+    )
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="根据失败结果重新规划",
+        step_type="planning",
+        target_agent="planner",
+        input_data={
+            "replan_context": {
+                "failed_agent": "tester",
+                "failure_summary": "登录断言失败。",
+            }
+        },
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={
+            "task_input": task.input_data,
+            "orchestrator_context": {
+                "policy": {"enabled_agents": ["orchestrator", "planner", "coder", "tester"]}
+            },
+            "latest_test_result": workspace.latest_test_result.model_dump(),
+        },
+    )
+
+    plan = result.output_data["plan"]
+    assert [step["suggested_agent"] for step in plan["steps"]] == ["coder", "tester"]
+    assert plan["metadata"]["planner_strategy"]["mode"] == "replan"
+    assert plan["metadata"]["planner_strategy"]["rag_shortcut_applied"] is False
+    assert "Tester 失败" in plan["steps"][0]["strategy_explanation"]
+    assert plan["steps"][0]["replan_reason"] == "登录断言失败。"
+
+
+def test_planner_metadata_marks_rag_shortcut_applied(tmp_path: Path) -> None:
+    provider = QueueProvider(["not json"])
+    context = _make_context(tmp_path, provider)
+    agent = PlannerAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写算法")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="先检索相关文档根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        step_type="planning",
+        target_agent="planner",
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={},
+    )
+
+    strategy = result.output_data["plan"]["metadata"]["planner_strategy"]
+    assert strategy["mode"] == "initial_plan"
+    assert strategy["rag_shortcut_applied"] is True
+
+
 def test_build_default_registry_supports_reviewer_toggle() -> None:
     with_reviewer = build_default_registry(enable_reviewer=True)
     without_reviewer = build_default_registry(enable_reviewer=False)
 
+    assert with_reviewer.get("orchestrator") is not None
     assert with_reviewer.get("reviewer") is not None
     assert without_reviewer.get("reviewer") is None
 
@@ -461,7 +873,7 @@ def test_build_default_registry_supports_reviewer_toggle() -> None:
 def test_describe_agent_matrix_contains_core_roles() -> None:
     matrix = describe_agent_matrix()
     roles = {item["role"] for item in matrix}
-    assert {"planner", "analyst", "coder", "tester", "reviewer"}.issubset(roles)
+    assert {"orchestrator", "planner", "analyst", "coder", "tester", "reviewer"}.issubset(roles)
     assert all(isinstance(item["capabilities"], list) for item in matrix)
 
 

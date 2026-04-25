@@ -63,6 +63,12 @@ class AnalystAgent(AgentBase):
         entries = list_payload.get("entries", [])
         repo_profile = self._detect_repo_profile(entries=entries, workspace_root=context.workspace_root)
 
+        docs_context, retrieve_call_count = self._retrieve_docs_if_needed(
+            mode=mode,
+            task=task,
+            context=context,
+        )
+        tool_call_count += retrieve_call_count
         matches, search_call_count = self._search_relevant_files(
             mode=mode,
             task=task,
@@ -90,6 +96,7 @@ class AnalystAgent(AgentBase):
             matches=matches,
             key_files=key_files,
             file_snippets=file_snippets,
+            docs_context=docs_context,
             previous_context=previous_context,
         )
         metrics = RunMetrics(
@@ -103,6 +110,7 @@ class AnalystAgent(AgentBase):
                 entries=entries,
                 matches=matches,
                 key_files=key_files,
+                docs_context=docs_context,
                 workspace_root=context.workspace_root,
                 repo_profile=repo_profile,
                 previous_context=previous_context,
@@ -136,6 +144,7 @@ class AnalystAgent(AgentBase):
                 "analysis_mode": mode,
                 "repo_profile": repo_profile,
                 "build_system": self._infer_build_system(entries=entries, workspace_root=context.workspace_root),
+                "docs_context": docs_context,
             },
             artifacts=[
                 AgentArtifact(
@@ -151,24 +160,49 @@ class AnalystAgent(AgentBase):
                         "analysis_mode": mode,
                         "repo_profile": repo_profile,
                         "build_system": self._infer_build_system(entries=entries, workspace_root=context.workspace_root),
+                        "docs_context": docs_context,
                     },
                 )
             ],
         )
 
-    def _resolve_mode(self, *, task: AgentTask) -> Literal["directory_scan", "key_file_read", "summary"]:
+    def _resolve_mode(self, *, task: AgentTask) -> Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"]:
         explicit_mode = str(task.input_data.get("analysis_mode") or "").strip().lower()
-        if explicit_mode in {"directory_scan", "key_file_read", "summary"}:
+        if explicit_mode in {"directory_scan", "key_file_read", "summary", "rag_retrieval"}:
             return explicit_mode  # type: ignore[return-value]
         tool_name = str(task.input_data.get("tool_name") or "").strip().lower()
         goal = task.goal.strip().lower()
         title = str(task.input_data.get("step_title") or "").strip().lower()
         haystack = " ".join(part for part in [tool_name, goal, title] if part)
+        if tool_name == "retrieve_docs" or any(token in haystack for token in ("知识库", "检索文档", "相关文档", "retrieve_docs", "rag")):
+            return "rag_retrieval"
         if any(token in haystack for token in ("总结", "汇总", "概述", "summary", "summar", "final")):
             return "summary"
         if any(token in haystack for token in ("read_file", "关键文件", "配置文件", "入口文件", "模块职责", "源码")):
             return "key_file_read"
         return "directory_scan"
+
+    def _retrieve_docs_if_needed(
+        self,
+        *,
+        mode: Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"],
+        task: AgentTask,
+        context: AgentContext,
+    ) -> tuple[dict[str, Any], int]:
+        if mode != "rag_retrieval":
+            return {}, 0
+        result = context.tool_registry.execute_tool(
+            tool_name="retrieve_docs",
+            arguments={"query": task.goal, "top_k": 5, "rerank": True},
+            tool_call_id=f"{task.task_id}-retrieve-docs",
+        )
+        payload = parse_tool_content(result.content)
+        return {
+            "query": payload.get("query") or task.goal,
+            "match_count": payload.get("match_count", 0),
+            "matches": payload.get("matches", []),
+            "error": payload.get("error") if result.is_error else None,
+        }, 1
 
     def _coerce_mapping(self, value: object) -> dict[str, Any]:
         return dict(value) if isinstance(value, dict) else {}
@@ -211,14 +245,14 @@ class AnalystAgent(AgentBase):
     def _search_relevant_files(
         self,
         *,
-        mode: Literal["directory_scan", "key_file_read", "summary"],
+        mode: Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"],
         task: AgentTask,
         context: AgentContext,
         workspace_root: Path,
         repo_profile: Literal["gradle_kotlin", "python", "node", "generic"],
         previous_context: dict[str, Any],
     ) -> tuple[list[object], int]:
-        if mode == "directory_scan":
+        if mode in {"directory_scan", "rag_retrieval"}:
             return [], 0
         if mode == "summary":
             previous_key_files = previous_context.get("key_files")
@@ -258,7 +292,7 @@ class AnalystAgent(AgentBase):
     def _pick_key_files(
         self,
         *,
-        mode: Literal["directory_scan", "key_file_read", "summary"],
+        mode: Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"],
         entries: list[object],
         matches: list[object],
         workspace_root: Path,
@@ -266,6 +300,8 @@ class AnalystAgent(AgentBase):
         previous_context: dict[str, Any],
     ) -> list[str]:
         selected: list[str] = []
+        if mode == "rag_retrieval":
+            return selected
         preferred = self._preferred_files_for_profile(repo_profile=repo_profile)
         for candidate in preferred:
             if (workspace_root / candidate).exists():
@@ -372,11 +408,12 @@ class AnalystAgent(AgentBase):
         *,
         task: AgentTask,
         context: AgentContext,
-        mode: Literal["directory_scan", "key_file_read", "summary"],
+        mode: Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"],
         entries: list[object],
         matches: list[object],
         key_files: list[str],
         file_snippets: dict[str, str],
+        docs_context: dict[str, Any],
         previous_context: dict[str, Any],
     ) -> tuple[AnalystOutputPayload | None, RunUsage | None]:
         system_prompt = (
@@ -387,16 +424,18 @@ class AnalystAgent(AgentBase):
             "Keep the output concise and grounded in the provided repository observations. "
             "Respect the requested analysis mode: directory_scan should focus on structure, "
             "key_file_read should focus on meaningful config/entry/source files, "
-            "summary should synthesize existing findings instead of repeating raw listings."
+            "summary should synthesize existing findings instead of repeating raw listings. "
+            "rag_retrieval should focus on retrieved document snippets and extract implementation-relevant facts."
         )
         user_prompt = "\n".join(
             [
                 f"分析模式：{mode}",
                 f"任务目标：{task.goal}",
-                f"根目录条目：{json.dumps(entries[:20], ensure_ascii=False)}",
-                f"搜索命中：{json.dumps(matches[:8], ensure_ascii=False)}",
-                f"关键文件：{json.dumps(key_files, ensure_ascii=False)}",
-                f"文件片段：{json.dumps(file_snippets, ensure_ascii=False)}",
+                f"根目录条目：{json.dumps([] if mode == 'rag_retrieval' else entries[:20], ensure_ascii=False)}",
+                f"搜索命中：{json.dumps([] if mode == 'rag_retrieval' else matches[:8], ensure_ascii=False)}",
+                f"关键文件：{json.dumps([] if mode == 'rag_retrieval' else key_files, ensure_ascii=False)}",
+                f"文件片段：{json.dumps({} if mode == 'rag_retrieval' else file_snippets, ensure_ascii=False)}",
+                f"知识库检索结果：{json.dumps(docs_context, ensure_ascii=False)}",
                 f"已有分析上下文：{json.dumps(previous_context, ensure_ascii=False)}",
             ]
         )
@@ -412,10 +451,11 @@ class AnalystAgent(AgentBase):
         self,
         *,
         task: AgentTask,
-        mode: Literal["directory_scan", "key_file_read", "summary"],
+        mode: Literal["directory_scan", "key_file_read", "summary", "rag_retrieval"],
         entries: list[object],
         matches: list[object],
         key_files: list[str],
+        docs_context: dict[str, Any],
         workspace_root: Path,
         repo_profile: Literal["gradle_kotlin", "python", "node", "generic"],
         previous_context: dict[str, Any],
@@ -451,6 +491,7 @@ class AnalystAgent(AgentBase):
             "directory_scan": "本阶段先识别目录结构与模块边界。",
             "key_file_read": "本阶段聚焦关键配置和入口文件。",
             "summary": "本阶段根据前序目录观察和关键文件信息收敛总结。",
+            "rag_retrieval": "本阶段已根据用户目标检索知识库文档。",
         }[mode]
         if repo_profile == "gradle_kotlin":
             preferred_entries = [name for name in ["src", "domain", "config", "resources", "docs"] if (workspace_root / name).exists()]
@@ -475,7 +516,16 @@ class AnalystAgent(AgentBase):
                     f"当前重点文件：{', '.join(key_files[:4]) if key_files else '无'}。",
                 ]
             )
-        else:
+        elif mode == "rag_retrieval":
+            match_count = docs_context.get("match_count", 0)
+            summary_parts.extend(
+                [
+                    f"知识库检索命中 {match_count} 条相关片段。",
+                    f"检索问题：{docs_context.get('query') or task.goal}。",
+                    "后续 Coder 应优先基于 docs_context 输出算法说明或代码，而不是重新分析项目结构。",
+                ]
+            )
+        elif mode == "summary":
             if previous_summary:
                 summary_parts.append(f"前序分析结论：{previous_summary}")
             summary_parts.extend(
@@ -498,6 +548,11 @@ class AnalystAgent(AgentBase):
                 f"优先确认构建链路：{build_system}",
                 "优先复用现有 contract 与 runtime 基础设施。",
                 "保持 v1/v2 边界清晰，避免把 v2 逻辑回灌到共享层或 v1。",
+                *(
+                    ["后续 Coder 应优先使用 docs_context 中的知识库片段生成面向用户的算法答案。"]
+                    if mode == "rag_retrieval"
+                    else []
+                ),
                 *([f"优先关注：{', '.join(highlighted_files)}"] if highlighted_files else []),
             ],
         )

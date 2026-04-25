@@ -9,6 +9,7 @@ from typing import Any
 from app.contracts.agent import AgentArtifact, SharedWorkspace, TestReport, WorkspaceArtifactIndex
 from app.contracts.planner import Plan
 from app.v2.agent_impls.workspace_diff import relative_path
+from app.v2.memory import PrivateMemory, SharedMemory
 
 
 class WorkspaceStore:
@@ -17,6 +18,8 @@ class WorkspaceStore:
     def __init__(self, workspace: SharedWorkspace, *, workspace_root: Path | None = None) -> None:
         self.workspace = workspace
         self.workspace_root = workspace_root
+        self.shared_memory = SharedMemory(workspace)
+        self.private_memory = PrivateMemory(workspace)
 
     def set_plan(self, plan: Plan) -> None:
         """更新当前计划。"""
@@ -41,7 +44,7 @@ class WorkspaceStore:
 
     def upsert_private_context(self, agent_id: str, payload: dict[str, Any]) -> None:
         """写入指定 Agent 的私有上下文。"""
-        self.workspace.private_context[agent_id] = dict(payload)
+        self.private_memory.write(agent_id, payload)
 
     def merge_analyst_context(self, payload: dict[str, Any]) -> dict[str, Any]:
         """增量合并 analyst 上下文，避免后续步骤覆盖已有高价值信息。"""
@@ -74,6 +77,11 @@ class WorkspaceStore:
 
         for field in ("root_entries", "highlighted_files"):
             merged[field] = self._merge_object_lists(existing.get(field), payload.get(field))
+
+        merged["docs_context"] = self._merge_docs_context(
+            existing.get("docs_context"),
+            payload.get("docs_context"),
+        )
 
         self.workspace.private_context["analyst"] = merged
         if merged["project_summary"]:
@@ -204,6 +212,46 @@ class WorkspaceStore:
         if isinstance(existing, list):
             return list(existing)
         return []
+
+    def _merge_docs_context(self, existing: object, incoming: object) -> dict[str, Any]:
+        existing_data = dict(existing) if isinstance(existing, dict) else {}
+        incoming_data = dict(incoming) if isinstance(incoming, dict) else {}
+        if not incoming_data:
+            return existing_data
+        if not existing_data:
+            return incoming_data
+
+        merged = dict(existing_data)
+        for field in ("query", "match_count"):
+            if incoming_data.get(field) not in (None, "", []):
+                merged[field] = incoming_data[field]
+        merged["matches"] = self._merge_doc_matches(
+            existing_data.get("matches"),
+            incoming_data.get("matches"),
+        )
+        return merged
+
+    def _merge_doc_matches(self, existing: object, incoming: object) -> list[Any]:
+        merged: list[Any] = []
+        seen: set[str] = set()
+        for source in (existing, incoming):
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                key = self._doc_match_key(item)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return merged
+
+    def _doc_match_key(self, item: object) -> str:
+        if isinstance(item, dict):
+            for field in ("id", "document_id", "source", "path", "title", "content"):
+                value = str(item.get(field) or "").strip()
+                if value:
+                    return f"{field}:{value[:160]}"
+        return repr(item)[:160]
 
     def _normalize_path_like_value(self, value: str) -> str:
         if not value.startswith("/"):

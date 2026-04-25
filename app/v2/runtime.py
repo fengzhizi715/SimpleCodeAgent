@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from app.contracts.message import ChatMessage
 from app.contracts.agent import AgentResult, AgentTask, DelegationRecord, SharedWorkspace, TestReport
-from app.contracts.planner import Plan
+from app.contracts.planner import Plan, PlanStep
 from app.contracts.run import RunChoice, RunMetrics, RunResult, RunUsage
 from app.contracts.trace import TraceEvent
 from app.core.logger import get_logger
@@ -111,7 +111,8 @@ class OrchestratorRuntime:
             run_timeout_seconds=run_timeout_seconds,
             review_strategy=review_strategy,
         )
-        workspace.private_context["orchestrator"] = orchestrator_policy
+        orchestrator_context = self._build_orchestrator_context(policy=orchestrator_policy)
+        workspace.private_context["orchestrator"] = orchestrator_context
         context = AgentContext(
             provider=provider,
             model=model,
@@ -150,7 +151,10 @@ class OrchestratorRuntime:
             input_summary=task,
             event_type="run_started",
             message="V2 orchestrator run started.",
-            payload={"orchestrator_policy": orchestrator_policy},
+            payload={
+                "orchestrator_policy": orchestrator_policy,
+                "strategy_profile": orchestrator_context.get("strategy_profile", {}),
+            },
         )
         self._record_trace(trace_events, trace_recorder, run_started_event)
 
@@ -195,6 +199,8 @@ class OrchestratorRuntime:
         plan = Plan.model_validate(planner_result.output_data.get("plan", {}))
         plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=allowed_agents)
         workspace_store.set_plan(plan)
+        plan_explanation = self._explain_plan(plan=plan, policy=orchestrator_policy)
+        workspace.private_context["orchestrator"]["plan_explanation"] = plan_explanation
         workspace_store.add_artifact(key="plan", artifact_type="plan", summary=plan.summary)
         self.v2_repository.save_workspace(workspace)
         self._record_trace(
@@ -209,7 +215,7 @@ class OrchestratorRuntime:
                 output_summary=plan.summary,
                 event_type="workspace_updated",
                 message="Initial plan stored in shared workspace.",
-                payload={"step_count": len(plan.steps)},
+                payload={"step_count": len(plan.steps), "plan_explanation": plan_explanation},
                 parent_event_id=run_started_event.id,
             ),
         )
@@ -268,6 +274,13 @@ class OrchestratorRuntime:
             )
             if step_task.target_agent == "reviewer" and review_strategy:
                 step_task.input_data["review_strategy"] = review_strategy
+            delegation_explanation = self._explain_delegation(
+                target_agent=step_task.target_agent,
+                task_goal=step_task.goal,
+                step_type=step_task.step_type,
+                policy=orchestrator_policy,
+            )
+            step_task.input_data["delegation_explanation"] = delegation_explanation
             result = delegation_client.delegate(
                 agent_id=step_task.target_agent,
                 task=step_task,
@@ -513,6 +526,19 @@ class OrchestratorRuntime:
                 error_message=f"Agent not found: {agent_id}",
             )
         prompt_context = self.context_builder.build(agent=agent.spec, task=task, workspace=workspace)
+        delegation_explanation = str(task.input_data.get("delegation_explanation") or "")
+        if delegation_explanation:
+            orchestrator_context = workspace.private_context.setdefault("orchestrator", {})
+            explanations = orchestrator_context.setdefault("delegation_explanations", [])
+            if isinstance(explanations, list):
+                explanations.append(
+                    {
+                        "task_id": task.task_id,
+                        "step_id": task.step_id,
+                        "target_agent": agent_id,
+                        "explanation": delegation_explanation,
+                    }
+                )
         selected_event = self._make_trace_event(
             run_id=context.run_id,
             session_id=context.session_id,
@@ -523,7 +549,11 @@ class OrchestratorRuntime:
             output_summary=agent_id,
             event_type="agent_selected",
             message=f"Selected agent {agent_id} for delegated step.",
-            payload={"task_id": task.task_id, "step_id": task.step_id},
+            payload={
+                "task_id": task.task_id,
+                "step_id": task.step_id,
+                "delegation_explanation": delegation_explanation,
+            },
             parent_event_id=parent_event_id,
         )
         self._record_trace(trace_events, context.trace_recorder, selected_event)
@@ -548,7 +578,12 @@ class OrchestratorRuntime:
             input_summary=task.goal,
             event_type="delegation_started",
             message=f"Delegating step to {agent_id}.",
-            payload={"task_id": task.task_id, "step_id": task.step_id, "target_agent": agent_id},
+            payload={
+                "task_id": task.task_id,
+                "step_id": task.step_id,
+                "target_agent": agent_id,
+                "delegation_explanation": delegation_explanation,
+            },
             parent_event_id=selected_event.id,
         )
         delegation_start_event_ids[task.task_id] = delegation_started_event.id
@@ -601,15 +636,26 @@ class OrchestratorRuntime:
             )
             return
         if step_task.target_agent == "coder":
-            workspace_store.write_patch_summary(result.summary)
+            changed_files = [
+                *[str(path) for path in result.output_data.get("modified_files", [])],
+                *[str(path) for path in result.output_data.get("created_files", [])],
+                *[str(path) for path in result.output_data.get("deleted_files", [])],
+            ]
+            if changed_files:
+                workspace_store.write_patch_summary(result.summary)
             workspace_store.add_artifact(
                 key="patch_summary",
                 artifact_type="patch",
                 summary=result.summary[:120],
                 metadata={
+                    "patch_id": result.output_data.get("patch_id"),
+                    "base_snapshot_id": result.output_data.get("base_snapshot_id"),
+                    "head_snapshot_id": result.output_data.get("head_snapshot_id"),
+                    "patch_stats": result.output_data.get("patch_stats", {}),
                     "modified_files": result.output_data.get("modified_files", []),
                     "created_files": result.output_data.get("created_files", []),
                     "deleted_files": result.output_data.get("deleted_files", []),
+                    "loop_boundary": result.output_data.get("loop_boundary", {}),
                 },
             )
             workspace_store.upsert_private_context("coder", result.output_data)
@@ -745,6 +791,19 @@ class OrchestratorRuntime:
         delegation_records: list[DelegationRecord],
         failed_step,
     ) -> bool:
+        replan_context = {
+            "failed_step_id": failed_step.id,
+            "failed_step_title": failed_step.title,
+            "failed_agent": failed_step.suggested_agent,
+            "failed_step_type": failed_step.type,
+            "failure_summary": failed_step.output_summary or "",
+            "latest_test_result": (
+                workspace.latest_test_result.model_dump()
+                if workspace.latest_test_result is not None
+                else None
+            ),
+            "execution_notes": list(workspace.execution_notes[-5:]),
+        }
         replan_started_event = self._make_trace_event(
             run_id=context.run_id,
             session_id=context.session_id,
@@ -754,7 +813,7 @@ class OrchestratorRuntime:
             input_summary=failed_step.output_summary,
             event_type="replan_started",
             message="Replanning after failed step.",
-            payload={"failed_step_id": failed_step.id},
+            payload={"failed_step_id": failed_step.id, "replan_context": replan_context},
         )
         self._record_trace(trace_events, context.trace_recorder, replan_started_event)
         planner_result = delegation_client.delegate(
@@ -769,6 +828,15 @@ class OrchestratorRuntime:
                 ),
                 step_type="planning",
                 target_agent="planner",
+                input_data={
+                    "replan_context": replan_context,
+                    "delegation_explanation": self._explain_delegation(
+                        target_agent="planner",
+                        task_goal="根据失败结果重新规划。",
+                        step_type="planning",
+                        policy=workspace.private_context.get("orchestrator", {}).get("policy", {}),
+                    )
+                },
             ),
             workspace=workspace,
             context=context,
@@ -783,6 +851,10 @@ class OrchestratorRuntime:
         plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=self._enabled_agents_from_workspace(workspace))
         plan.replan_count = (workspace.current_plan.replan_count if workspace.current_plan else 0) + 1
         workspace.current_plan = plan
+        orchestrator_context = workspace.private_context.get("orchestrator", {})
+        policy = orchestrator_context.get("policy", {}) if isinstance(orchestrator_context, dict) else {}
+        if isinstance(policy, dict):
+            workspace.private_context["orchestrator"]["plan_explanation"] = self._explain_plan(plan=plan, policy=policy)
         self.v2_repository.save_workspace(workspace)
         self._record_trace(
             trace_events,
@@ -796,7 +868,10 @@ class OrchestratorRuntime:
                 output_summary=plan.summary,
                 event_type="replan_finished",
                 message="Replan completed.",
-                payload={"step_count": len(plan.steps)},
+                payload={
+                    "step_count": len(plan.steps),
+                    "plan_explanation": workspace.private_context.get("orchestrator", {}).get("plan_explanation", {}),
+                },
                 parent_event_id=replan_started_event.id,
             ),
         )
@@ -861,30 +936,139 @@ class OrchestratorRuntime:
             "review_strategy": review_strategy or {},
         }
 
+    def _build_orchestrator_context(self, *, policy: dict[str, object]) -> dict[str, object]:
+        agent = self.registry.get("orchestrator")
+        if agent is not None:
+            system_prompt = (
+                agent.build_system_prompt(policy=policy)  # type: ignore[attr-defined]
+                if hasattr(agent, "build_system_prompt")
+                else ""
+            )
+            strategy_profile = (
+                agent.build_strategy_profile(policy=policy)  # type: ignore[attr-defined]
+                if hasattr(agent, "build_strategy_profile")
+                else {}
+            )
+        else:
+            system_prompt = ""
+            strategy_profile = {}
+        return {
+            "policy": policy,
+            "system_prompt": system_prompt,
+            "strategy_profile": strategy_profile,
+            "delegation_explanations": [],
+        }
+
+    def _explain_plan(self, *, plan: Plan, policy: dict[str, object]) -> dict[str, object]:
+        agent = self.registry.get("orchestrator")
+        if agent is not None and hasattr(agent, "explain_plan"):
+            return agent.explain_plan(plan_steps=list(plan.steps), policy=policy)  # type: ignore[attr-defined]
+        return {"summary": f"Plan contains {len(plan.steps)} step(s).", "steps": []}
+
+    def _explain_delegation(
+        self,
+        *,
+        target_agent: str,
+        task_goal: str,
+        step_type: str,
+        policy: dict[str, object],
+    ) -> str:
+        agent = self.registry.get("orchestrator")
+        if agent is not None and hasattr(agent, "explain_delegation"):
+            return agent.explain_delegation(  # type: ignore[attr-defined]
+                target_agent=target_agent,
+                task_goal=task_goal,
+                step_type=step_type,
+                policy=policy,
+            )
+        return f"Delegating {step_type} step to {target_agent}."
+
     def _enabled_agents_from_workspace(self, workspace: SharedWorkspace) -> set[str]:
         orchestrator_context = workspace.private_context.get("orchestrator", {})
         if isinstance(orchestrator_context, dict):
-            raw = orchestrator_context.get("enabled_agents")
+            policy = orchestrator_context.get("policy")
+            raw = policy.get("enabled_agents") if isinstance(policy, dict) else orchestrator_context.get("enabled_agents")
             if isinstance(raw, list):
                 return self._normalize_enabled_agents(raw)
         return self._normalize_enabled_agents(None)
 
     def _filter_plan_by_enabled_agents(self, *, plan: Plan, enabled_agents: set[str]) -> Plan:
         plan.metadata["enabled_agents"] = sorted(enabled_agents)
-        kept_steps = [
-            step
-            for step in plan.steps
-            if not step.suggested_agent or step.suggested_agent in enabled_agents
-        ]
-        skipped = [
-            step.suggested_agent
+        kept_steps: list[PlanStep] = []
+        skipped: list[dict[str, object]] = []
+        disabled_adjustments: list[str] = []
+        disabled_agents = {
+            str(step.suggested_agent)
             for step in plan.steps
             if step.suggested_agent and step.suggested_agent not in enabled_agents
-        ]
+        }
+        for step in plan.steps:
+            if not step.suggested_agent or step.suggested_agent in enabled_agents:
+                kept_steps.append(step)
+                continue
+            adjustment = self._describe_disabled_agent_adjustment(step=step, enabled_agents=enabled_agents)
+            skipped.append(
+                {
+                    "step_id": step.id,
+                    "title": step.title,
+                    "disabled_agent": step.suggested_agent,
+                    "adjustment": adjustment,
+                }
+            )
+            disabled_adjustments.append(adjustment)
+        if disabled_agents:
+            for index, step in enumerate(kept_steps):
+                update: dict[str, object] = {}
+                if "analyst" in disabled_agents and step.suggested_agent == "coder":
+                    update["input_requirements"] = [
+                        *list(step.input_requirements),
+                        "Analyst 已禁用：Coder 需要自行基于可用上下文谨慎定位文件",
+                    ]
+                    update["disabled_agent_adjustment"] = self._join_adjustment(
+                        step.disabled_agent_adjustment,
+                        "Analyst 已禁用，编码步骤将不依赖独立项目分析产物。",
+                    )
+                if "tester" in disabled_agents and step.suggested_agent == "coder":
+                    update["success_criteria"] = [
+                        *list(step.success_criteria),
+                        "Tester 已禁用：最终答复必须说明未执行自动测试",
+                    ]
+                    update["disabled_agent_adjustment"] = self._join_adjustment(
+                        str(update.get("disabled_agent_adjustment") or step.disabled_agent_adjustment or ""),
+                        "Tester 已禁用，计划目标从“验证通过”调整为“完成修改并明确未验证风险”。",
+                    )
+                if "reviewer" in disabled_agents and step.suggested_agent == "coder":
+                    update["disabled_agent_adjustment"] = self._join_adjustment(
+                        str(update.get("disabled_agent_adjustment") or step.disabled_agent_adjustment or ""),
+                        "Reviewer 已禁用，本次运行不会执行独立 review gate。",
+                    )
+                if update:
+                    kept_steps[index] = step.model_copy(update=update)
         if skipped:
             plan.metadata["skipped_disabled_agents"] = skipped
+            plan.metadata["disabled_agent_adjustments"] = disabled_adjustments
         plan.steps = kept_steps
         return plan
+
+    def _describe_disabled_agent_adjustment(self, *, step: PlanStep, enabled_agents: set[str]) -> str:
+        agent = step.suggested_agent or "unknown"
+        if agent == "tester":
+            return "Tester 被本次运行配置禁用，验证步骤已移除；最终结果只能表述为未自动验证。"
+        if agent == "reviewer":
+            return "Reviewer 被本次运行配置禁用，review gate 已移除；由最终答复提示人工复核风险。"
+        if agent == "analyst":
+            return "Analyst 被本次运行配置禁用，分析步骤已移除；后续步骤需依赖已有上下文。"
+        if agent == "coder":
+            return "Coder 被本次运行配置禁用，编码步骤已移除；计划无法产生代码改动。"
+        return f"{agent} 被禁用，步骤已过滤。当前启用 Agent：{', '.join(sorted(enabled_agents))}。"
+
+    def _join_adjustment(self, existing: str | None, addition: str) -> str:
+        existing_clean = str(existing or "").strip()
+        if not existing_clean:
+            return addition
+        if addition in existing_clean:
+            return existing_clean
+        return f"{existing_clean} {addition}"
 
     def _infer_analysis_mode(self, step) -> str:
         title = str(getattr(step, "title", "") or "").lower()
@@ -937,6 +1121,12 @@ class OrchestratorRuntime:
         if workspace.latest_patch_summary:
             lines.append(f"代码改动：{workspace.latest_patch_summary}")
         coder_context = workspace.private_context.get("coder", {})
+        if not workspace.latest_patch_summary and isinstance(coder_context, dict):
+            coder_summary = str(
+                coder_context.get("final_output") or coder_context.get("summary") or ""
+            ).strip()
+            if coder_summary:
+                lines.append(f"最终产出：{coder_summary}")
         changed_files = [
             *[str(path) for path in coder_context.get("modified_files", [])],
             *[str(path) for path in coder_context.get("created_files", [])],

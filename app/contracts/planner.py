@@ -30,6 +30,9 @@ class PlanStep(BaseModel):
     tool_name: str | None = None
     input_summary: str | None = None
     output_summary: str | None = None
+    strategy_explanation: str | None = None
+    disabled_agent_adjustment: str | None = None
+    replan_reason: str | None = None
     # 可选：验证步骤在 workspace 根目录下执行的 shell 命令（如 ./gradlew test、pytest tests/）
     verification_command: str | None = None
 

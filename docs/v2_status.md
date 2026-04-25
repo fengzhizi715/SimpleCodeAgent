@@ -75,7 +75,7 @@
    - 运行历史默认只展示用户发起的顶层 run；历史遗留的 `session_id LIKE '%:v2:coder'` 内部 run 会被回填/过滤，避免误显示为独立 V1 运行。
 
 5. Tester / Reviewer 当前是“可配置参与”的协作角色，而不是每次 V2 运行都强制执行。
-   - Planner 始终启用。
+   - Orchestrator / Planner 始终启用。
    - Analyst / Coder / Tester / Reviewer 可通过 API/WebUI 的运行级配置启用或禁用。
    - 关闭 Tester 时，V2 可以用于“快速修复 / 只要代码改动”的场景，但最终答复应避免宣称已通过测试。
    - 开启 Tester 时，系统会优先使用项目分析结果选择验证命令，但验证命令策略仍属于基础版。
@@ -212,10 +212,14 @@
 - 作为独立 `OrchestratorAgent` 注册进 Agent Registry
 - 在 Agent Matrix / `/debug/agents` / WebUI Agents 页中展示调度者身份
 - 输出中心化调度策略快照，包括启用 Agent、`max_steps`、`max_replans`、timeout、`review_strategy`
-- 将 orchestrator policy 写入 workspace 的 `private_context["orchestrator"]`
-- 在 `run_started` trace payload 中记录 orchestrator policy，便于后续回放和教学解释
+- 输出 orchestrator system prompt，明确中心化委派、子 Agent 不可再委派、retry/replan/fail-fast 边界
+- 输出策略 profile（`fast_fix / balanced / quality_gate`），根据启用 Agent 自动选择执行风格
+- 输出 plan explanation，解释过滤后的计划为什么符合当前策略
+- 输出 delegation explanation，并写入 `agent_selected / delegation_started` trace payload
+- 将 orchestrator policy / prompt / strategy profile / plan explanation 写入 workspace 的 `private_context["orchestrator"]`
+- 在 `run_started` trace payload 中记录 orchestrator policy 与 strategy profile，便于后续回放和教学解释
 
-当前实现中，`OrchestratorRuntime` 仍负责稳定的执行主循环；`OrchestratorAgent` 先承担“身份 + 策略 + trace 视角”。这避免一次性重写主循环，同时为后续引入 orchestrator prompt / strategy profile 留出边界。
+当前实现中，`OrchestratorRuntime` 仍负责稳定的执行主循环；`OrchestratorAgent` 承担“身份 + prompt + 策略 profile + 调度解释 + trace 视角”。这避免一次性重写主循环，同时为后续引入 LLM 驱动的 orchestrator decision 留出边界。
 
 对应文件：
 
@@ -318,7 +322,7 @@
 
 当前 V2 API 还支持：
 
-- `v2_enabled_agents`：按次运行控制启用的 Agent
+- `v2_enabled_agents`：按次运行控制启用的 Agent，`orchestrator / planner` 会始终启用
 - `run_timeout_seconds`：控制运行超时
 - `workdir`：指定目标项目目录
 
@@ -374,21 +378,22 @@
 
 ---
 
-## 3. 部分完成项
+## 3. 增强中能力
 
-下面这些能力已经有雏形，但距离“满足设计目标”还有差距。
+下面这些能力已经超过 MVP 雏形，进入“可运行但仍需继续产品化/教学化增强”的阶段。
 
 ### 3.1 Orchestrator Agent 本体
 
 当前状态：
 
 - 已有 `OrchestratorRuntime`
-- 但没有独立的 `OrchestratorAgent` 类
+- 已有独立 `OrchestratorAgent` 类，负责身份、prompt、策略 profile、调度解释与 trace/workspace 视角
+- 新建运行页会展示锁定启用的 Orchestrator，避免误解其为可关闭的普通子 Agent
 
-影响：
+当前边界：
 
-- 目前“调度逻辑”和“Agent 身份”仍然混在 runtime 中
-- 不利于后续引入更完整的 orchestrator prompt、策略和 trace 视角
+- 执行主循环仍在 `OrchestratorRuntime` 中，尚未完全迁移到 `OrchestratorAgent`
+- 后续可继续引入 LLM 驱动的 orchestrator decision、可保存策略 profile，以及更强的调度解释 UI
 
 ### 3.2 Planner Agent
 
@@ -398,12 +403,16 @@
 - 结构化解析失败时会回退到 `v1 SimplePlanner`
 - 已有基础 plan policy，可将修复/实现类任务归一化为更适合教学的顺序
 - 已支持按运行级 Agent 配置过滤不可用步骤
+- 已支持基于失败上下文的 replan fallback，例如 Tester 失败后优先生成 `Coder -> Tester` 回流计划
+- `PlanStep` 已增加 `strategy_explanation / disabled_agent_adjustment / replan_reason`
+- Planner 会在 plan metadata 中记录 `planner_strategy`，便于 UI / trace / 教学解释步骤来源
+- 禁用 `Tester / Analyst / Reviewer` 时，Runtime 会在保留步骤上补充目标调整说明，例如“未自动验证”“不依赖独立分析产物”
 
-缺口：
+后续增强：
 
-- replan 还不够智能
-- 步骤级策略解释能力还偏弱
-- 对“禁用某类 Agent 后如何调整计划目标”的语义解释仍较弱
+- replan 仍主要是规则 + LLM prompt 增强，还不是完整的策略搜索
+- 步骤解释目前是基础规则生成，后续可进一步接入 LLM 生成更自然的教学说明
+- 禁用 Agent 后的目标调整已可见，但还没有在 WebUI 中做专门展示
 
 ### 3.3 Analyst Agent
 
@@ -413,10 +422,11 @@
 - 已能识别部分项目画像，例如 Gradle/Kotlin、Python、Node/generic
 - 对目录扫描、关键文件读取、结构总结等不同分析模式已有基础区分
 
-缺口：
+后续增强：
 
 - 还没有更深的模块依赖分析
 - 还缺少更细粒度的文件级上下文选择策略
+- Analyst 输出已经能服务当前 Coder/Tester 主链路，但还不是完整项目理解引擎
 
 ### 3.4 Coder Agent
 
@@ -426,12 +436,16 @@
 - 已输出文件变更、diff 预览和风险说明
 - 内层 `v1 AgentLoop` 已标记为非顶层 run，避免污染运行历史
 - 内层 run 通过 `root_run_id / parent_run_id` 保留追踪关系
+- 已输出完整 `patch_diffs`、`patch_stats`、`patch_id`、`base_snapshot_id`、`head_snapshot_id`
+- patch artifact 已升级为 `v2.patch_artifact.v1`，包含文件列表、完整 diff、统计信息、风险说明和内外层 run 关系
+- workspace artifact metadata 会记录 patch id、快照摘要、统计信息和 loop boundary，便于后续版本治理
+- Coder 输出中已包含“两层 loop”边界说明，明确内层 `v1 AgentLoop` 是单任务执行单元，不拥有多 Agent 调度权
 
-缺口：
+后续增强：
 
-- diff / patch 仍是轻量预览版
-- patch artifact 版本治理仍然较弱
-- 仍需在教学中解释“两层 loop”的边界，避免误解为子 Agent 又拥有编排能力
+- patch artifact 已有版本化 schema 和 snapshot id，但还不是完整 patch repository / 可回滚系统
+- 大型二进制文件、超大文本 diff、冲突合并等高级 patch 治理仍未覆盖
+- “两层 loop”边界已有结构化说明，但 WebUI 还没有专门的教学展示卡片
 
 ### 3.5 Tester Agent
 
@@ -442,11 +456,12 @@
 - 已支持根据 Gradle/Kotlin 项目画像选择 `compileKotlin / compileKotlinJvm / test` 等候选命令
 - 已可通过运行级 Agent 配置跳过
 
-缺口：
+后续增强：
 
 - 构建校验与测试范围控制仍然有限
 - 失败原因分类还比较粗糙
 - 项目类型识别和验证命令选择还需要更多技术栈覆盖
+- Tester 与 Reviewer 的联动已有基础，但还没有形成完整质量门禁策略
 
 ### 3.6 Retry / RePlan / Fallback
 
@@ -454,24 +469,31 @@
 
 - 已支持单次失败回流
 - 已支持有限 replan
+- Tester 失败会优先回流给 Coder，避免直接宣称完成
+- RePlan 会携带失败步骤、失败 Agent、测试结果和执行备注等结构化上下文
+- Planner 已能基于失败上下文生成基础 fallback replan
 
-缺口：
+后续增强：
 
-- 触发条件还不够精细
-- retry 策略还不够清楚
-- fallback 类型还很少
+- 触发条件仍偏规则化，尚未形成完整策略表或可配置 profile
+- retry / replan / fallback 的 UI 解释还不够直观
+- fallback 类型仍然有限，主要覆盖 Tester/Coder 失败路径
 
 ### 3.7 Trace / Observability
 
 当前状态：
 
-- 事件类型和内存态 trace 已有
+- 结构化 trace 字段已落库并可按 run 查询
+- 已有 execution log / delegation tree / execution node 基础视图
+- `run_started / agent_selected / delegation_started / delegation_finished / workspace_updated / replan_* / run_finished` 等关键事件已覆盖主链路
+- Orchestrator policy、strategy profile、plan explanation、delegation explanation 已进入 trace/workspace
+- Debug Replay / WebUI 执行回放已可用于教学演示
 
-缺口：
+后续增强：
 
-- execution log 还不够完整
-- session replay 还没成型
-- 控制台链路展示还没做成正式体验
+- execution node 模型仍是基础版，尚未支持更复杂的分组、折叠和筛选
+- session 级 replay 已有基础查询，但还不是完整“课程回放”体验
+- 控制台/CLI 链路展示仍需做成更正式的教学输出
 
 ---
 
@@ -589,16 +611,21 @@
 
 ### 4.9 V2 专属 Memory 体系
 
-当前只有：
+当前已支持基础版：
 
-- shared workspace
-- `private_context` 雏形
+- `SharedMemory`：对 shared workspace 字段提供统一读取与 snapshot 接口
+- `PrivateMemory`：对 agent-scoped `private_context` 提供统一读写接口
+- `V2MemoryPolicy`：集中定义上下文裁剪策略，包括 execution notes 数量、artifact 数量、列表长度、字符串长度和 dict key 数量
+- `V2MemoryManager`：按 Agent 类型选择 shared/private memory，并进行裁剪治理
+- `ContextBuilder` 已切换为通过 memory manager 组装上下文，不再散落读取所有 workspace 字段
+- `WorkspaceStore` 写入私有上下文时会经过 `PrivateMemory` 抽象
 
 还没有：
 
-- shared/private memory 的正式抽象
-- memory 策略
-- 上下文裁剪与记忆治理的系统化实现
+- 跨 run 的长期记忆恢复策略
+- memory profile 的 UI/API 配置
+- 更智能的摘要压缩与重要性评分
+- memory 变更的独立 trace 事件与可视化
 
 ### 4.10 V2 Demo 闭环
 
@@ -667,10 +694,11 @@
 - Reviewer 规则分组、WebUI Agent 配置页、测试失败联动策略
 - artifact 管理增强版（基础落库与回放）
 - execution node 基础视图
+- V2 memory 基础抽象与上下文裁剪策略
 
 后续仍可继续：
 
-- 升级 memory 策略
+- 将 memory 策略升级为可保存 profile，并支持跨 run 恢复
 - 继续把 Reviewer 策略从浏览器本地配置升级为后端 profile，并在 run 详情页展示分组统计
 - 为未来并行执行和 `v3` 事件驱动保留扩展点
 

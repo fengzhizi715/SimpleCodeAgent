@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 from pathlib import Path
+from typing import TypedDict
 
 IGNORED_DIR_NAMES = {
     ".git",
@@ -34,7 +36,35 @@ TEXT_FILE_SUFFIXES = {
     ".cfg",
     ".sh",
     ".sql",
+    ".java",
+    ".kt",
+    ".kts",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".css",
+    ".html",
 }
+
+
+class PatchStats(TypedDict):
+    files_changed: int
+    insertions: int
+    deletions: int
+
+
+class WorkspacePatch(TypedDict):
+    modified_files: list[str]
+    created_files: list[str]
+    deleted_files: list[str]
+    diff_previews: dict[str, str]
+    patch_diffs: dict[str, str]
+    patch_stats: PatchStats
+    patch_id: str
+    base_snapshot_id: str
+    head_snapshot_id: str
 
 
 def relative_path(workspace_root: Path, path: Path) -> str:
@@ -81,12 +111,30 @@ def build_workspace_diff(
     before: dict[str, str],
     after: dict[str, str],
 ) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+    patch = build_workspace_patch(workspace_root=workspace_root, before=before, after=after)
+    return (
+        patch["modified_files"],
+        patch["created_files"],
+        patch["deleted_files"],
+        patch["diff_previews"],
+    )
+
+
+def build_workspace_patch(
+    *,
+    workspace_root: Path,
+    before: dict[str, str],
+    after: dict[str, str],
+) -> WorkspacePatch:
     created_files = sorted(path for path in after if path not in before)
     deleted_files = sorted(path for path in before if path not in after)
     modified_files = sorted(
         path for path in before if path in after and before[path] != after[path]
     )
     diff_previews: dict[str, str] = {}
+    patch_diffs: dict[str, str] = {}
+    insertions = 0
+    deletions = 0
     for path in created_files + modified_files:
         before_content = before.get(path, "")
         after_content = after.get(path, "")
@@ -99,7 +147,12 @@ def build_workspace_diff(
                 lineterm="",
             )
         )
+        patch_text = "\n".join(diff_lines)
+        patch_diffs[path] = patch_text
         diff_previews[path] = "\n".join(diff_lines[:120])
+        added, removed = _count_changed_lines(diff_lines)
+        insertions += added
+        deletions += removed
     for path in deleted_files:
         before_content = before.get(path, "")
         diff_lines = list(
@@ -111,5 +164,47 @@ def build_workspace_diff(
                 lineterm="",
             )
         )
+        patch_text = "\n".join(diff_lines)
+        patch_diffs[path] = patch_text
         diff_previews[path] = "\n".join(diff_lines[:120])
-    return modified_files, created_files, deleted_files, diff_previews
+        added, removed = _count_changed_lines(diff_lines)
+        insertions += added
+        deletions += removed
+    return {
+        "modified_files": modified_files,
+        "created_files": created_files,
+        "deleted_files": deleted_files,
+        "diff_previews": diff_previews,
+        "patch_diffs": patch_diffs,
+        "patch_stats": {
+            "files_changed": len(created_files) + len(modified_files) + len(deleted_files),
+            "insertions": insertions,
+            "deletions": deletions,
+        },
+        "patch_id": _snapshot_digest(patch_diffs),
+        "base_snapshot_id": _snapshot_digest(before),
+        "head_snapshot_id": _snapshot_digest(after),
+    }
+
+
+def _count_changed_lines(diff_lines: list[str]) -> tuple[int, int]:
+    insertions = 0
+    deletions = 0
+    for line in diff_lines:
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            insertions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return insertions, deletions
+
+
+def _snapshot_digest(items: dict[str, str]) -> str:
+    hasher = hashlib.sha256()
+    for path in sorted(items):
+        hasher.update(path.encode("utf-8", errors="replace"))
+        hasher.update(b"\0")
+        hasher.update(items[path].encode("utf-8", errors="replace"))
+        hasher.update(b"\0")
+    return hasher.hexdigest()[:16]

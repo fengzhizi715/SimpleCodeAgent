@@ -42,10 +42,86 @@ _BUGFIX_GOAL_KEYWORDS: tuple[str, ...] = (
     "update",
 )
 
+_RAG_ANSWER_CONTEXT_KEYWORDS: tuple[str, ...] = (
+    "知识库",
+    "检索相关文档",
+    "相关文档",
+    "根据文档",
+    "根据资料",
+    "retrieve_docs",
+    "rag",
+)
+
+_RAG_ANSWER_OUTPUT_KEYWORDS: tuple[str, ...] = (
+    "写",
+    "生成",
+    "给出",
+    "输出",
+    "算法",
+    "方案",
+    "示例",
+    "代码片段",
+    "说明",
+)
+
+_RAG_ANSWER_EXCLUDE_KEYWORDS: tuple[str, ...] = (
+    "改文件",
+    "修改文件",
+    "写入文件",
+    "提交",
+    "commit",
+    "patch",
+    "仓库",
+    "repo",
+)
+
 
 def _goal_suggests_implementation_work(goal: str) -> bool:
     g = (goal or "").lower()
     return any(k in g for k in _BUGFIX_GOAL_KEYWORDS)
+
+
+def _goal_suggests_rag_answer_generation(goal: str) -> bool:
+    g = (goal or "").lower()
+    if any(k in g for k in _RAG_ANSWER_EXCLUDE_KEYWORDS):
+        return False
+    return any(k in g for k in _RAG_ANSWER_CONTEXT_KEYWORDS) and any(
+        k in g for k in _RAG_ANSWER_OUTPUT_KEYWORDS
+    )
+
+
+def goal_uses_rag_shortcut(goal: str) -> bool:
+    """Return whether plan policy will force retrieval->coder shortcut."""
+    return _goal_suggests_rag_answer_generation(goal)
+
+
+def _make_rag_retrieval_step(user_goal: str) -> PlanStep:
+    return PlanStep(
+        id=str(uuid.uuid4()),
+        title="检索知识库文档",
+        goal=f"围绕用户目标检索知识库相关片段，并提取可直接用于最终答案的事实与实现要点：{user_goal}",
+        type="analysis",
+        description="RAG 前置检索步骤（由 plan_policy 归一化），只负责检索和提炼文档上下文。",
+        suggested_agent="analyst",
+        input_requirements=["用户目标", "知识库检索工具"],
+        success_criteria=["产出 docs_context", "给出可供 Coder 生成答案的要点"],
+        tool_name="retrieve_docs",
+        strategy_explanation="知识库生成类任务应先检索文档，再由 Coder 基于 docs_context 生成最终内容。",
+    )
+
+
+def _make_rag_answer_step(user_goal: str) -> PlanStep:
+    return PlanStep(
+        id=str(uuid.uuid4()),
+        title="生成最终算法答案",
+        goal=f"基于 docs_context 和用户目标，直接输出最终答案；如果没有目标文件，不要修改仓库文件：{user_goal}",
+        type="coding",
+        description="RAG 答案生成步骤（由 plan_policy 归一化），用于生成算法说明、示例代码或实现方案。",
+        suggested_agent="coder",
+        input_requirements=["用户目标", "docs_context"],
+        success_criteria=["输出完整算法说明", "包含必要的代码示例或关键步骤", "明确说明未写入文件（如适用）"],
+        strategy_explanation="该任务的产物是面向用户的算法答案，不是项目结构分析或仓库补丁。",
+    )
 
 
 def _first_step_is_analysis_heavy(step: PlanStep) -> bool:
@@ -76,6 +152,7 @@ def _make_default_analyst_step() -> PlanStep:
         suggested_agent="analyst",
         input_requirements=["用户目标", "工作区根目录"],
         success_criteria=["提供 project_summary 与可操作的 key_files 或技术栈线索"],
+        strategy_explanation="修复/实现类任务在编码前需要先建立项目上下文，避免 Coder 盲改。",
     )
 
 
@@ -89,6 +166,7 @@ def _make_default_coder_step(user_goal: str) -> PlanStep:
         suggested_agent="coder",
         input_requirements=["用户目标", "project_summary", "key_files", "latest_test_result（如有）"],
         success_criteria=["产生局部代码改动", "输出修改文件列表与变更摘要"],
+        strategy_explanation="修复/实现类任务必须包含明确的编码步骤，承接 Analyst 输出并产生局部改动。",
     )
 
 
@@ -102,6 +180,7 @@ def _make_default_tester_step() -> PlanStep:
         suggested_agent="tester",
         input_requirements=["latest_patch_summary", "modified_files", "project_summary"],
         success_criteria=["给出结构化测试/编译报告", "明确是否通过以及下一步建议"],
+        strategy_explanation="代码改动后需要验证闭环，Tester 负责把命令输出转成结构化反馈。",
     )
 
 
@@ -132,6 +211,8 @@ def apply_step_list_policy(
     """
     if not steps:
         return steps
+    if _goal_suggests_rag_answer_generation(user_goal):
+        return [_make_rag_retrieval_step(user_goal), _make_rag_answer_step(user_goal)]
     if not _goal_suggests_implementation_work(user_goal):
         return steps
     normalized = list(steps)

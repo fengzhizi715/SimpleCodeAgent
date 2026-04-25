@@ -10,6 +10,21 @@
     <p v-if="error" class="error">{{ error }}</p>
   </section>
 
+  <nav class="run-tabs" aria-label="Run detail tabs">
+    <button
+      v-for="tab in tabs"
+      :key="tab.id"
+      type="button"
+      class="run-tab"
+      :class="{ 'is-active': activeTab === tab.id }"
+      @click="activeTab = tab.id"
+    >
+      <span>{{ tab.label }}</span>
+      <small v-if="tab.hint">{{ tab.hint }}</small>
+    </button>
+  </nav>
+
+  <template v-if="activeTab === 'execution'">
   <section class="panel" v-if="replay.run">
     <h3>运行摘要</h3>
     <table>
@@ -159,6 +174,113 @@
       </tbody>
     </table>
   </section>
+  </template>
+
+  <template v-else-if="activeTab === 'memory'">
+    <section class="panel memory-panel" v-if="replay.workspace">
+      <div class="memory-panel-head">
+        <div>
+          <h3>Memory / Workspace</h3>
+          <p class="muted">
+            只读展示本次运行的 shared workspace、各 Agent private memory、artifact 索引与上下文治理信息。
+          </p>
+        </div>
+        <div class="memory-stats">
+          <span class="memory-stat"><strong>{{ privateMemoryEntries.length }}</strong> private contexts</span>
+          <span class="memory-stat"><strong>{{ artifactsIndex.length }}</strong> artifacts</span>
+          <span class="memory-stat"><strong>{{ executionNotes.length }}</strong> notes</span>
+          <span class="memory-stat" :class="plannerRagShortcutApplied === true ? 'is-positive' : 'is-neutral'">
+            <strong>RAG shortcut</strong> {{ plannerRagShortcutLabel }}
+          </span>
+        </div>
+      </div>
+
+      <div class="memory-grid">
+        <article class="memory-card">
+          <h4>Shared Workspace</h4>
+          <table class="memory-table">
+            <tbody>
+              <tr v-for="row in sharedWorkspaceRows" :key="row.key">
+                <th>{{ row.key }}</th>
+                <td>{{ row.value }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="memory-card">
+          <h4>Memory Policy / Context Builder</h4>
+          <p class="muted">
+            当前展示的是运行时落入 workspace 的策略快照与上下文治理线索；用于确认“哪些状态会进入不同 Agent 的上下文”。
+          </p>
+          <JsonBlock :data="memoryPolicyView" />
+        </article>
+      </div>
+
+      <section class="memory-section">
+        <div class="memory-section-title">
+          <h4>Agent Private Memory</h4>
+          <span class="muted">按 Agent 分区保存，避免所有 Agent 共享全量历史。</span>
+        </div>
+        <div v-if="privateMemoryEntries.length" class="private-memory-grid">
+          <article
+            v-for="entry in privateMemoryEntries"
+            :key="entry.agentId"
+            class="private-memory-card"
+          >
+            <div class="private-memory-head">
+              <span class="agent-chip">{{ entry.agentId }}</span>
+              <span class="muted">{{ entry.fieldCount }} fields</span>
+            </div>
+            <JsonBlock :data="entry.payload" />
+          </article>
+        </div>
+        <p v-else class="muted">暂无 private context。</p>
+      </section>
+
+      <section class="memory-section">
+        <div class="memory-section-title">
+          <h4>Artifacts Index</h4>
+          <span class="muted">Workspace 中登记的 plan / analysis / patch / review 等工件索引。</span>
+        </div>
+        <table v-if="artifactsIndex.length">
+          <thead>
+            <tr>
+              <th>key</th>
+              <th>type</th>
+              <th>version</th>
+              <th>summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="artifact in artifactsIndex" :key="`${artifact.key}-${artifact.version}`">
+              <td>{{ artifact.key }}</td>
+              <td>{{ artifact.type }}</td>
+              <td>{{ artifact.version }}</td>
+              <td>{{ artifact.summary }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="muted">暂无 artifact 索引。</p>
+      </section>
+
+      <section class="memory-section">
+        <div class="memory-section-title">
+          <h4>Execution Notes</h4>
+          <span class="muted">Orchestrator 写入 workspace 的执行备注。</span>
+        </div>
+        <ol v-if="executionNotes.length" class="memory-notes">
+          <li v-for="(note, index) in executionNotes" :key="`${index}-${note}`">{{ note }}</li>
+        </ol>
+        <p v-else class="muted">暂无 execution notes。</p>
+      </section>
+    </section>
+
+    <section v-else class="panel">
+      <h3>Memory / Workspace</h3>
+      <p class="muted">当前 run 没有可展示的 workspace 快照。</p>
+    </section>
+  </template>
 </template>
 
 <script setup>
@@ -173,6 +295,7 @@ import {
 } from "vue";
 import { useRouter } from "vue-router";
 import { getRunReplay } from "../api";
+import JsonBlock from "../components/JsonBlock.vue";
 
 const props = defineProps({
   runId: { type: String, required: true },
@@ -181,16 +304,31 @@ const props = defineProps({
 const router = useRouter();
 const error = ref("");
 const polling = ref(true);
+const activeTab = ref("execution");
 const replay = reactive({
   run: null,
   workspace: null,
   delegations: [],
   execution_log: [],
   teaching_view: null,
+  artifacts: [],
 });
 const selectedDelegationId = ref("");
 const nodeEls = ref(new Map());
 const copyHint = ref("复制摘要");
+
+const tabs = computed(() => [
+  {
+    id: "execution",
+    label: "Execution",
+    hint: replay.delegations?.length ? `${replay.delegations.length} delegations` : "",
+  },
+  {
+    id: "memory",
+    label: "Memory / Workspace",
+    hint: replay.workspace ? `${privateMemoryEntries.value.length} agents` : "",
+  },
+]);
 
 function setNodeRef(id, el) {
   if (el) {
@@ -216,6 +354,87 @@ const teachingView = computed(() => {
 const keyTakeaways = computed(() => {
   const items = teachingView.value?.key_takeaways;
   return Array.isArray(items) ? items : [];
+});
+const workspace = computed(() => {
+  return replay.workspace && typeof replay.workspace === "object" ? replay.workspace : null;
+});
+const artifactsIndex = computed(() => {
+  const items = workspace.value?.artifacts_index;
+  return Array.isArray(items) ? items : [];
+});
+const executionNotes = computed(() => {
+  const items = workspace.value?.execution_notes;
+  return Array.isArray(items) ? items : [];
+});
+const privateContext = computed(() => {
+  const value = workspace.value?.private_context;
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+});
+const privateMemoryEntries = computed(() => {
+  return Object.entries(privateContext.value)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([agentId, payload]) => ({
+      agentId,
+      payload,
+      fieldCount: payload && typeof payload === "object" && !Array.isArray(payload)
+        ? Object.keys(payload).length
+        : 0,
+    }));
+});
+const sharedWorkspaceRows = computed(() => {
+  const ws = workspace.value || {};
+  return [
+    { key: "user_goal", value: compactText(ws.user_goal) },
+    { key: "current_plan", value: ws.current_plan?.steps ? `${ws.current_plan.steps.length} steps` : "—" },
+    { key: "project_summary", value: compactText(ws.project_summary) },
+    { key: "latest_patch_summary", value: compactText(ws.latest_patch_summary) },
+    {
+      key: "latest_test_result",
+      value: ws.latest_test_result
+        ? `${ws.latest_test_result.status || "unknown"} · ${compactText(ws.latest_test_result.summary)}`
+        : "—",
+    },
+    { key: "artifacts_index", value: `${artifactsIndex.value.length} items` },
+    { key: "execution_notes", value: `${executionNotes.value.length} notes` },
+  ];
+});
+const memoryPolicyView = computed(() => {
+  const orchestrator = privateContext.value.orchestrator || {};
+  const planMetadata = workspace.value?.current_plan?.metadata || {};
+  return {
+    policy: orchestrator.policy || null,
+    strategy_profile: orchestrator.strategy_profile || null,
+    plan_strategy: planMetadata.planner_strategy || null,
+    context_builder: {
+      shared_workspace_fields: [
+        "user_goal",
+        "current_plan",
+        "project_summary",
+        "latest_patch_summary",
+        "latest_test_result",
+        "artifacts_index",
+        "execution_notes",
+      ],
+      private_memory_agents: privateMemoryEntries.value.map((item) => item.agentId),
+      note: "具体 prompt 装配由 ContextBuilder 按 agent 类型选择性读取 workspace/private_context。",
+    },
+  };
+});
+const plannerRagShortcutApplied = computed(() => {
+  const planMetadata = workspace.value?.current_plan?.metadata || {};
+  const plannerStrategy = planMetadata.planner_strategy || {};
+  return typeof plannerStrategy.rag_shortcut_applied === "boolean"
+    ? plannerStrategy.rag_shortcut_applied
+    : null;
+});
+const plannerRagShortcutLabel = computed(() => {
+  if (plannerRagShortcutApplied.value === true) {
+    return "ON";
+  }
+  if (plannerRagShortcutApplied.value === false) {
+    return "OFF";
+  }
+  return "N/A";
 });
 const flowNodes = computed(() => {
   const rows = Array.isArray(replay.delegations) ? replay.delegations : [];
@@ -279,6 +498,7 @@ async function fetchReplay() {
     replay.delegations = data.delegations || [];
     replay.execution_log = data.execution_log || [];
     replay.teaching_view = data.teaching_view || null;
+    replay.artifacts = data.artifacts || [];
     if (Array.isArray(replay.delegations) && replay.delegations.length) {
       const currentExists = replay.delegations.some(
         (item, index) =>
@@ -408,6 +628,17 @@ function durationLabel(startedAt, finishedAt) {
   return `${sec}s`;
 }
 
+function compactText(value, maxLength = 180) {
+  if (value === null || value === undefined || value === "") {
+    return "—";
+  }
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}…`;
+}
+
 onMounted(async () => {
   await fetchReplay();
   if (polling.value) {
@@ -421,6 +652,185 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.run-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: -6px 0 20px;
+}
+
+.run-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 9px 14px;
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-secondary, #5c6370);
+  box-shadow: 0 1px 2px rgba(15, 20, 25, 0.03);
+}
+
+.run-tab small {
+  color: var(--text-muted, #8b929e);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.run-tab.is-active {
+  background:
+    linear-gradient(135deg, rgba(79, 70, 229, 0.14), rgba(13, 148, 136, 0.08)),
+    #fff;
+  color: var(--accent-text, #4338ca);
+  border-color: rgba(79, 70, 229, 0.28);
+  box-shadow: 0 6px 22px rgba(79, 70, 229, 0.12);
+}
+
+.memory-panel {
+  background:
+    radial-gradient(circle at 0 0, rgba(79, 70, 229, 0.08), transparent 34%),
+    radial-gradient(circle at 100% 6%, rgba(13, 148, 136, 0.08), transparent 30%),
+    var(--bg-elevated, #fff);
+}
+
+.memory-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.memory-panel-head h3 {
+  margin-bottom: 6px;
+}
+
+.memory-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.memory-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  border: 1px solid rgba(79, 70, 229, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-secondary, #5c6370);
+  font-size: 0.75rem;
+}
+
+.memory-stat strong {
+  color: var(--text-primary, #1a1d26);
+}
+
+.memory-stat.is-positive {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.memory-stat.is-neutral {
+  border-color: rgba(100, 116, 139, 0.28);
+}
+
+.memory-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.memory-card,
+.private-memory-card,
+.memory-section {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 1px 2px rgba(15, 20, 25, 0.03);
+}
+
+.memory-card {
+  padding: 14px;
+  min-width: 0;
+}
+
+.memory-card h4,
+.memory-section h4 {
+  margin: 0 0 10px;
+  font-size: 0.92rem;
+}
+
+.memory-card :deep(pre),
+.private-memory-card :deep(pre) {
+  max-height: 360px;
+  margin: 10px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-table tbody th {
+  width: 34%;
+}
+
+.memory-section {
+  padding: 14px;
+  margin-top: 14px;
+}
+
+.memory-section-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.private-memory-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.private-memory-card {
+  min-width: 0;
+  padding: 12px;
+}
+
+.private-memory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.memory-notes {
+  margin: 0;
+  padding-left: 1.35rem;
+  color: var(--text-primary, #1a1d26);
+}
+
+.memory-notes li + li {
+  margin-top: 6px;
+}
+
 .flow-step-line {
   margin: 0 0 8px;
   font-size: 0.8125rem;
@@ -605,6 +1015,18 @@ onBeforeUnmount(() => {
 
 /* 窄屏：竖向时间轴，少横滑 */
 @media (max-width: 640px) {
+  .memory-panel-head,
+  .memory-grid {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .memory-stats {
+    justify-content: flex-start;
+    min-width: 0;
+  }
+  .private-memory-grid {
+    grid-template-columns: 1fr;
+  }
   .flow-lane {
     overflow-x: visible;
     padding: 8px 0 4px;

@@ -12,6 +12,7 @@ from app.llm.client import LLMProvider
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.tools.registry import ToolRegistry
 from app.v2.base import AgentBase, AgentContext
+from app.v2.agents import OrchestratorAgent
 from app.v2.registry import AgentRegistry
 from app.v2.runtime import OrchestratorRuntime
 
@@ -191,7 +192,7 @@ class FakeCoderAgent(AgentBase):
             summary="已修改 app/v2 相关代码。",
             usage=RunUsage(prompt_tokens=20, completion_tokens=9, total_tokens=29),
             metrics=RunMetrics(llm_call_count=1, tool_call_count=2),
-            output_data={"final_output": "patched"},
+            output_data={"final_output": "patched", "modified_files": ["app/v2/runtime.py"]},
         )
 
 
@@ -220,6 +221,40 @@ class FailingFakeCoderAgent(AgentBase):
             status="failed",
             summary="编码失败",
             error_message="无法生成可靠改动",
+        )
+
+
+class AnswerOnlyCoderAgent(AgentBase):
+    def __init__(self) -> None:
+        super().__init__(
+            AgentSpec(
+                agent_id="coder",
+                role="coder",
+                description="answer only coder",
+                capabilities=["answer-generation"],
+            )
+        )
+
+    def run(
+        self,
+        *,
+        task: AgentTask,
+        workspace: SharedWorkspace,
+        context: AgentContext,
+        prompt_context: dict[str, object],
+    ) -> AgentResult:
+        return AgentResult(
+            task_id=task.task_id,
+            agent_id="coder",
+            status="completed",
+            summary="基于知识库给出 OpenCV 直方图匹配算法。",
+            output_data={
+                "summary": "基于知识库给出 OpenCV 直方图匹配算法。",
+                "final_output": "完整算法：计算源图和参考图 CDF，构造 LUT，再用 cv::LUT 映射。",
+                "modified_files": [],
+                "created_files": [],
+                "deleted_files": [],
+            },
         )
 
 
@@ -304,10 +339,46 @@ class FakeTesterAgent(AgentBase):
         )
 
 
+class FailingNoTestsTesterAgent(AgentBase):
+    def __init__(self) -> None:
+        super().__init__(
+            AgentSpec(
+                agent_id="tester",
+                role="tester",
+                description="failing tester",
+                capabilities=["testing"],
+            )
+        )
+
+    def run(
+        self,
+        *,
+        task: AgentTask,
+        workspace: SharedWorkspace,
+        context: AgentContext,
+        prompt_context: dict[str, object],
+    ) -> AgentResult:
+        report = TestReport(
+            status="failed",
+            executed_command="pytest -q",
+            summary="未收集到测试用例。",
+            failure_type="no_tests_collected",
+            key_logs=["no tests ran in 0.00s"],
+        )
+        return AgentResult(
+            task_id=task.task_id,
+            agent_id="tester",
+            status="failed",
+            summary=report.summary,
+            output_data={"test_report": report.model_dump()},
+        )
+
+
 def test_v2_runtime_orchestrates_agents_and_updates_workspace(tmp_path: Path) -> None:
     db = SQLiteDB(tmp_path / "trace.sqlite3")
     trace_repository = SQLiteTraceRepository(db)
     registry = AgentRegistry()
+    registry.register(OrchestratorAgent())
     registry.register(FakePlannerAgent())
     registry.register(FakeAnalystAgent())
     registry.register(FakeCoderAgent())
@@ -339,6 +410,77 @@ def test_v2_runtime_orchestrates_agents_and_updates_workspace(tmp_path: Path) ->
     assert result.metrics.tool_call_count == 6
     assert any(event.event_type == "delegation_started" for event in result.trace)
     assert any(event.event_type == "agent_selected" for event in result.trace)
+    run_started = next(event for event in result.trace if event.event_type == "run_started")
+    assert run_started.payload["strategy_profile"]["name"] == "balanced"
+    assert "Orchestrator Agent" in runtime.get_run_replay(result.run_id or "")["workspace"]["private_context"]["orchestrator"]["system_prompt"]
+    replay = runtime.get_run_replay(result.run_id or "")
+    orchestrator_context = replay["workspace"]["private_context"]["orchestrator"]
+    assert orchestrator_context["plan_explanation"]["steps"]
+    assert orchestrator_context["delegation_explanations"]
+    assert any(
+        event.payload.get("delegation_explanation")
+        for event in result.trace
+        if event.event_type == "delegation_started"
+    )
+
+
+def test_v2_runtime_labels_answer_only_coder_output_as_final_product(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-answer-only.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+    registry.register(TwoStepPlannerAgent())
+    registry.register(FakeAnalystAgent())
+    registry.register(AnswerOnlyCoderAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    result = runtime.run(
+        provider=DummyProvider(),
+        model="dummy-model",
+        task="根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        session_id="test-session",
+        tool_registry=ToolRegistry(workspace_root=tmp_path),
+        workspace_root=tmp_path,
+        max_steps=6,
+    )
+
+    assert result.status == "completed"
+    assert "最终产出：完整算法：计算源图和参考图 CDF" in result.final_output
+    assert "代码改动：基于知识库给出 OpenCV" not in result.final_output
+    replay = runtime.get_run_replay(result.run_id or "")
+    assert replay["workspace"]["latest_patch_summary"] == ""
+
+
+def test_v2_runtime_skips_disabled_tester_agent(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-disabled-tester.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+    registry.register(FakePlannerAgent())
+    registry.register(FakeAnalystAgent())
+    registry.register(FakeCoderAgent())
+    registry.register(FakeTesterAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    result = runtime.run(
+        provider=DummyProvider(),
+        model="dummy-model",
+        task="修改代码但本次不运行测试",
+        session_id="test-session",
+        tool_registry=ToolRegistry(workspace_root=tmp_path),
+        workspace_root=tmp_path,
+        max_steps=6,
+        enabled_agents={"planner", "analyst", "coder"},
+    )
+
+    assert result.status == "completed"
+    assert result.step_count == 2
+    assert not any(event.actor == "tester" for event in result.trace)
+    replay = runtime.get_run_replay(result.run_id or "")
+    assert replay["workspace"]["latest_test_result"] is None
+    current_plan = replay["workspace"]["current_plan"]
+    assert current_plan["metadata"]["skipped_disabled_agents"][0]["disabled_agent"] == "tester"
+    assert "Tester 被本次运行配置禁用" in current_plan["metadata"]["disabled_agent_adjustments"][0]
+    coder_step = next(step for step in current_plan["steps"] if step["suggested_agent"] == "coder")
+    assert "Tester 已禁用" in coder_step["disabled_agent_adjustment"]
 
 
 def test_v2_runtime_fails_fast_when_coder_fails(tmp_path: Path) -> None:
@@ -364,6 +506,86 @@ def test_v2_runtime_fails_fast_when_coder_fails(tmp_path: Path) -> None:
     assert result.status == "failed"
     assert "无法生成可靠改动" in (result.final_output or "")
     assert any(event.event_type == "run_failed" for event in (result.trace or []))
+
+
+def test_v2_runtime_does_not_complete_bugfix_after_failed_test_and_analysis_only_replan(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-incomplete.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+
+    class TestThenAnalysisPlannerAgent(AgentBase):
+        def __init__(self) -> None:
+            super().__init__(
+                AgentSpec(
+                    agent_id="planner",
+                    role="planner",
+                    description="test then analysis planner",
+                    capabilities=["plan"],
+                )
+            )
+            self.call_count = 0
+
+        def run(
+            self,
+            *,
+            task: AgentTask,
+            workspace: SharedWorkspace,
+            context: AgentContext,
+            prompt_context: dict[str, object],
+        ) -> AgentResult:
+            self.call_count += 1
+            if self.call_count == 1:
+                plan = Plan(
+                    summary="first plan",
+                    steps=[
+                        PlanStep(
+                            title="复现问题",
+                            goal="运行测试复现登录失败",
+                            type="testing",
+                            suggested_agent="tester",
+                        )
+                    ],
+                )
+            else:
+                plan = Plan(
+                    summary="analysis only replan",
+                    steps=[
+                        PlanStep(
+                            title="分析项目",
+                            goal="分析登录相关项目结构",
+                            type="analysis",
+                            suggested_agent="analyst",
+                        )
+                    ],
+                )
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id="planner",
+                status="completed",
+                summary="planned",
+                output_data={"plan": plan.model_dump()},
+            )
+
+    registry.register(TestThenAnalysisPlannerAgent())
+    registry.register(FakeAnalystAgent())
+    registry.register(FailingNoTestsTesterAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    result = runtime.run(
+        provider=DummyProvider(),
+        model="dummy-model",
+        task="帮我修复项目中无法登录的bug",
+        session_id="test-session",
+        tool_registry=ToolRegistry(workspace_root=tmp_path),
+        workspace_root=tmp_path,
+        max_steps=4,
+        max_replans=1,
+    )
+
+    assert result.status == "failed"
+    assert "未完成原因" in result.final_output
+    assert "最后一次验证未通过" in result.final_output
+    assert any(event.event_type == "run_failed" for event in result.trace)
 
 
 def test_v2_runtime_merges_analyst_results_across_steps(tmp_path: Path) -> None:

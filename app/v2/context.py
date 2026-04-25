@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from app.contracts.agent import AgentSpec, AgentTask, SharedWorkspace
+from app.v2.memory import V2MemoryManager, V2MemoryPolicy
 
 
 class ContextBuilder:
     """按 Agent 角色裁剪上下文。"""
+
+    def __init__(self, memory_manager: V2MemoryManager | None = None) -> None:
+        self.memory_manager = memory_manager or V2MemoryManager()
 
     def build(
         self,
@@ -22,46 +26,13 @@ class ContextBuilder:
             "step_type": task.step_type,
             "success_criteria": list(task.success_criteria),
             "constraints": list(task.constraints),
-            "execution_notes": workspace.execution_notes[-5:],
+            "execution_notes": workspace.execution_notes[-self.memory_manager.policy.max_execution_notes :],
+            "task_input": self.memory_manager.trim_for_prompt(dict(task.input_data)),
         }
-        if agent.agent_id == "planner":
-            base_context["current_plan"] = (
-                workspace.current_plan.model_dump() if workspace.current_plan else None
-            )
-            base_context["latest_test_result"] = (
-                workspace.latest_test_result.model_dump() if workspace.latest_test_result else None
-            )
-            base_context["project_summary"] = workspace.project_summary
-            return base_context
-        if agent.agent_id == "analyst":
-            base_context["project_summary"] = workspace.project_summary
-            base_context["analysis_context"] = workspace.private_context.get("analyst", {})
-            base_context["artifacts_index"] = [item.model_dump() for item in workspace.artifacts_index]
-            base_context["current_plan"] = (
-                workspace.current_plan.model_dump() if workspace.current_plan else None
-            )
-            return base_context
-        if agent.agent_id == "coder":
-            base_context["project_summary"] = workspace.project_summary
-            base_context["latest_test_result"] = (
-                workspace.latest_test_result.model_dump() if workspace.latest_test_result else None
-            )
-            base_context["latest_patch_summary"] = workspace.latest_patch_summary
-            base_context["analysis_context"] = workspace.private_context.get("analyst", {})
-            return base_context
-        if agent.agent_id == "tester":
-            base_context["latest_patch_summary"] = workspace.latest_patch_summary
-            base_context["project_summary"] = workspace.project_summary
-            base_context["coder_context"] = workspace.private_context.get("coder", {})
-            base_context["analysis_context"] = workspace.private_context.get("analyst", {})
-            return base_context
-        if agent.agent_id == "reviewer":
-            base_context["project_summary"] = workspace.project_summary
-            base_context["latest_patch_summary"] = workspace.latest_patch_summary
-            base_context["latest_test_result"] = (
-                workspace.latest_test_result.model_dump() if workspace.latest_test_result else None
-            )
-            base_context["coder_context"] = workspace.private_context.get("coder", {})
-            base_context["analysis_context"] = workspace.private_context.get("analyst", {})
-            return base_context
+        base_context.update(
+            self.memory_manager.build_agent_context(agent_id=agent.agent_id, workspace=workspace)
+        )
         return base_context
+
+
+__all__ = ["ContextBuilder", "V2MemoryManager", "V2MemoryPolicy"]
