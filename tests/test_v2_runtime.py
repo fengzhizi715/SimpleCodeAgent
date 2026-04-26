@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from app.contracts.agent import AgentResult, AgentSpec, AgentTask, SharedWorkspace, TestReport
+from app.core.exceptions import RagIdValidationError
 from app.contracts.planner import Plan, PlanStep
 from app.contracts.run import RunMetrics, RunRequest, RunResult, RunUsage
 from app.db.sqlite import SQLiteDB
@@ -647,3 +650,114 @@ def test_v2_runtime_merges_analyst_results_across_steps(tmp_path: Path) -> None:
     assert "关键文件：build.gradle.kts(构建入口), settings.gradle.kts(模块装配入口)" in result.final_output
     assert str(tmp_path.resolve()) not in result.final_output
     assert "开发提示：先理解构建脚本。；确认 src 与 domain 的边界。" in result.final_output
+
+
+def test_v2_runtime_propagates_rag_id_to_planner_and_analysis_steps(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-rag-id.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+    captured: dict[str, object] = {}
+
+    class RagAwarePlannerAgent(AgentBase):
+        def __init__(self) -> None:
+            super().__init__(
+                AgentSpec(
+                    agent_id="planner",
+                    role="planner",
+                    description="rag aware planner",
+                    capabilities=["plan"],
+                )
+            )
+
+        def run(
+            self,
+            *,
+            task: AgentTask,
+            workspace: SharedWorkspace,
+            context: AgentContext,
+            prompt_context: dict[str, object],
+        ) -> AgentResult:
+            captured["planner_rag_id"] = task.input_data.get("rag_id")
+            captured["planner_rag_ids"] = task.input_data.get("rag_ids")
+            plan = Plan(
+                summary="one analysis step",
+                steps=[PlanStep(title="检索文档", goal="先查知识库", type="analysis", suggested_agent="analyst")],
+            )
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id="planner",
+                status="completed",
+                summary="planned",
+                output_data={"plan": plan.model_dump()},
+            )
+
+    class RagAwareAnalystAgent(AgentBase):
+        def __init__(self) -> None:
+            super().__init__(
+                AgentSpec(
+                    agent_id="analyst",
+                    role="analyst",
+                    description="rag aware analyst",
+                    capabilities=["analysis"],
+                )
+            )
+
+        def run(
+            self,
+            *,
+            task: AgentTask,
+            workspace: SharedWorkspace,
+            context: AgentContext,
+            prompt_context: dict[str, object],
+        ) -> AgentResult:
+            captured["analyst_rag_id"] = task.input_data.get("rag_id")
+            captured["analyst_rag_ids"] = task.input_data.get("rag_ids")
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id="analyst",
+                status="completed",
+                summary="分析完成",
+                output_data={"project_summary": "ok"},
+            )
+
+    registry.register(RagAwarePlannerAgent())
+    registry.register(RagAwareAnalystAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    result = runtime.run(
+        provider=DummyProvider(),
+        model="dummy-model",
+        task="根据知识库回答问题",
+        session_id="test-session",
+        tool_registry=ToolRegistry(workspace_root=tmp_path),
+        workspace_root=tmp_path,
+        max_steps=2,
+        rag_id="opencv_algo",
+        rag_ids=["opencv_algo", "backend_java"],
+    )
+
+    assert result.status == "completed"
+    assert captured["planner_rag_id"] == "opencv_algo"
+    assert captured["planner_rag_ids"] == ["opencv_algo", "backend_java"]
+    assert captured["analyst_rag_id"] == "opencv_algo"
+    assert captured["analyst_rag_ids"] == ["opencv_algo", "backend_java"]
+
+
+def test_v2_runtime_rejects_rag_id_that_collapses_to_default(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-rag-invalid.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+    registry.register(FakePlannerAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    with pytest.raises(RagIdValidationError, match="规范化后等同于 default"):
+        runtime.run(
+            provider=DummyProvider(),
+            model="dummy-model",
+            task="hello",
+            session_id="test-session",
+            tool_registry=ToolRegistry(workspace_root=tmp_path),
+            workspace_root=tmp_path,
+            max_steps=1,
+            rag_id="@@@",
+        )

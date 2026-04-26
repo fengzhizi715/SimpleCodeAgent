@@ -7,7 +7,7 @@ from typing import Literal
 from uuid import uuid4
 
 from app.core.config import settings
-from app.core.exceptions import AppError, UnsupportedAgentVersionError
+from app.core.exceptions import AppError, RagIdValidationError, UnsupportedAgentVersionError
 from app.core.logger import get_logger, log_context
 from app.core.session import derive_project_session_id
 from app.llm.client import OpenAICompatibleProvider
@@ -153,19 +153,22 @@ def run_agent_task(
         )
         repository = SQLiteMemoryRepository()
         tool_registry = ToolRegistry(workspace_root=workdir or None)
-        tool_registry.register_default_tools()
+        tool_registry.register_default_tools(multi_rag=(resolved_version == "v2"))
         if resolved_version == "v2":
             runtime = build_orchestrator_runtime(SQLiteTraceRepository(repository.db))
-            result = runtime.run(
-                provider=provider,
-                model=model,
-                task=task,
-                session_id=resolved_session_id,
-                tool_registry=tool_registry,
-                workspace_root=workdir or ".",
-                reasoning_mode=reasoning_mode,
-                max_steps=max_steps,
-            )
+            try:
+                result = runtime.run(
+                    provider=provider,
+                    model=model,
+                    task=task,
+                    session_id=resolved_session_id,
+                    tool_registry=tool_registry,
+                    workspace_root=workdir or ".",
+                    reasoning_mode=reasoning_mode,
+                    max_steps=max_steps,
+                )
+            except RagIdValidationError as exc:
+                raise AppError(str(exc)) from exc
         else:
             session_memory = SessionMemory(repository)
             summary_memory = SummaryMemory(repository)

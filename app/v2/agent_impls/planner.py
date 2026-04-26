@@ -11,6 +11,7 @@ from app.v1.planner.simple_planner import SimplePlanner
 from app.v2.agent_impls.llm_utils import chat_json
 from app.v2.agent_impls.payloads import PLANNER_TOOL_HINTS, PlannerOutputPayload
 from app.v2.base import AgentBase, AgentContext
+from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_tokens
 from app.v2.plan_policy import apply_step_list_policy, goal_uses_rag_shortcut
 
 
@@ -55,6 +56,8 @@ class PlannerAgent(AgentBase):
         )
         replan_context = self._extract_replan_context(task=task, prompt_context=prompt_context)
         rag_shortcut_applied = (not replan_context) and goal_uses_rag_shortcut(task.goal)
+        selected_rag_ids = self._resolve_rag_ids(task=task, prompt_context=prompt_context)
+        selected_rag_id = selected_rag_ids[0]
         if not replan_context:
             raw_plan = apply_step_list_policy(
                 raw_plan,
@@ -79,6 +82,8 @@ class PlannerAgent(AgentBase):
             prompt_context=prompt_context,
             replan_context=replan_context,
             rag_shortcut_applied=rag_shortcut_applied,
+            selected_rag_id=selected_rag_id,
+            selected_rag_ids=selected_rag_ids,
         )
         return AgentResult(
             task_id=task.task_id,
@@ -255,11 +260,15 @@ class PlannerAgent(AgentBase):
         prompt_context: dict[str, object],
         replan_context: dict[str, object],
         rag_shortcut_applied: bool,
+        selected_rag_id: str,
+        selected_rag_ids: list[str],
     ) -> dict[str, object]:
         enabled_agents = sorted(self._enabled_agents_from_prompt(prompt_context))
         return {
             "mode": "replan" if replan_context else "initial_plan",
             "rag_shortcut_applied": rag_shortcut_applied,
+            "selected_rag_id": selected_rag_id,
+            "selected_rag_ids": selected_rag_ids,
             "enabled_agents": enabled_agents,
             "replan_context": replan_context,
             "step_explanations": [
@@ -272,6 +281,27 @@ class PlannerAgent(AgentBase):
                 for step in plan.steps
             ],
         }
+
+    def _resolve_rag_id(self, *, task: AgentTask, prompt_context: dict[str, object]) -> str:
+        return self._resolve_rag_ids(task=task, prompt_context=prompt_context)[0]
+
+    def _resolve_rag_ids(self, *, task: AgentTask, prompt_context: dict[str, object]) -> list[str]:
+        values: list[str] = []
+        raw_task_ids = task.input_data.get("rag_ids")
+        if isinstance(raw_task_ids, list):
+            values.extend(str(item).strip() for item in raw_task_ids)
+        from_task = str(task.input_data.get("rag_id") or "").strip()
+        if from_task:
+            values.append(from_task)
+        task_input = prompt_context.get("task_input")
+        if isinstance(task_input, dict):
+            raw_ctx_ids = task_input.get("rag_ids")
+            if isinstance(raw_ctx_ids, list):
+                values.extend(str(item).strip() for item in raw_ctx_ids)
+            from_context = str(task_input.get("rag_id") or "").strip()
+            if from_context:
+                values.append(from_context)
+        return strict_normalize_v2_rag_tokens(values)
 
     def _extract_replan_context(self, *, task: AgentTask, prompt_context: dict[str, object]) -> dict[str, object]:
         raw = {}

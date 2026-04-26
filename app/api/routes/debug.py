@@ -6,7 +6,7 @@ import base64
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.deps import get_trace_repository, get_v2_runtime
 from app.core.config import (
@@ -16,10 +16,20 @@ from app.core.config import (
     settings,
     update_llm_runtime_settings,
 )
-from app.v1.rag.vector_store import ChromaVectorStore
+from app.core.exceptions import RagIdValidationError
 from app.v1.rag.ingest import DocsIngestor
+from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
+from app.v1.rag.vector_store import ChromaVectorStore
 
 router = APIRouter(tags=["debug"])
+
+
+def _normalize_debug_rag_id(rag_id: str | None) -> str:
+    """Debug RAG endpoints use V2's strict external rag_id contract."""
+    try:
+        return strict_normalize_v2_rag_ids(rag_id=rag_id, rag_ids=None)[0]
+    except RagIdValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 class HealthResponse(BaseModel):
@@ -162,12 +172,57 @@ class RagFileItem(BaseModel):
     chunk_count: int
 
 
+class RagCollectionItem(BaseModel):
+    """RAG 集合条目。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rag_id: str
+    collection_name: str
+
+
+class RagCollectionsResponse(BaseModel):
+    """可用 RAG 集合列表。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = 0
+    items: list[RagCollectionItem] = Field(default_factory=list)
+
+
+class RagCreateCollectionRequest(BaseModel):
+    """新建（或确保存在）RAG 向量集合。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rag_id: str = Field(
+        min_length=1,
+        max_length=64,
+        description="知识库标识；将规范化为小写，仅保留字母数字、连字符与下划线。",
+    )
+
+    @field_validator("rag_id", mode="before")
+    @classmethod
+    def _strip_rag_id(cls, value: object) -> str:
+        return str(value).strip() if value is not None else ""
+
+
+class RagCreateCollectionResponse(BaseModel):
+    """创建 RAG 集合结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rag_id: str
+    collection_name: str
+
+
 class RagOverviewResponse(BaseModel):
     """RAG 向量库概览。"""
 
     model_config = ConfigDict(extra="forbid")
 
     backend: str
+    rag_id: str
     collection_name: str
     persist_dir: str
     embedding_provider: str
@@ -187,6 +242,7 @@ class RagDeleteSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(min_length=1, description="待删除文件 source。")
+    rag_id: str | None = Field(default=None, description="可选知识库标识；不传使用 default。")
 
 
 class RagDeleteSourceResponse(BaseModel):
@@ -195,6 +251,7 @@ class RagDeleteSourceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
+    rag_id: str
     deleted_chunks: int
 
 
@@ -204,6 +261,7 @@ class RagReindexSourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str = Field(min_length=1, description="待重建索引文件 source。")
+    rag_id: str | None = Field(default=None, description="可选知识库标识；不传使用 default。")
 
 
 class RagReindexSourceResponse(BaseModel):
@@ -212,6 +270,7 @@ class RagReindexSourceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
+    rag_id: str
     deleted_chunks: int
     ingested_chunks: int
 
@@ -222,6 +281,7 @@ class RagUploadResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source: str
+    rag_id: str
     ingested_chunks: int
 
 
@@ -233,6 +293,7 @@ class RagUploadRequest(BaseModel):
     filename: str = Field(min_length=1, description="文件名。")
     content_base64: str = Field(min_length=1, description="文件二进制内容的 base64 字符串。")
     source_dir: str = Field(default="uploads", description="写入 docs 下的子目录。")
+    rag_id: str | None = Field(default=None, description="可选知识库标识；不传使用 default。")
 
 
 @router.get("/healthz", response_model=HealthResponse, status_code=status.HTTP_200_OK)
@@ -360,10 +421,12 @@ def get_v2_session_replay(session_id: str) -> SessionReplayResponse:
 def get_rag_overview(
     limit: int = Query(default=20, ge=1, le=200, description="每页文件数量。"),
     offset: int = Query(default=0, ge=0, description="分页偏移。"),
+    rag_id: str | None = Query(default=None, description="可选知识库标识；不传使用 default。"),
 ) -> RagOverviewResponse:
     """返回当前 Chroma 向量库概览，供 Web UI 展示。"""
+    normalized_rag_id = _normalize_debug_rag_id(rag_id)
     vector_store = ChromaVectorStore()
-    overview = vector_store.inspect()
+    overview = vector_store.inspect(rag_id=normalized_rag_id)
 
     embedding_model = getattr(settings, "embedding_model", "") or "local-hash"
     embedding_api_key = getattr(settings, "embedding_api_key", "")
@@ -375,6 +438,7 @@ def get_rag_overview(
 
     return RagOverviewResponse(
         backend="chroma",
+        rag_id=overview["rag_id"],
         collection_name=overview["collection_name"],
         persist_dir=overview["persist_dir"],
         embedding_provider=embedding_provider,
@@ -389,15 +453,51 @@ def get_rag_overview(
     )
 
 
+@router.get("/debug/rag/collections", response_model=RagCollectionsResponse, status_code=status.HTTP_200_OK)
+def list_rag_collections() -> RagCollectionsResponse:
+    """返回当前可用 RAG 集合列表（rag_id / collection_name）。"""
+    vector_store = ChromaVectorStore()
+    items = vector_store.list_rag_collections()
+    if not any(item.get("rag_id") == "default" for item in items):
+        items = [{"rag_id": "default", "collection_name": vector_store.default_collection_name}, *items]
+    return RagCollectionsResponse(
+        total=len(items),
+        items=[RagCollectionItem.model_validate(item) for item in items],
+    )
+
+
+@router.post(
+    "/debug/rag/collections",
+    response_model=RagCreateCollectionResponse,
+    status_code=status.HTTP_200_OK,
+)
+def create_rag_collection(request: RagCreateCollectionRequest) -> RagCreateCollectionResponse:
+    """创建空 RAG 向量集合（若已存在则幂等）。便于在导入文档前先在 UI 中选库。"""
+    raw = request.rag_id.strip()
+    if not raw:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="rag_id 不能为空")
+    try:
+        normalized_rag_id = strict_normalize_v2_rag_tokens([raw])[0]
+    except RagIdValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    vector_store = ChromaVectorStore()
+    info = vector_store.ensure_rag_collection(normalized_rag_id)
+    return RagCreateCollectionResponse(
+        rag_id=str(info["rag_id"]),
+        collection_name=str(info["collection_name"]),
+    )
+
+
 @router.post("/debug/rag/delete-source", response_model=RagDeleteSourceResponse, status_code=status.HTTP_200_OK)
 def delete_rag_source(request: RagDeleteSourceRequest) -> RagDeleteSourceResponse:
     """按 source 删除向量库中的文档分块。"""
     source = request.source.strip()
     if not source:
         raise HTTPException(status_code=400, detail="source 不能为空。")
+    normalized_rag_id = _normalize_debug_rag_id(request.rag_id)
     vector_store = ChromaVectorStore()
-    deleted_chunks = vector_store.delete_by_source(source)
-    return RagDeleteSourceResponse(source=source, deleted_chunks=deleted_chunks)
+    deleted_chunks = vector_store.delete_by_source(source, rag_id=normalized_rag_id)
+    return RagDeleteSourceResponse(source=source, rag_id=normalized_rag_id, deleted_chunks=deleted_chunks)
 
 
 @router.post("/debug/rag/reindex-source", response_model=RagReindexSourceResponse, status_code=status.HTTP_200_OK)
@@ -407,6 +507,7 @@ def reindex_rag_source(request: RagReindexSourceRequest) -> RagReindexSourceResp
     if not source:
         raise HTTPException(status_code=400, detail="source 不能为空。")
 
+    normalized_rag_id = _normalize_debug_rag_id(request.rag_id)
     target_path = (BASE_DIR / source).resolve()
     base_dir_resolved = BASE_DIR.resolve()
     if base_dir_resolved not in target_path.parents:
@@ -416,8 +517,8 @@ def reindex_rag_source(request: RagReindexSourceRequest) -> RagReindexSourceResp
 
     vector_store = ChromaVectorStore()
     try:
-        deleted_chunks = vector_store.delete_by_source(source)
-        ingested_chunks = DocsIngestor(vector_store=vector_store).ingest_file(target_path)
+        deleted_chunks = vector_store.delete_by_source(source, rag_id=normalized_rag_id)
+        ingested_chunks = DocsIngestor(vector_store=vector_store).ingest_file(target_path, rag_id=normalized_rag_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -425,6 +526,7 @@ def reindex_rag_source(request: RagReindexSourceRequest) -> RagReindexSourceResp
 
     return RagReindexSourceResponse(
         source=source,
+        rag_id=normalized_rag_id,
         deleted_chunks=deleted_chunks,
         ingested_chunks=ingested_chunks,
     )
@@ -433,6 +535,7 @@ def reindex_rag_source(request: RagReindexSourceRequest) -> RagReindexSourceResp
 @router.post("/debug/rag/upload", response_model=RagUploadResponse, status_code=status.HTTP_200_OK)
 def upload_rag_file(request: RagUploadRequest) -> RagUploadResponse:
     """上传文件并导入 Chroma。"""
+    normalized_rag_id = _normalize_debug_rag_id(request.rag_id)
     filename = Path(request.filename or "").name
     if not filename:
         raise HTTPException(status_code=400, detail="文件名不能为空。")
@@ -452,7 +555,7 @@ def upload_rag_file(request: RagUploadRequest) -> RagUploadResponse:
 
     try:
         target_path.write_bytes(content)
-        ingested_chunks = DocsIngestor().ingest_file(target_path)
+        ingested_chunks = DocsIngestor().ingest_file(target_path, rag_id=normalized_rag_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -461,4 +564,4 @@ def upload_rag_file(request: RagUploadRequest) -> RagUploadResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     source = str(target_path.relative_to(BASE_DIR.resolve()))
-    return RagUploadResponse(source=source, ingested_chunks=ingested_chunks)
+    return RagUploadResponse(source=source, rag_id=normalized_rag_id, ingested_chunks=ingested_chunks)

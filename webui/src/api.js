@@ -87,29 +87,42 @@ export async function listAgents() {
 export const listV2Runs = listRuns;
 export const deleteV2Run = deleteRun;
 
-export async function getRagOverview({ limit = 20, offset = 0 } = {}) {
+export async function getRagOverview({ limit = 20, offset = 0, ragId = "default" } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
+    rag_id: String(ragId || "default"),
   });
   return requestJson(`/debug/rag/overview?${params.toString()}`);
 }
 
-export async function deleteRagSource(source) {
+export async function listRagCollections() {
+  return requestJson("/debug/rag/collections");
+}
+
+export async function createRagCollection(ragId) {
+  const id = String(ragId ?? "").trim();
+  return requestJson("/debug/rag/collections", {
+    method: "POST",
+    body: JSON.stringify({ rag_id: id }),
+  });
+}
+
+export async function deleteRagSource(source, ragId = "default") {
   return requestJson("/debug/rag/delete-source", {
     method: "POST",
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, rag_id: ragId || "default" }),
   });
 }
 
-export async function reindexRagSource(source) {
+export async function reindexRagSource(source, ragId = "default") {
   return requestJson("/debug/rag/reindex-source", {
     method: "POST",
-    body: JSON.stringify({ source }),
+    body: JSON.stringify({ source, rag_id: ragId || "default" }),
   });
 }
 
-export async function uploadRagFile(file, sourceDir = "uploads") {
+export async function uploadRagFile(file, sourceDir = "uploads", ragId = "default") {
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -124,6 +137,7 @@ export async function uploadRagFile(file, sourceDir = "uploads") {
       filename: file.name,
       source_dir: sourceDir,
       content_base64: contentBase64,
+      rag_id: ragId || "default",
     }),
   });
 }

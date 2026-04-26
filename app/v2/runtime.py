@@ -15,6 +15,7 @@ from app.core.logger import get_logger
 from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
+from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids
 from app.v1.tools.registry import ToolRegistry
 from app.v2.base import AgentContext, OrchestratorDelegationClient
 from app.v2.context import ContextBuilder
@@ -98,11 +99,15 @@ class OrchestratorRuntime:
         max_replans: int = 1,
         enabled_agents: set[str] | list[str] | tuple[str, ...] | None = None,
         review_strategy: dict[str, object] | None = None,
+        rag_id: str | None = None,
+        rag_ids: list[str] | None = None,
     ) -> RunResult:
         run_id = str(uuid4())
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         workspace = SharedWorkspace(session_id=session_id, run_id=run_id, user_goal=task)
         workspace_store = WorkspaceStore(workspace, workspace_root=workspace_root)
+        normalized_rag_ids = strict_normalize_v2_rag_ids(rag_id=rag_id, rag_ids=rag_ids)
+        normalized_rag_id = normalized_rag_ids[0]
         allowed_agents = self._normalize_enabled_agents(enabled_agents)
         orchestrator_policy = self._build_orchestrator_policy(
             enabled_agents=allowed_agents,
@@ -113,6 +118,8 @@ class OrchestratorRuntime:
         )
         orchestrator_context = self._build_orchestrator_context(policy=orchestrator_policy)
         workspace.private_context["orchestrator"] = orchestrator_context
+        workspace.private_context["orchestrator"]["rag_id"] = normalized_rag_id
+        workspace.private_context["orchestrator"]["rag_ids"] = normalized_rag_ids
         context = AgentContext(
             provider=provider,
             model=model,
@@ -154,6 +161,8 @@ class OrchestratorRuntime:
             payload={
                 "orchestrator_policy": orchestrator_policy,
                 "strategy_profile": orchestrator_context.get("strategy_profile", {}),
+                "rag_id": normalized_rag_id,
+                "rag_ids": normalized_rag_ids,
             },
         )
         self._record_trace(trace_events, trace_recorder, run_started_event)
@@ -166,6 +175,7 @@ class OrchestratorRuntime:
                 goal=task,
                 step_type="planning",
                 target_agent="planner",
+                input_data={"rag_id": normalized_rag_id, "rag_ids": normalized_rag_ids},
             ),
             workspace=workspace,
             context=context,
@@ -267,7 +277,7 @@ class OrchestratorRuntime:
                 goal=step.goal or step.description or step.title,
                 step_type=step.type,
                 target_agent=step.suggested_agent or "coder",
-                input_data=self._build_step_input(step),
+                input_data=self._build_step_input(step, rag_id=normalized_rag_id, rag_ids=normalized_rag_ids),
                 success_criteria=list(step.success_criteria),
                 retry_count=step.retry_count,
                 max_retries=step.max_retries,
@@ -830,6 +840,8 @@ class OrchestratorRuntime:
                 target_agent="planner",
                 input_data={
                     "replan_context": replan_context,
+                    "rag_id": workspace.private_context.get("orchestrator", {}).get("rag_id", "default"),
+                    "rag_ids": workspace.private_context.get("orchestrator", {}).get("rag_ids", ["default"]),
                     "delegation_explanation": self._explain_delegation(
                         target_agent="planner",
                         task_goal="根据失败结果重新规划。",
@@ -877,7 +889,13 @@ class OrchestratorRuntime:
         )
         return True
 
-    def _build_step_input(self, step) -> dict[str, object]:
+    def _build_step_input(
+        self,
+        step,
+        *,
+        rag_id: str | None = None,
+        rag_ids: list[str] | None = None,
+    ) -> dict[str, object]:
         input_data: dict[str, object] = {}
         step_type = getattr(step, "type", "")
         if step_type == "testing":
@@ -893,6 +911,11 @@ class OrchestratorRuntime:
             input_data["tool_name"] = tool_name
         if step_type == "analysis":
             input_data["analysis_mode"] = self._infer_analysis_mode(step)
+        normalized_rag_id = str(rag_id or "").strip()
+        if normalized_rag_id:
+            input_data["rag_id"] = normalized_rag_id
+        if isinstance(rag_ids, list) and rag_ids:
+            input_data["rag_ids"] = [str(item).strip() for item in rag_ids if str(item).strip()]
         return input_data
 
     def _normalize_enabled_agents(self, enabled_agents: set[str] | list[str] | tuple[str, ...] | None) -> set[str]:

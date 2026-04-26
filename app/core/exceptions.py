@@ -19,3 +19,7 @@ class LLMResponseFormatError(AppError):
 
 class UnsupportedAgentVersionError(AppError):
     """未支持的 Agent 版本异常。"""
+
+
+class RagIdValidationError(AppError):
+    """RAG 知识库标识不合法（与创建知识库接口的严格规则一致）。"""

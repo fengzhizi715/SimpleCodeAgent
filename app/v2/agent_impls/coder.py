@@ -208,6 +208,8 @@ class CoderAgent(AgentBase):
                 )
         return {
             "query": docs_context.get("query"),
+            "rag_id": docs_context.get("rag_id", "default"),
+            "rag_ids": docs_context.get("rag_ids") or [docs_context.get("rag_id", "default")],
             "match_count": docs_context.get("match_count", len(compact_matches)),
             "matches": compact_matches,
             "error": docs_context.get("error"),

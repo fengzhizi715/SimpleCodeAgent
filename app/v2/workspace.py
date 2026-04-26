@@ -222,7 +222,7 @@ class WorkspaceStore:
             return incoming_data
 
         merged = dict(existing_data)
-        for field in ("query", "match_count"):
+        for field in ("query", "rag_id", "rag_ids", "match_count"):
             if incoming_data.get(field) not in (None, "", []):
                 merged[field] = incoming_data[field]
         merged["matches"] = self._merge_doc_matches(

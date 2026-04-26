@@ -415,7 +415,7 @@ def test_analyst_agent_uses_retrieve_docs_mode(tmp_path: Path) -> None:
                 tool_call_id=tool_call_id,
                 name=tool_name,
                 content=(
-                    '{"query":"OpenCV C++ 直方图匹配","match_count":1,'
+                    '{"query":"OpenCV C++ 直方图匹配","rag_id":"opencv_algo","match_count":1,'
                     '"matches":[{"title":"Histogram Matching",'
                     '"content":"Use cv::calcHist, normalize CDFs, build a lookup table, then cv::LUT."}]}'
                 ),
@@ -431,7 +431,7 @@ def test_analyst_agent_uses_retrieve_docs_mode(tmp_path: Path) -> None:
         goal="先检索相关文档根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
         step_type="analysis",
         target_agent="analyst",
-        input_data={"tool_name": "retrieve_docs"},
+        input_data={"tool_name": "retrieve_docs", "rag_id": "opencv_algo"},
     )
 
     result = agent.run(task=task, workspace=workspace, context=context, prompt_context={})
@@ -439,6 +439,11 @@ def test_analyst_agent_uses_retrieve_docs_mode(tmp_path: Path) -> None:
     assert result.status == "completed"
     assert result.output_data["analysis_mode"] == "rag_retrieval"
     assert result.output_data["docs_context"]["match_count"] == 1
+    assert result.output_data["docs_context"]["rag_id"] == "opencv_algo"
+    assert any(
+        name == "retrieve_docs" and args.get("rag_id") == "opencv_algo"
+        for name, args in called
+    )
     assert any(name == "retrieve_docs" for name, _ in called)
     assert "知识库检索命中 1 条相关片段" in result.output_data["project_summary"]
     assert result.output_data["key_files"] == []
@@ -456,6 +461,7 @@ def test_workspace_merge_preserves_docs_context() -> None:
             "analysis_mode": "rag_retrieval",
             "docs_context": {
                 "query": "OpenCV 直方图匹配",
+                "rag_id": "opencv_algo",
                 "match_count": 1,
                 "matches": [{"title": "Histogram Matching", "content": "calcHist + CDF + LUT"}],
             },
@@ -470,6 +476,7 @@ def test_workspace_merge_preserves_docs_context() -> None:
     )
 
     assert merged["docs_context"]["match_count"] == 1
+    assert merged["docs_context"]["rag_id"] == "opencv_algo"
     assert merged["docs_context"]["matches"][0]["title"] == "Histogram Matching"
 
 
@@ -859,6 +866,33 @@ def test_planner_metadata_marks_rag_shortcut_applied(tmp_path: Path) -> None:
     strategy = result.output_data["plan"]["metadata"]["planner_strategy"]
     assert strategy["mode"] == "initial_plan"
     assert strategy["rag_shortcut_applied"] is True
+    assert strategy["selected_rag_id"] == "default"
+
+
+def test_planner_metadata_includes_selected_rag_id(tmp_path: Path) -> None:
+    provider = QueueProvider(["not json"])
+    context = _make_context(tmp_path, provider)
+    agent = PlannerAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写算法")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="先检索相关文档根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        step_type="planning",
+        target_agent="planner",
+        input_data={"rag_id": "opencv_algo", "rag_ids": ["opencv_algo", "backend_java"]},
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={"task_input": {"rag_id": "opencv_algo", "rag_ids": ["opencv_algo", "backend_java"]}},
+    )
+
+    strategy = result.output_data["plan"]["metadata"]["planner_strategy"]
+    assert strategy["selected_rag_id"] == "opencv_algo"
+    assert strategy["selected_rag_ids"] == ["opencv_algo", "backend_java"]
 
 
 def test_build_default_registry_supports_reviewer_toggle() -> None:

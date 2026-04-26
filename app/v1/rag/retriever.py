@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 
 from app.v1.rag.embeddings import EmbeddingProvider, build_embedding_provider
-from app.v1.rag.vector_store import ChromaVectorStore
+from app.v1.rag.vector_store import ChromaVectorStore, normalize_rag_id_value
 
 
 class DocumentRetriever:
@@ -26,11 +26,22 @@ class DocumentRetriever:
         min_score: float = 0.0,
         rerank: bool = True,
         fetch_k: int | None = None,
+        rag_id: str | None = None,
+        rag_ids: list[str] | None = None,
     ) -> list[dict[str, object]]:
         """返回与查询最相关的文档片段。"""
         query_embedding = self.embedding_provider.embed_texts([query])[0]
         candidate_count = fetch_k if fetch_k is not None else max(top_k * 3, top_k)
-        matches = self.vector_store.query(query_embedding=query_embedding, top_k=candidate_count)
+        resolved_rag_ids = self._resolve_rag_ids(rag_id=rag_id, rag_ids=rag_ids)
+        matches: list[dict[str, object]] = []
+        for item in resolved_rag_ids:
+            matches.extend(
+                self.vector_store.query(
+                    query_embedding=query_embedding,
+                    top_k=candidate_count,
+                    rag_id=item,
+                )
+            )
         filtered_matches = [
             match
             for match in matches
@@ -59,6 +70,24 @@ class DocumentRetriever:
             reverse=True,
         )
         return reranked_matches[:top_k]
+
+    def _resolve_rag_ids(self, *, rag_id: str | None, rag_ids: list[str] | None) -> list[str]:
+        values: list[str] = []
+        if isinstance(rag_ids, list):
+            values.extend(str(item).strip() for item in rag_ids)
+        if rag_id is not None:
+            values.append(str(rag_id).strip())
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            key = normalize_rag_id_value(value)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(key)
+        if normalized:
+            return normalized
+        return ["default"]
 
     def _extract_terms(self, text: str) -> set[str]:
         """从查询中提取可用于轻量重排的词项。"""

@@ -62,6 +62,26 @@
       <textarea v-model="form.system_prompt" />
     </div>
     <div v-else class="v2-agent-config">
+      <div class="grid-two" style="margin-bottom: 10px">
+        <div>
+          <label>RAG ID（v2）</label>
+          <select v-model="form.rag_id">
+            <option v-for="item in ragCollections" :key="item.rag_id" :value="item.rag_id">
+              {{ item.rag_id }} ({{ item.collection_name }})
+            </option>
+          </select>
+          <p class="muted" style="margin: 6px 0 0">不填默认使用 <code>default</code>。</p>
+        </div>
+        <div>
+          <label>多 RAG 并查（可选）</label>
+          <select v-model="selectedRagIds" multiple size="4">
+            <option v-for="item in ragCollections" :key="`multi-${item.rag_id}`" :value="item.rag_id">
+              {{ item.rag_id }}
+            </option>
+          </select>
+          <p class="muted" style="margin: 6px 0 0">配置后会把多个知识库一起检索并统一重排。</p>
+        </div>
+      </div>
       <div class="v2-agent-config-head">
         <div>
           <label>V2 Agent 配置</label>
@@ -132,13 +152,15 @@
 <script setup>
 import { onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { runAgent } from "../api";
+import { listRagCollections, runAgent } from "../api";
 import { loadReviewStrategy } from "../reviewerConfig";
 
 const router = useRouter();
 const loading = ref(false);
 const error = ref("");
 const v1Result = ref(null);
+const ragCollections = ref([{ rag_id: "default", collection_name: "codeagent_docs" }]);
+const selectedRagIds = ref([]);
 const defaultV2Agents = ["planner", "analyst", "coder", "tester", "reviewer"];
 const configurableV2Agents = [
   { id: "analyst", label: "Analyst", help: "识别项目结构和关键文件" },
@@ -159,11 +181,28 @@ const form = reactive({
   system_prompt: "You are a helpful assistant.",
   v2_enabled_agents: [...defaultV2Agents],
   v2_review_strategy: loadReviewStrategy(),
+  rag_id: "default",
 });
 
 onMounted(() => {
   form.v2_review_strategy = loadReviewStrategy();
+  void loadRagCollections();
 });
+
+async function loadRagCollections() {
+  try {
+    const data = await listRagCollections();
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length) {
+      ragCollections.value = items;
+      if (!items.some((item) => item.rag_id === form.rag_id)) {
+        form.rag_id = items[0].rag_id;
+      }
+    }
+  } catch {
+    ragCollections.value = [{ rag_id: "default", collection_name: "codeagent_docs" }];
+  }
+}
 
 function toggleV2Agent(agentId) {
   const selected = new Set(form.v2_enabled_agents);
@@ -199,6 +238,13 @@ async function submitRun() {
     if (form.version === "v1") {
       payload.system_prompt = form.system_prompt;
     } else {
+      payload.rag_id = form.rag_id?.trim() || "default";
+      const ragIds = selectedRagIds.value
+        .map((item) => String(item).trim())
+        .filter(Boolean);
+      if (ragIds.length) {
+        payload.rag_ids = ragIds;
+      }
       payload.v2_enabled_agents = [...form.v2_enabled_agents];
       if (form.v2_enabled_agents.includes("reviewer")) {
         payload.v2_review_strategy = loadReviewStrategy();

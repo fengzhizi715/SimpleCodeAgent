@@ -383,6 +383,9 @@ const privateMemoryEntries = computed(() => {
 });
 const sharedWorkspaceRows = computed(() => {
   const ws = workspace.value || {};
+  const orchestrator = privateContext.value.orchestrator || {};
+  const ragId = typeof orchestrator.rag_id === "string" && orchestrator.rag_id ? orchestrator.rag_id : "default";
+  const ragIds = Array.isArray(orchestrator.rag_ids) ? orchestrator.rag_ids : [ragId];
   return [
     { key: "user_goal", value: compactText(ws.user_goal) },
     { key: "current_plan", value: ws.current_plan?.steps ? `${ws.current_plan.steps.length} steps` : "—" },
@@ -396,6 +399,8 @@ const sharedWorkspaceRows = computed(() => {
     },
     { key: "artifacts_index", value: `${artifactsIndex.value.length} items` },
     { key: "execution_notes", value: `${executionNotes.value.length} notes` },
+    { key: "rag_id", value: ragId },
+    { key: "rag_ids", value: ragIds.join(", ") },
   ];
 });
 const memoryPolicyView = computed(() => {

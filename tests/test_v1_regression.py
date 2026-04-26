@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
 from app.api.routes.agent import AgentRunRequest, run_agent
+from app.api.routes.debug import (
+    RagDeleteSourceRequest,
+    RagUploadRequest,
+    delete_rag_source,
+    get_rag_overview,
+    upload_rag_file,
+)
 from app.cli.entry import run_agent_task
 from app.contracts.message import ChatMessage
 from app.contracts.planner import PlanStep
@@ -24,8 +35,13 @@ from app.v1.runtime.plan_executor import PlanExecutor
 from app.v1.runtime.write_intent_parser import WriteIntentParser
 from app.v1.tools.list_dir import ListDirTool
 from app.v1.tools.read_file import ReadFileTool
+from app.v1.tools.retrieve_docs import RetrieveDocsTool
 from app.v1.tools.registry import ToolRegistry
 from app.v1.tools.write_file import WriteFileTool
+from app.core.exceptions import RagIdValidationError
+from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids
+from app.v1.rag.retriever import DocumentRetriever
+from app.v1.rag.vector_store import ChromaVectorStore, normalize_rag_id_value
 
 
 class StaticProvider(LLMProvider):
@@ -71,11 +87,209 @@ class SingleStepPlanner(Planner):
         ]
 
 
-def _register_lightweight_tools(registry: ToolRegistry) -> None:
+def _register_lightweight_tools(registry: ToolRegistry, *args: object, **kwargs: object) -> None:
     """Register a minimal tool set without RAG-heavy initialization."""
+    _ = args, kwargs
     registry.register_dummy_tool()
     registry.register(ReadFileTool(workspace_root=registry.workspace_root))
     registry.register(ListDirTool(workspace_root=registry.workspace_root))
+
+
+def test_retrieve_docs_tool_accepts_rag_id_when_multi_rag_enabled() -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def retrieve(
+            self,
+            *,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.0,
+            rerank: bool = True,
+            fetch_k: int | None = None,
+            rag_id: str | None = None,
+            rag_ids: list[str] | None = None,
+        ) -> list[dict[str, object]]:
+            self.calls.append(
+                {
+                    "query": query,
+                    "top_k": top_k,
+                    "min_score": min_score,
+                    "rerank": rerank,
+                    "fetch_k": fetch_k,
+                    "rag_id": rag_id,
+                    "rag_ids": rag_ids,
+                }
+            )
+            return [{"source": "docs/a.md", "content": "demo", "score": 0.9, "rag_id": rag_id or "default"}]
+
+    fake = FakeRetriever()
+    tool = RetrieveDocsTool(retriever=fake, allow_multi_rag=True)  # type: ignore[arg-type]
+
+    result = tool.execute(
+        {
+            "query": "opencv histogram matching",
+            "top_k": 2,
+            "rag_id": "opencv_algo",
+        },
+        tool_call_id="test-call",
+    )
+
+    assert result.is_error is False
+    assert fake.calls and fake.calls[0]["rag_id"] == "opencv_algo"
+    payload = json.loads(result.content)
+    assert payload["rag_id"] == "opencv_algo"
+
+
+def test_retrieve_docs_tool_supports_multi_rag_merge_when_enabled() -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def retrieve(
+            self,
+            *,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.0,
+            rerank: bool = True,
+            fetch_k: int | None = None,
+            rag_id: str | None = None,
+            rag_ids: list[str] | None = None,
+        ) -> list[dict[str, object]]:
+            self.calls.append(
+                {
+                    "query": query,
+                    "top_k": top_k,
+                    "min_score": min_score,
+                    "rerank": rerank,
+                    "fetch_k": fetch_k,
+                    "rag_id": rag_id,
+                    "rag_ids": rag_ids,
+                }
+            )
+            return [
+                {"source": "docs/a.md", "content": "demo-a", "score": 0.9, "rag_id": "product_docs"},
+                {"source": "docs/b.md", "content": "demo-b", "score": 0.8, "rag_id": "backend_java"},
+            ]
+
+    fake = FakeRetriever()
+    tool = RetrieveDocsTool(retriever=fake, allow_multi_rag=True)  # type: ignore[arg-type]
+
+    result = tool.execute(
+        {
+            "query": "login flow",
+            "top_k": 4,
+            "rag_ids": ["product_docs", "backend_java"],
+        },
+        tool_call_id="test-call-multi",
+    )
+
+    assert result.is_error is False
+    assert fake.calls and fake.calls[0]["rag_ids"] == ["product_docs", "backend_java"]
+    payload = json.loads(result.content)
+    assert payload["rag_ids"] == ["product_docs", "backend_java"]
+    assert payload["match_count"] == 2
+
+
+def test_v1_retrieve_docs_tool_forces_default_when_multi_rag_disabled() -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def retrieve(
+            self,
+            *,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.0,
+            rerank: bool = True,
+            fetch_k: int | None = None,
+            rag_id: str | None = None,
+            rag_ids: list[str] | None = None,
+        ) -> list[dict[str, object]]:
+            self.calls.append(
+                {
+                    "query": query,
+                    "top_k": top_k,
+                    "min_score": min_score,
+                    "rerank": rerank,
+                    "fetch_k": fetch_k,
+                    "rag_id": rag_id,
+                    "rag_ids": rag_ids,
+                }
+            )
+            return [{"source": "docs/a.md", "content": "demo", "score": 0.9, "rag_id": "default"}]
+
+    fake = FakeRetriever()
+    tool = RetrieveDocsTool(retriever=fake, allow_multi_rag=False)  # type: ignore[arg-type]
+
+    result = tool.execute(
+        {
+            "query": "ignored routing",
+            "rag_id": "custom",
+            "rag_ids": ["a", "b"],
+        },
+        tool_call_id="test-call",
+    )
+
+    assert result.is_error is False
+    assert fake.calls and fake.calls[0]["rag_id"] is None and fake.calls[0]["rag_ids"] is None
+    payload = json.loads(result.content)
+    assert payload["rag_id"] == "default"
+    assert payload["rag_ids"] == ["default"]
+
+
+def test_retrieve_docs_tool_defaults_to_single_rag() -> None:
+    class FakeRetriever:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def retrieve(
+            self,
+            *,
+            query: str,
+            top_k: int = 3,
+            min_score: float = 0.0,
+            rerank: bool = True,
+            fetch_k: int | None = None,
+            rag_id: str | None = None,
+            rag_ids: list[str] | None = None,
+        ) -> list[dict[str, object]]:
+            self.calls.append({"rag_id": rag_id, "rag_ids": rag_ids})
+            return [{"source": "docs/a.md", "content": query, "score": 0.9, "rag_id": "default"}]
+
+    fake = FakeRetriever()
+    tool = RetrieveDocsTool(retriever=fake)  # type: ignore[arg-type]
+
+    result = tool.execute({"query": "single rag", "rag_id": "custom", "rag_ids": ["a", "b"]}, "test-call")
+
+    assert result.is_error is False
+    assert fake.calls == [{"rag_id": None, "rag_ids": None}]
+    payload = json.loads(result.content)
+    assert payload["rag_id"] == "default"
+    assert payload["rag_ids"] == ["default"]
+
+
+def test_v1_tool_registry_retrieve_docs_omits_rag_params_when_single_rag(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+    registry.register_default_tools(multi_rag=False)
+    defs = registry.get_tool_definitions()
+    rd = next(d for d in defs if d.name == "retrieve_docs")
+    props = rd.parameters["properties"]
+    assert "rag_id" not in props
+    assert "rag_ids" not in props
+
+
+def test_tool_registry_defaults_retrieve_docs_to_single_rag(tmp_path: Path) -> None:
+    registry = ToolRegistry(workspace_root=tmp_path)
+    registry.register_default_tools()
+    defs = registry.get_tool_definitions()
+    rd = next(d for d in defs if d.name == "retrieve_docs")
+    props = rd.parameters["properties"]
+    assert "rag_id" not in props
+    assert "rag_ids" not in props
 
 
 def test_v1_api_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:
@@ -114,6 +328,36 @@ def test_v1_api_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:
     assert response.step_count == 1
     assert any(event["event_type"] == "run_started" for event in response.trace)
     assert any(event["event_type"] == "run_finished" for event in response.trace)
+
+
+def test_v1_api_rejects_multi_rag_parameters() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        run_agent(
+            AgentRunRequest(
+                task="hello",
+                version="v1",
+                model="fake-model",
+                api_key="fake-key",
+                rag_ids=["product_docs", "backend_java"],
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert "v1 不支持多向量库参数 rag_ids" in str(excinfo.value.detail)
+
+
+def test_v1_api_rejects_non_default_rag_id() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        run_agent(
+            AgentRunRequest(
+                task="hello",
+                version="v1",
+                model="fake-model",
+                api_key="fake-key",
+                rag_id="product_docs",
+            )
+        )
+    assert excinfo.value.status_code == 400
+    assert "v1 仅支持默认向量库（default）" in str(excinfo.value.detail)
 
 
 def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:
@@ -560,3 +804,73 @@ def test_v1_tools_accept_workspace_alias_paths(tmp_path: Path) -> None:
     assert root_result.is_error is False
     assert nested_result.is_error is False
     assert "demo.txt" in nested_result.content
+
+
+def test_chroma_ensure_rag_collection_creates_listable_collection(tmp_path: Path) -> None:
+    store = ChromaVectorStore(persist_dir=tmp_path / "chroma-rag")
+    info = store.ensure_rag_collection("Product-A")
+    assert info["rag_id"] == "product-a"
+    assert info["collection_name"] == f"{store.default_collection_name}__product-a"
+    rag_ids = {row["rag_id"] for row in store.list_rag_collections()}
+    assert "product-a" in rag_ids
+
+
+def test_chroma_normalize_rag_id_strips_and_lowercases(tmp_path: Path) -> None:
+    store = ChromaVectorStore(persist_dir=tmp_path / "chroma-rag2")
+    assert store.normalize_rag_id("  Foo Bar  ") == "foo-bar"
+    assert store.normalize_rag_id(None) == "default"
+    assert normalize_rag_id_value("  Foo Bar  ") == "foo-bar"
+
+
+def test_strict_normalize_v2_rag_ids_rejects_accidental_default() -> None:
+    with pytest.raises(RagIdValidationError, match="规范化后等同于 default"):
+        strict_normalize_v2_rag_ids(rag_id="@@@", rag_ids=None)
+
+
+def test_strict_normalize_v2_rag_ids_accepts_explicit_default() -> None:
+    assert strict_normalize_v2_rag_ids(rag_id="default", rag_ids=None) == ["default"]
+    assert strict_normalize_v2_rag_ids(rag_id="DeFaUlT", rag_ids=None) == ["default"]
+
+
+def test_strict_normalize_v2_rag_ids_dedupes_by_canonical_form() -> None:
+    assert strict_normalize_v2_rag_ids(rag_id="Foo Bar", rag_ids=["foo-bar"]) == ["foo-bar"]
+
+
+def test_document_retriever_dedupes_rag_ids_by_canonical_form() -> None:
+    retriever = object.__new__(DocumentRetriever)
+    assert retriever._resolve_rag_ids(rag_id="Foo Bar", rag_ids=["foo-bar", "  Backend Java  "]) == [
+        "foo-bar",
+        "backend-java",
+    ]
+
+
+def test_retrieve_docs_tool_rejects_invalid_rag_when_multi_rag_enabled() -> None:
+    class FakeRetriever:
+        def retrieve(self, **_: object) -> list[dict[str, object]]:  # pragma: no cover
+            raise AssertionError("should not retrieve")
+
+    tool = RetrieveDocsTool(retriever=FakeRetriever(), allow_multi_rag=True)  # type: ignore[arg-type]
+    result = tool.execute({"query": "q", "rag_id": "@@@"}, "call-invalid-rag")
+    assert result.is_error is True
+    payload = json.loads(result.content)
+    assert "规范化后等同于 default" in str(payload.get("error", ""))
+
+
+def test_debug_rag_overview_rejects_invalid_rag_id_before_vector_store() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        get_rag_overview(rag_id="@@@")
+
+    assert excinfo.value.status_code == 400
+    assert "规范化后等同于 default" in str(excinfo.value.detail)
+
+
+def test_debug_rag_mutation_endpoints_reject_invalid_rag_id_before_side_effects() -> None:
+    with pytest.raises(HTTPException) as delete_exc:
+        delete_rag_source(RagDeleteSourceRequest(source="docs/a.md", rag_id="@@@"))
+    with pytest.raises(HTTPException) as upload_exc:
+        upload_rag_file(RagUploadRequest(filename="a.md", content_base64="SGk=", rag_id="@@@"))
+
+    assert delete_exc.value.status_code == 400
+    assert upload_exc.value.status_code == 400
+    assert "规范化后等同于 default" in str(delete_exc.value.detail)
+    assert "规范化后等同于 default" in str(upload_exc.value.detail)

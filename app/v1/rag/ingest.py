@@ -31,7 +31,7 @@ class DocsIngestor:
             ".txt": self._read_plain_text,
         }
 
-    def ingest_directory(self, docs_dir: str | Path | None = None) -> int:
+    def ingest_directory(self, docs_dir: str | Path | None = None, rag_id: str | None = None) -> int:
         """导入目录下全部文档并返回分块数量。"""
         root = (Path(docs_dir) if docs_dir else BASE_DIR / "docs").resolve()
         files = [
@@ -45,10 +45,10 @@ class DocsIngestor:
             return 0
 
         embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in all_chunks])
-        self.vector_store.upsert(all_chunks, embeddings)
+        self.vector_store.upsert(all_chunks, embeddings, rag_id=rag_id)
         return len(all_chunks)
 
-    def ingest_file(self, file_path: str | Path) -> int:
+    def ingest_file(self, file_path: str | Path, rag_id: str | None = None) -> int:
         """导入单个文件并返回分块数量。"""
         path = Path(file_path).resolve()
         if not path.is_file():
@@ -61,7 +61,7 @@ class DocsIngestor:
             return 0
 
         embeddings = self.embedding_provider.embed_texts([chunk.content for chunk in all_chunks])
-        self.vector_store.upsert(all_chunks, embeddings)
+        self.vector_store.upsert(all_chunks, embeddings, rag_id=rag_id)
         return len(all_chunks)
 
     def _build_chunks(self, files: list[Path]) -> list[DocumentChunk]:

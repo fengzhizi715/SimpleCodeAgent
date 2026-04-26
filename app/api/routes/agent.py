@@ -20,7 +20,7 @@ from app.api.deps import (
 )
 from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
-from app.core.exceptions import AppError, UnsupportedAgentVersionError
+from app.core.exceptions import AppError, RagIdValidationError, UnsupportedAgentVersionError
 from app.core.logger import get_logger, log_context
 from app.core.session import derive_project_session_id
 from app.llm.client import LLMProviderError
@@ -89,6 +89,14 @@ class AgentRunRequest(BaseModel):
         default=None,
         description="V2 Reviewer 运行级策略；仅在启用 reviewer 时生效。",
     )
+    rag_id: str | None = Field(
+        default=None,
+        description="可选知识库标识；v2 模式下用于路由 retrieve_docs 到指定 RAG。",
+    )
+    rag_ids: list[str] | None = Field(
+        default=None,
+        description="可选知识库标识列表；v2 模式下用于多库并查。",
+    )
 
 
 class AgentRunResponse(BaseModel):
@@ -113,6 +121,19 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     """执行一次 Agent 任务。"""
     if request.version not in {"v1", "v2"}:
         raise HTTPException(status_code=400, detail=f"不支持的 Agent 版本：{request.version}")
+    if request.version == "v1":
+        rag_id = str(request.rag_id or "").strip()
+        rag_ids = [str(item).strip() for item in (request.rag_ids or []) if str(item).strip()]
+        if rag_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="v1 不支持多向量库参数 rag_ids；请使用 v2。",
+            )
+        if rag_id and rag_id != "default":
+            raise HTTPException(
+                status_code=400,
+                detail="v1 仅支持默认向量库（default）；请使用 v2 访问自定义 rag_id。",
+            )
     resolved_model = request.model or settings.llm_model
     if not resolved_model:
         raise HTTPException(status_code=400, detail="缺少模型名，请在请求中传入 model 或配置 LLM_MODEL。")
@@ -145,26 +166,31 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                 model=request.model,
             )
             tool_registry = ToolRegistry(workspace_root=resolved_workdir)
-            tool_registry.register_default_tools()
+            tool_registry.register_default_tools(multi_rag=(request.version == "v2"))
             if request.version == "v2":
                 runtime = get_v2_runtime()
-                result = runtime.run(
-                    provider=provider,
-                    model=resolved_model,
-                    task=request.task,
-                    session_id=session_id,
-                    tool_registry=tool_registry,
-                    workspace_root=resolved_workdir or settings.workdir or ".",
-                    reasoning_mode=request.reasoning_mode,
-                    max_steps=request.max_steps,
-                    run_timeout_seconds=request.run_timeout_seconds,
-                    enabled_agents=request.v2_enabled_agents,
-                    review_strategy=(
-                        request.v2_review_strategy.model_dump()
-                        if request.v2_review_strategy is not None
-                        else None
-                    ),
-                )
+                try:
+                    result = runtime.run(
+                        provider=provider,
+                        model=resolved_model,
+                        task=request.task,
+                        session_id=session_id,
+                        tool_registry=tool_registry,
+                        workspace_root=resolved_workdir or settings.workdir or ".",
+                        reasoning_mode=request.reasoning_mode,
+                        max_steps=request.max_steps,
+                        run_timeout_seconds=request.run_timeout_seconds,
+                        enabled_agents=request.v2_enabled_agents,
+                        review_strategy=(
+                            request.v2_review_strategy.model_dump()
+                            if request.v2_review_strategy is not None
+                            else None
+                        ),
+                        rag_id=request.rag_id,
+                        rag_ids=request.rag_ids,
+                    )
+                except RagIdValidationError as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
             else:
                 loop = get_agent_loop()
                 planner = get_planner()

@@ -48,8 +48,11 @@ class ToolRegistry:
         """注册默认 dummy 工具。"""
         self.register(DummyTool(workspace_root=self.workspace_root))
 
-    def register_default_tools(self) -> None:
-        """注册标准工作区工具集。"""
+    def register_default_tools(self, *, multi_rag: bool = False) -> None:
+        """注册标准工作区工具集。
+
+        multi_rag=False 时（V1 运行路径）：retrieve_docs 仅使用默认向量库，不向模型暴露 rag_id/rag_ids。
+        """
         # v1 默认工具集强调“小范围可验证编程任务”：
         # 先观察，再修改，最后验证，而不是直接做高风险外部动作。
         self.register_dummy_tool()
@@ -61,7 +64,13 @@ class ToolRegistry:
         self.register(ReplaceInFileTool(workspace_root=self.workspace_root))
         self.register(AppendFileTool(workspace_root=self.workspace_root))
         self.register(MultiFilePatchTool(workspace_root=self.workspace_root))
-        self.register(RetrieveDocsTool(workspace_root=self.workspace_root, retriever=self._get_retriever()))
+        self.register(
+            RetrieveDocsTool(
+                workspace_root=self.workspace_root,
+                retriever=self._get_retriever(),
+                allow_multi_rag=multi_rag,
+            )
+        )
 
     def get_tool_definitions(self) -> list[ToolDefinition]:
         """返回暴露给 LLM 的全部工具定义。"""

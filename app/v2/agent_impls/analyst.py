@@ -191,14 +191,23 @@ class AnalystAgent(AgentBase):
     ) -> tuple[dict[str, Any], int]:
         if mode != "rag_retrieval":
             return {}, 0
+        rag_id = str(task.input_data.get("rag_id") or "").strip() or "default"
+        raw_rag_ids = task.input_data.get("rag_ids")
+        rag_ids = (
+            [str(item).strip() for item in raw_rag_ids if str(item).strip()]
+            if isinstance(raw_rag_ids, list)
+            else [rag_id]
+        )
         result = context.tool_registry.execute_tool(
             tool_name="retrieve_docs",
-            arguments={"query": task.goal, "top_k": 5, "rerank": True},
+            arguments={"query": task.goal, "top_k": 5, "rerank": True, "rag_id": rag_id, "rag_ids": rag_ids},
             tool_call_id=f"{task.task_id}-retrieve-docs",
         )
         payload = parse_tool_content(result.content)
         return {
             "query": payload.get("query") or task.goal,
+            "rag_id": payload.get("rag_id") or rag_id,
+            "rag_ids": payload.get("rag_ids") or rag_ids,
             "match_count": payload.get("match_count", 0),
             "matches": payload.get("matches", []),
             "error": payload.get("error") if result.is_error else None,
