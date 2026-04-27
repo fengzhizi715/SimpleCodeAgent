@@ -13,7 +13,7 @@
 
 ## 相关链接
 
-- OpenVitamin：<https://openvitamin.example.com>（占位，后续替换为正式链接）
+- OpenVitamin：<https://github.com/fengzhizi715/OpenVitamin>
 - 课程购买：<https://course.example.com/simple-code-agent>（占位，后续替换为正式链接）
 - 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
 - V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
