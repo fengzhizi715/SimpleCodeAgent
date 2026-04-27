@@ -7,6 +7,23 @@
 - [architecture.md](./architecture.md)
 - [AGENTS.md](../AGENTS.md)
 
+## 导航（建议先读）
+
+如果你是第一次上手，推荐按下面顺序阅读：
+
+1. [1. 环境准备](#1-环境准备)
+2. [2. CLI 使用](#2-cli-使用)
+3. [5. FastAPI 服务](#5-fastapi-服务)
+4. [5.1 Web UI（V2 演示，可选）](#51-web-uiv2-演示可选)
+5. [4. RAG 文档导入](#4-rag-文档导入)
+6. [11. 常见问题](#11-常见问题)
+
+快速路径（最少命令）：
+
+- 一键起全栈：`./run-all.sh`
+- 最小 CLI：`.venv/bin/python scripts/run_cli.py "hello" --version v1`
+- Web UI 默认地址：`http://127.0.0.1:5173`
+
 ## 1. 环境准备
 
 创建并激活虚拟环境：
@@ -208,6 +225,19 @@ python -m app.main "你好，介绍一下你自己" --version v1
 
 导入完成后，Agent 在执行过程中可以通过 `retrieve_docs` 工具检索这些文档片段。
 
+### RAG 版本差异（重要）
+
+当前版本对 `v1/v2` 的 RAG 策略是分开的：
+
+- `v1`：严格单库，仅允许默认库 `default`
+  - API 层会拒绝 `rag_ids`
+  - API 层会拒绝 `rag_id != default`
+  - 运行时工具路径也不会走多库
+- `v2`：支持多库
+  - 支持 `rag_id` 与 `rag_ids`
+  - 支持多库并查与统一重排
+  - `rag_id` 会走严格规范化校验；规范化后若等同 `default` 且原值不是显式 `default`，会返回 400
+
 `retrieve_docs` 当前除了 `top_k`，还支持：
 
 - `min_score` 最小分数过滤
@@ -319,6 +349,22 @@ curl -s http://127.0.0.1:8000/agent/run \
 curl -s http://127.0.0.1:8000/debug/traces/<run_id>
 ```
 
+列出 RAG 库（供 `/rag` 列表页）：
+
+```bash
+curl -s http://127.0.0.1:8000/debug/rag/collections
+```
+
+创建空 RAG 库（供 v2 选库）：
+
+```bash
+curl -s http://127.0.0.1:8000/debug/rag/collections \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rag_id": "product-docs"
+  }'
+```
+
 列出最近运行（含 `v1/v2` 顶层记录，供 Web UI 历史页）：
 
 ```bash
@@ -377,6 +423,8 @@ npm run dev
 - `/run`：新建运行（`v1/v2`、`max_steps`、`run_timeout_seconds`）
 - `/history`：历史分页、筛选、删除与回放入口
 - `/agents`：只读智能体列表
+- `/rag`：RAG 列表页（创建知识库、进入详情）
+- `/rag/:ragId`：RAG 详情页（该库概览、上传导入、重建索引、删除分块）
 - `/runs/:runId`：执行详情、运行摘要、流程可视化与节点摘要
 - `/runs/:runId/trace`：Trace 时间线
 
@@ -518,23 +566,16 @@ logs/app.log
 LOG_LEVEL=INFO
 ```
 
-## 10. 当前限制
+## 10. Web UI 操作提示
 
-- `v2` 仍是 MVP 骨架，尚未完成全部多 Agent 目标能力
-- 当前默认 Provider 是 OpenAI-compatible 协议
-- streaming API 还没有接入
-- 当前文档以本地开发与演示为主，不是生产部署手册
-
-## 12. Web UI 操作提示
-
-### 12.1 运行超时
+### 10.1 运行超时
 
 `/run` 页支持 `运行超时（秒）`：
 
 - `v1`：透传到单 Agent runtime 的 `run_timeout_seconds`
 - `v2`：达到超时时间后，编排器会主动停止并返回失败原因
 
-### 12.2 执行详情中的工作目录
+### 10.2 执行详情中的工作目录
 
 `/runs/:runId` 的运行摘要会展示 `workdir`：
 
@@ -581,3 +622,10 @@ LOG_LEVEL=INFO
 - 增大 `LLM_TIMEOUT`
 - 换一个更轻量的模型做对照
 - 先用 `curl` 直接调用 `/v1/chat/completions` 测一下真实耗时
+
+
+## 12. 当前限制
+
+- 当前默认 Provider 是 OpenAI-compatible 协议
+- streaming API 还没有接入
+- 当前文档以本地开发与演示为主，不是生产部署手册

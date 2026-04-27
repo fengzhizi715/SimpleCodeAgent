@@ -158,16 +158,3 @@ webui/          # Vue3 + Vite 前端
 - V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ---
-
-## 开源建议
-
-- 提交 Issue 时附上：
-  - 运行命令
-  - `version`（v1/v2）
-  - 关键日志或 Trace 片段
-  - 复现步骤
-- 提交 PR 时建议说明：
-  - 改动动机（why）
-  - 行为变化（what changed）
-  - 回归风险与测试范围
-
