@@ -207,6 +207,17 @@ def run_agent_task(
                     summary_memory=summary_memory,
                 )
 
+        # 与 API 路径保持一致：v1 规划执行会产生多个内部子 run，
+        # CLI 也需要用用户原始 task 再落一条顶层 run，供 /history 展示。
+        if resolved_version == "v1" and result.run_id and result.session_id:
+            repository.save_run(
+                result,
+                task,
+                workdir=workdir or None,
+                is_top_level=True,
+                parent_run_id=None,
+            )
+
         trace_lines: list[str] = []
         if include_trace and result.run_id:
             trace_repo = SQLiteTraceRepository(repository.db)
