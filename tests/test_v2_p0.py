@@ -869,6 +869,35 @@ def test_planner_metadata_marks_rag_shortcut_applied(tmp_path: Path) -> None:
     assert strategy["selected_rag_id"] == "default"
 
 
+def test_planner_respects_disabled_rag_strategy(tmp_path: Path) -> None:
+    provider = QueueProvider(["not json"])
+    context = _make_context(tmp_path, provider)
+    agent = PlannerAgent()
+    workspace = SharedWorkspace(session_id="test-session", run_id="test-run", user_goal="写算法")
+    task = AgentTask(
+        session_id="test-session",
+        run_id="test-run",
+        goal="先检索相关文档根据知识库内容，写一个 OpenCV C++ 直方图匹配的算法。",
+        step_type="planning",
+        target_agent="planner",
+        input_data={"rag_enabled": False},
+    )
+
+    result = agent.run(
+        task=task,
+        workspace=workspace,
+        context=context,
+        prompt_context={"task_input": {"rag_enabled": False}},
+    )
+
+    plan = result.output_data["plan"]
+    strategy = plan["metadata"]["planner_strategy"]
+    assert strategy["rag_shortcut_applied"] is False
+    assert strategy["selected_rag_id"] == ""
+    assert strategy["selected_rag_ids"] == []
+    assert all(step.get("tool_name") != "retrieve_docs" for step in plan["steps"])
+
+
 def test_planner_metadata_includes_selected_rag_id(tmp_path: Path) -> None:
     provider = QueueProvider(["not json"])
     context = _make_context(tmp_path, provider)

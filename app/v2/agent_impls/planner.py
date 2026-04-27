@@ -55,14 +55,18 @@ class PlannerAgent(AgentBase):
             prompt_context=prompt_context,
         )
         replan_context = self._extract_replan_context(task=task, prompt_context=prompt_context)
-        rag_shortcut_applied = (not replan_context) and goal_uses_rag_shortcut(task.goal)
-        selected_rag_ids = self._resolve_rag_ids(task=task, prompt_context=prompt_context)
-        selected_rag_id = selected_rag_ids[0]
+        rag_enabled = self._rag_enabled(task=task, prompt_context=prompt_context)
+        rag_shortcut_applied = rag_enabled and (not replan_context) and goal_uses_rag_shortcut(task.goal)
+        selected_rag_ids = self._resolve_rag_ids(task=task, prompt_context=prompt_context) if rag_enabled else []
+        selected_rag_id = selected_rag_ids[0] if selected_rag_ids else ""
+        if not rag_enabled:
+            raw_plan = self._strip_rag_steps(raw_plan)
         if not replan_context:
             raw_plan = apply_step_list_policy(
                 raw_plan,
                 user_goal=task.goal,
                 project_summary=workspace.project_summary or "",
+                enable_rag=rag_enabled,
             )
         plan = Plan(
             summary=f"Plan for: {task.goal}",
@@ -157,9 +161,11 @@ class PlannerAgent(AgentBase):
                 f"当前计划：{json.dumps(prompt_context.get('current_plan'), ensure_ascii=False)}",
                 f"项目摘要：{prompt_context.get('project_summary', '')}",
                 f"最近测试结果：{json.dumps(prompt_context.get('latest_test_result'), ensure_ascii=False)}",
+                f"RAG 检索是否启用：{self._rag_enabled(task=task, prompt_context=prompt_context)}",
                 f"重规划上下文：{json.dumps(self._extract_replan_context(task=task, prompt_context=prompt_context), ensure_ascii=False)}",
                 f"Orchestrator 策略：{json.dumps(prompt_context.get('orchestrator_context'), ensure_ascii=False)}",
                 "请输出 2-5 个可执行步骤；典型顺序是：分析/理解 → 实现 → 验证（可省略与目标无关的步）。",
+                "如果 RAG 检索未启用，不要规划 retrieve_docs / RAG / 知识库检索步骤。",
                 "如果这是 replan：优先解释如何绕开失败点；若 Tester 失败，通常回到 Coder 修复再 Tester 验证；若某 Agent 被禁用，不要规划给它。",
             ]
         )
@@ -302,6 +308,35 @@ class PlannerAgent(AgentBase):
             if from_context:
                 values.append(from_context)
         return strict_normalize_v2_rag_tokens(values)
+
+    def _rag_enabled(self, *, task: AgentTask, prompt_context: dict[str, object]) -> bool:
+        if task.input_data.get("rag_enabled") is False:
+            return False
+        task_input = prompt_context.get("task_input")
+        if isinstance(task_input, dict) and task_input.get("rag_enabled") is False:
+            return False
+        return True
+
+    def _strip_rag_steps(self, steps: list[PlanStep]) -> list[PlanStep]:
+        stripped: list[PlanStep] = []
+        for step in steps:
+            haystack = " ".join(
+                str(value or "")
+                for value in (step.tool_name, step.title, step.goal, step.description)
+            ).lower()
+            if step.tool_name == "retrieve_docs" or "retrieve_docs" in haystack or "rag" in haystack:
+                stripped.append(
+                    step.model_copy(
+                        update={
+                            "tool_name": None,
+                            "type": "analysis",
+                            "strategy_explanation": "本次运行未启用 RAG，Planner 将检索步骤降级为普通上下文分析。",
+                        }
+                    )
+                )
+            else:
+                stripped.append(step)
+        return stripped
 
     def _extract_replan_context(self, *, task: AgentTask, prompt_context: dict[str, object]) -> dict[str, object]:
         raw = {}

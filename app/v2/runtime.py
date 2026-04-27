@@ -99,6 +99,7 @@ class OrchestratorRuntime:
         max_replans: int = 1,
         enabled_agents: set[str] | list[str] | tuple[str, ...] | None = None,
         review_strategy: dict[str, object] | None = None,
+        use_rag: bool = True,
         rag_id: str | None = None,
         rag_ids: list[str] | None = None,
     ) -> RunResult:
@@ -106,8 +107,8 @@ class OrchestratorRuntime:
         trace_recorder = JsonlTraceRecorder(run_id=run_id)
         workspace = SharedWorkspace(session_id=session_id, run_id=run_id, user_goal=task)
         workspace_store = WorkspaceStore(workspace, workspace_root=workspace_root)
-        normalized_rag_ids = strict_normalize_v2_rag_ids(rag_id=rag_id, rag_ids=rag_ids)
-        normalized_rag_id = normalized_rag_ids[0]
+        normalized_rag_ids = strict_normalize_v2_rag_ids(rag_id=rag_id, rag_ids=rag_ids) if use_rag else []
+        normalized_rag_id = normalized_rag_ids[0] if normalized_rag_ids else ""
         allowed_agents = self._normalize_enabled_agents(enabled_agents)
         orchestrator_policy = self._build_orchestrator_policy(
             enabled_agents=allowed_agents,
@@ -118,8 +119,10 @@ class OrchestratorRuntime:
         )
         orchestrator_context = self._build_orchestrator_context(policy=orchestrator_policy)
         workspace.private_context["orchestrator"] = orchestrator_context
-        workspace.private_context["orchestrator"]["rag_id"] = normalized_rag_id
-        workspace.private_context["orchestrator"]["rag_ids"] = normalized_rag_ids
+        workspace.private_context["orchestrator"]["rag_enabled"] = use_rag
+        if use_rag:
+            workspace.private_context["orchestrator"]["rag_id"] = normalized_rag_id
+            workspace.private_context["orchestrator"]["rag_ids"] = normalized_rag_ids
         context = AgentContext(
             provider=provider,
             model=model,
@@ -161,8 +164,9 @@ class OrchestratorRuntime:
             payload={
                 "orchestrator_policy": orchestrator_policy,
                 "strategy_profile": orchestrator_context.get("strategy_profile", {}),
-                "rag_id": normalized_rag_id,
-                "rag_ids": normalized_rag_ids,
+                "rag_enabled": use_rag,
+                "rag_id": normalized_rag_id if use_rag else None,
+                "rag_ids": normalized_rag_ids if use_rag else [],
             },
         )
         self._record_trace(trace_events, trace_recorder, run_started_event)
@@ -175,7 +179,10 @@ class OrchestratorRuntime:
                 goal=task,
                 step_type="planning",
                 target_agent="planner",
-                input_data={"rag_id": normalized_rag_id, "rag_ids": normalized_rag_ids},
+                input_data={
+                    "rag_enabled": use_rag,
+                    **({"rag_id": normalized_rag_id, "rag_ids": normalized_rag_ids} if use_rag else {}),
+                },
             ),
             workspace=workspace,
             context=context,
@@ -277,7 +284,12 @@ class OrchestratorRuntime:
                 goal=step.goal or step.description or step.title,
                 step_type=step.type,
                 target_agent=step.suggested_agent or "coder",
-                input_data=self._build_step_input(step, rag_id=normalized_rag_id, rag_ids=normalized_rag_ids),
+                input_data=self._build_step_input(
+                    step,
+                    rag_id=normalized_rag_id if use_rag else None,
+                    rag_ids=normalized_rag_ids if use_rag else None,
+                    rag_enabled=use_rag,
+                ),
                 success_criteria=list(step.success_criteria),
                 retry_count=step.retry_count,
                 max_retries=step.max_retries,
@@ -895,8 +907,10 @@ class OrchestratorRuntime:
         *,
         rag_id: str | None = None,
         rag_ids: list[str] | None = None,
+        rag_enabled: bool = True,
     ) -> dict[str, object]:
         input_data: dict[str, object] = {}
+        input_data["rag_enabled"] = rag_enabled
         step_type = getattr(step, "type", "")
         if step_type == "testing":
             vcmd = getattr(step, "verification_command", None)
@@ -911,11 +925,12 @@ class OrchestratorRuntime:
             input_data["tool_name"] = tool_name
         if step_type == "analysis":
             input_data["analysis_mode"] = self._infer_analysis_mode(step)
-        normalized_rag_id = str(rag_id or "").strip()
-        if normalized_rag_id:
-            input_data["rag_id"] = normalized_rag_id
-        if isinstance(rag_ids, list) and rag_ids:
-            input_data["rag_ids"] = [str(item).strip() for item in rag_ids if str(item).strip()]
+        if rag_enabled:
+            normalized_rag_id = str(rag_id or "").strip()
+            if normalized_rag_id:
+                input_data["rag_id"] = normalized_rag_id
+            if isinstance(rag_ids, list) and rag_ids:
+                input_data["rag_ids"] = [str(item).strip() for item in rag_ids if str(item).strip()]
         return input_data
 
     def _normalize_enabled_agents(self, enabled_agents: set[str] | list[str] | tuple[str, ...] | None) -> set[str]:

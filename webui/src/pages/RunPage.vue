@@ -62,19 +62,28 @@
       <textarea v-model="form.system_prompt" />
     </div>
     <div v-else class="v2-agent-config">
+      <label class="v2-rag-toggle">
+        <input type="checkbox" v-model="form.v2_use_rag" />
+        <span>
+          <strong>使用 RAG 检索</strong>
+          <small>普通项目分析/修复可以关闭；只有需要“根据知识库/文档”回答时再启用。</small>
+        </span>
+      </label>
       <div class="grid-two" style="margin-bottom: 10px">
-        <div>
+        <div :class="{ 'is-disabled-block': !form.v2_use_rag }">
           <label>RAG ID（v2）</label>
-          <select v-model="form.rag_id">
+          <select v-model="form.rag_id" :disabled="!form.v2_use_rag">
             <option v-for="item in ragCollections" :key="item.rag_id" :value="item.rag_id">
               {{ item.rag_id }} ({{ item.collection_name }})
             </option>
           </select>
-          <p class="muted" style="margin: 6px 0 0">不填默认使用 <code>default</code>。</p>
+          <p class="muted" style="margin: 6px 0 0">
+            {{ form.v2_use_rag ? "启用后默认使用 default。" : "已关闭，本次运行不会主动规划 retrieve_docs。" }}
+          </p>
         </div>
-        <div>
+        <div :class="{ 'is-disabled-block': !form.v2_use_rag }">
           <label>多 RAG 并查（可选）</label>
-          <select v-model="selectedRagIds" multiple size="4">
+          <select v-model="selectedRagIds" multiple size="4" :disabled="!form.v2_use_rag">
             <option v-for="item in ragCollections" :key="`multi-${item.rag_id}`" :value="item.rag_id">
               {{ item.rag_id }}
             </option>
@@ -181,6 +190,7 @@ const form = reactive({
   system_prompt: "You are a helpful assistant.",
   v2_enabled_agents: [...defaultV2Agents],
   v2_review_strategy: loadReviewStrategy(),
+  v2_use_rag: false,
   rag_id: "default",
 });
 
@@ -238,12 +248,15 @@ async function submitRun() {
     if (form.version === "v1") {
       payload.system_prompt = form.system_prompt;
     } else {
-      payload.rag_id = form.rag_id?.trim() || "default";
-      const ragIds = selectedRagIds.value
-        .map((item) => String(item).trim())
-        .filter(Boolean);
-      if (ragIds.length) {
-        payload.rag_ids = ragIds;
+      payload.v2_use_rag = Boolean(form.v2_use_rag);
+      if (form.v2_use_rag) {
+        payload.rag_id = form.rag_id?.trim() || "default";
+        const ragIds = selectedRagIds.value
+          .map((item) => String(item).trim())
+          .filter(Boolean);
+        if (ragIds.length) {
+          payload.rag_ids = ragIds;
+        }
       }
       payload.v2_enabled_agents = [...form.v2_enabled_agents];
       if (form.v2_enabled_agents.includes("reviewer")) {

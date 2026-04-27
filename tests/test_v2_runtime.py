@@ -743,6 +743,96 @@ def test_v2_runtime_propagates_rag_id_to_planner_and_analysis_steps(tmp_path: Pa
     assert captured["analyst_rag_ids"] == ["opencv_algo", "backend_java"]
 
 
+def test_v2_runtime_can_disable_rag_for_plain_runs(tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trace-rag-disabled.sqlite3")
+    trace_repository = SQLiteTraceRepository(db)
+    registry = AgentRegistry()
+    captured: dict[str, object] = {}
+
+    class PlannerWithoutRagAgent(AgentBase):
+        def __init__(self) -> None:
+            super().__init__(
+                AgentSpec(
+                    agent_id="planner",
+                    role="planner",
+                    description="planner",
+                    capabilities=["plan"],
+                )
+            )
+
+        def run(
+            self,
+            *,
+            task: AgentTask,
+            workspace: SharedWorkspace,
+            context: AgentContext,
+            prompt_context: dict[str, object],
+        ) -> AgentResult:
+            captured["planner_input"] = dict(task.input_data)
+            plan = Plan(
+                summary="one analysis step",
+                steps=[PlanStep(title="分析项目", goal="分析项目", type="analysis", suggested_agent="analyst")],
+            )
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id="planner",
+                status="completed",
+                summary="planned",
+                output_data={"plan": plan.model_dump()},
+            )
+
+    class AnalystWithoutRagAgent(AgentBase):
+        def __init__(self) -> None:
+            super().__init__(
+                AgentSpec(
+                    agent_id="analyst",
+                    role="analyst",
+                    description="analyst",
+                    capabilities=["analysis"],
+                )
+            )
+
+        def run(
+            self,
+            *,
+            task: AgentTask,
+            workspace: SharedWorkspace,
+            context: AgentContext,
+            prompt_context: dict[str, object],
+        ) -> AgentResult:
+            captured["analyst_input"] = dict(task.input_data)
+            return AgentResult(
+                task_id=task.task_id,
+                agent_id="analyst",
+                status="completed",
+                summary="分析完成",
+                output_data={"project_summary": "ok"},
+            )
+
+    registry.register(PlannerWithoutRagAgent())
+    registry.register(AnalystWithoutRagAgent())
+    runtime = OrchestratorRuntime(registry=registry, trace_repository=trace_repository)
+
+    result = runtime.run(
+        provider=DummyProvider(),
+        model="dummy-model",
+        task="帮我分析项目",
+        session_id="test-session",
+        tool_registry=ToolRegistry(workspace_root=tmp_path),
+        workspace_root=tmp_path,
+        max_steps=2,
+        use_rag=False,
+        rag_id="opencv_algo",
+        rag_ids=["opencv_algo", "backend_java"],
+    )
+
+    assert result.status == "completed"
+    assert captured["planner_input"] == {"rag_enabled": False}
+    assert captured["analyst_input"].get("rag_enabled") is False
+    assert "rag_id" not in captured["analyst_input"]
+    assert "rag_ids" not in captured["analyst_input"]
+
+
 def test_v2_runtime_rejects_rag_id_that_collapses_to_default(tmp_path: Path) -> None:
     db = SQLiteDB(tmp_path / "trace-rag-invalid.sqlite3")
     trace_repository = SQLiteTraceRepository(db)

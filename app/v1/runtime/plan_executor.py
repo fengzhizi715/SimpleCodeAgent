@@ -264,6 +264,7 @@ class PlanExecutor:
             persist_session_memory=False,
             root_run_id=effective_root_run_id,
             parent_run_id=effective_root_run_id,
+            is_top_level=False,
         )
         if session_memory is not None and self._is_success_status(summary_result.status):
             session_memory.append(
@@ -456,6 +457,7 @@ class PlanExecutor:
                 persist_session_memory=False,
                 root_run_id=root_run_id,
                 parent_run_id=root_run_id,
+                is_top_level=False,
             )
             normalized_write_candidate = self.direct_tool_executor.normalize_write_candidate_result(last_result)
             if normalized_write_candidate is not None:

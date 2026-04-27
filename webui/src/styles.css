@@ -221,6 +221,40 @@ body {
   background: linear-gradient(180deg, #f8fafc 0%, #f3f6fa 100%);
 }
 
+.v2-rag-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid rgba(14, 116, 144, 0.18);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(14, 116, 144, 0.08), transparent 48%),
+    #fff;
+  cursor: pointer;
+}
+
+.v2-rag-toggle input {
+  width: auto;
+  margin-top: 3px;
+}
+
+.v2-rag-toggle strong,
+.v2-rag-toggle small {
+  display: block;
+}
+
+.v2-rag-toggle small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.is-disabled-block {
+  opacity: 0.62;
+}
+
 .v2-agent-config-head {
   display: flex;
   align-items: flex-start;

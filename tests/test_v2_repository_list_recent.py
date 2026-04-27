@@ -113,11 +113,65 @@ def test_list_recent_runs_hides_v1_internal_plan_runs(tmp_path) -> None:
         is_top_level=False,
         parent_run_id="top-run",
     )
+    memory_repo.save_run(
+        RunResult(
+            id="summary-step-run",
+            run_id="summary-step-run",
+            final_output="总结步骤结果",
+            **common,
+        ),
+        "总任务：帮我分析项目结构\n当前是第 3/3 步。\n步骤标题：总结结果",
+        is_top_level=True,
+        parent_run_id="top-run",
+    )
 
     rows = repo.list_recent_runs_with_workspace(limit=10, offset=0)
 
     assert [row["run_id"] for row in rows] == ["top-run"]
     assert repo.count_runs_with_workspace() == 1
+    assert rows[0]["agent_version"] == "v1"
+
+
+def test_list_recent_runs_shows_v1_final_user_task_even_when_parented(tmp_path) -> None:
+    db = SQLiteDB(tmp_path / "hist-v1-parented-final.sqlite3")
+    memory_repo = SQLiteMemoryRepository(db_path=db.db_path)
+    repo = V2Repository(db)
+
+    common = {
+        "model": "fake-model",
+        "session_id": "sess-v1",
+        "status": "completed",
+        "step_count": 3,
+        "choices": [RunChoice(index=0, message=ChatMessage(role="assistant", content="ok"))],
+    }
+    memory_repo.save_run(
+        RunResult(
+            id="final-run",
+            run_id="final-run",
+            final_output="最终目录分析",
+            **common,
+        ),
+        "帮我分析这个项目的目录结构",
+        is_top_level=False,
+        parent_run_id="root-plan-run",
+    )
+    memory_repo.save_run(
+        RunResult(
+            id="step-run",
+            run_id="step-run",
+            final_output="步骤结果",
+            **common,
+        ),
+        "总任务：帮我分析这个项目的目录结构\n当前是第 2/3 步。",
+        is_top_level=False,
+        parent_run_id="root-plan-run",
+    )
+
+    rows = repo.list_recent_runs_with_workspace(limit=10, offset=0)
+
+    assert [row["run_id"] for row in rows] == ["final-run"]
+    assert repo.count_runs_with_workspace() == 1
+    assert rows[0]["user_goal"] == "帮我分析这个项目的目录结构"
     assert rows[0]["agent_version"] == "v1"
 
 

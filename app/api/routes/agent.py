@@ -89,6 +89,7 @@ class AgentRunRequest(BaseModel):
         default=None,
         description="V2 Reviewer 运行级策略；仅在启用 reviewer 时生效。",
     )
+    v2_use_rag: bool = Field(default=True, description="V2 是否允许本次运行使用 RAG 检索。")
     rag_id: str | None = Field(
         default=None,
         description="可选知识库标识；v2 模式下用于路由 retrieve_docs 到指定 RAG。",
@@ -166,7 +167,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                 model=request.model,
             )
             tool_registry = ToolRegistry(workspace_root=resolved_workdir)
-            tool_registry.register_default_tools(multi_rag=(request.version == "v2"))
+            tool_registry.register_default_tools(multi_rag=(request.version == "v2" and request.v2_use_rag))
             if request.version == "v2":
                 runtime = get_v2_runtime()
                 try:
@@ -186,8 +187,9 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                             if request.v2_review_strategy is not None
                             else None
                         ),
-                        rag_id=request.rag_id,
-                        rag_ids=request.rag_ids,
+                        use_rag=request.v2_use_rag,
+                        rag_id=request.rag_id if request.v2_use_rag else None,
+                        rag_ids=request.rag_ids if request.v2_use_rag else None,
                     )
                 except RagIdValidationError as exc:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

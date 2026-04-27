@@ -400,6 +400,74 @@ def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:
     assert any(line.startswith("run_finished:") for line in trace_lines)
 
 
+def test_v1_cli_planned_run_is_saved_as_top_level_history(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteMemoryRepository(tmp_path / "cli-planned-history.sqlite3")
+
+    class FakeOpenAICompatibleProvider(StaticProvider):
+        def __init__(self, **_: object) -> None:
+            super().__init__([])
+
+    class FakePlanner:
+        def should_plan(self, task: str) -> bool:
+            return True
+
+    class FakeAgentLoop:
+        def run_with_plan(self, **_: object) -> RunResult:
+            return RunResult(
+                id="planned-cli-result",
+                model="fake-model",
+                choices=[],
+                run_id="planned-cli-run",
+                session_id="cli-session@history",
+                status="completed",
+                step_count=3,
+                final_output="planned cli done",
+            )
+
+    monkeypatch.setattr("app.cli.entry.OpenAICompatibleProvider", FakeOpenAICompatibleProvider)
+    monkeypatch.setattr("app.cli.entry.SQLiteMemoryRepository", lambda: repository)
+    monkeypatch.setattr("app.cli.entry.SimplePlanner", FakePlanner)
+    monkeypatch.setattr("app.cli.entry.AgentLoop", FakeAgentLoop)
+    monkeypatch.setattr(
+        ToolRegistry,
+        "register_default_tools",
+        _register_lightweight_tools,
+    )
+
+    result, version, _, _ = run_agent_task(
+        task="cli planned user task",
+        version="v1",
+        model="fake-model",
+        reasoning_mode="default",
+        base_url="https://example.invalid",
+        api_key="fake-key",
+        service_token="",
+        system_prompt="You are helpful.",
+        temperature=0.0,
+        session_id="cli-session",
+        workdir=str(tmp_path),
+        max_steps=3,
+        run_timeout_seconds=30,
+        include_trace=False,
+    )
+
+    row = repository.db.fetchone(
+        """
+        SELECT task, is_top_level, parent_run_id, agent_version, final_output
+        FROM runs
+        WHERE run_id = ?
+        """,
+        (result.run_id,),
+    )
+    assert version == "v1"
+    assert row is not None
+    assert row["task"] == "cli planned user task"
+    assert row["is_top_level"] == 1
+    assert row["parent_run_id"] is None
+    assert row["agent_version"] == "v1"
+    assert row["final_output"] == "planned cli done"
+
+
 def test_v1_timeout_after_successful_write_returns_partial_summary(
     monkeypatch,
     tmp_path: Path,

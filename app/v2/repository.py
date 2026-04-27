@@ -381,7 +381,15 @@ class V2Repository:
             FROM runs r
             LEFT JOIN v2_workspaces w ON w.run_id = r.run_id
             WHERE r.task NOT IN ('<trace-only>', '<artifact-only>')
-              AND COALESCE(r.is_top_level, 1) = 1
+              AND r.task NOT LIKE '[direct-tool]%'
+              AND r.task NOT LIKE '总任务：%'
+              AND r.task NOT LIKE '请基于以下步骤结果%'
+              AND (
+                COALESCE(r.is_top_level, 1) = 1
+                OR (
+                  COALESCE(r.agent_version, CASE WHEN w.run_id IS NOT NULL THEN 'v2' ELSE 'v1' END) = 'v1'
+                )
+              )
               AND r.session_id NOT LIKE '%:v2:coder'
             ORDER BY r.updated_at DESC, r.run_id DESC
             LIMIT ? OFFSET ?
@@ -400,7 +408,15 @@ class V2Repository:
             SELECT COUNT(1) AS cnt
             FROM runs
             WHERE task NOT IN ('<trace-only>', '<artifact-only>')
-              AND COALESCE(is_top_level, 1) = 1
+              AND task NOT LIKE '[direct-tool]%'
+              AND task NOT LIKE '总任务：%'
+              AND task NOT LIKE '请基于以下步骤结果%'
+              AND (
+                COALESCE(is_top_level, 1) = 1
+                OR (
+                  COALESCE(agent_version, 'v1') = 'v1'
+                )
+              )
               AND session_id NOT LIKE '%:v2:coder'
             """
         )

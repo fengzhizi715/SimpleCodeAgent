@@ -203,6 +203,7 @@ def apply_step_list_policy(
     *,
     user_goal: str,
     project_summary: str,
+    enable_rag: bool = True,
 ) -> list[PlanStep]:
     """在 _enrich_step 之前应用：归一化教学友好的默认执行顺序。
 
@@ -211,7 +212,7 @@ def apply_step_list_policy(
     """
     if not steps:
         return steps
-    if _goal_suggests_rag_answer_generation(user_goal):
+    if enable_rag and _goal_suggests_rag_answer_generation(user_goal):
         return [_make_rag_retrieval_step(user_goal), _make_rag_answer_step(user_goal)]
     if not _goal_suggests_implementation_work(user_goal):
         return steps
