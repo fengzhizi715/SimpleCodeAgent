@@ -14,7 +14,7 @@
 ## 相关链接
 
 - OpenVitamin：<https://github.com/fengzhizi715/OpenVitamin>
-- 课程购买：<https://course.example.com/simple-code-agent>（占位，后续替换为正式链接）
+- 课程购买：<https://gttmx.xetlk.com/s/4aaPVM>
 - 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
 
 ---
@@ -279,9 +279,9 @@ webui/          # Vue3 + Vite 前端
 
 这个项目会长期围绕“如何工程化构建编程智能体”持续演进。课程会优先讲清楚可运行闭环和工程边界，而不是追求一次性堆满所有高级能力。
 
-课程购买链接占位：
+课程购买链接：
 
-<https://course.example.com/simple-code-agent>
+<https://gttmx.xetlk.com/s/4aaPVM>
 
 ---
 
