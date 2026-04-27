@@ -23,9 +23,9 @@
 
 - 想系统学习 Code Agent 内部实现的人
 - 想理解 Tool Calling、RAG、Memory、Trace、Runtime Loop 的开发者
+- 想了解智能体开发的工程师
 - 想从单 Agent 过渡到多 Agent 编排的工程师
-- 想做 Agent 教学、Demo、课程或技术分享的人
-- 想参考一个“不过度抽象，但边界清楚”的 Agent 工程骨架的人
+- 想了解智能体原理的工程师，而不是只用使用 LangChain、LangGraph 等框架
 
 ---
 
