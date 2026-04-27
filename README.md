@@ -18,7 +18,7 @@
 ## 版本定位
 
 - `app/v1`：单 Agent Runtime（稳定、可预测、便于教学）
-- `app/v2`：中心化多 Agent Runtime（Orchestrator + Planner/Analyst/Coder/Tester/Reviewer）
+- `app/v2`：中心化多 Agent Runtime（可用阶段/Beta，Orchestrator + Planner/Analyst/Coder/Tester/Reviewer）
 
 ### RAG 策略（当前版本）
 

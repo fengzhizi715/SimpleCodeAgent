@@ -1,6 +1,6 @@
 # 使用说明
 
-本文档用于说明如何在本地运行和演示 `Simple Code Agent`（`v1` 主线 + `v2` MVP）。
+本文档用于说明如何在本地运行和演示 `Simple Code Agent`（`v1` 主线 + `v2` 可用阶段（Beta））。
 
 如果你准备继续维护项目实现，而不是只做使用验证，建议同时阅读：
 
@@ -170,13 +170,13 @@ LLM_REASONING_PARAM_STYLE=none
 
 该命令会打印当前默认注册的角色、实现类和 capabilities，便于课堂展示 “planner / analyst / coder / tester / reviewer” 的分工。
 
-`v2` 已可运行（MVP 阶段），可以用下面命令快速验证：
+`v2` 已进入可用阶段（Beta），可以用下面命令快速验证：
 
 ```bash
 .venv/bin/python scripts/run_cli.py "hello" --version v2
 ```
 
-`v2` 当前定位是“中心化多 Agent MVP 骨架”，能力仍在持续增强，详细状态见 `docs/v2_status.md`。
+`v2` 当前定位是“中心化多 Agent 可用阶段（Beta）”，能力仍在持续增强，详细状态见 `docs/v2_status.md`。
 
 CLI 运行完成后还会额外输出：
 
