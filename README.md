@@ -202,21 +202,22 @@ WebUI 主要用于教学演示、调试和回放。
 
 ![Run 页面截图占位](docs/images/webui-run-placeholder.png)
 
-### 3. History 页面
+### 3. 执行详情页
+
+![执行详情页截图占位](docs/images/webui-run-detail-placeholder.png)
+
+### 4. History 页面
 
 ![History 页面截图占位](docs/images/webui-history-placeholder.png)
 
-### 4. RAG 列表页
+### 5. RAG 列表页
 
 ![RAG 列表页截图占位](docs/images/webui-rag-list-placeholder.png)
 
-### 5. RAG 详情页
+### 6. RAG 详情页
 
 ![RAG 详情页截图占位](docs/images/webui-rag-detail-placeholder.png)
 
-### 6. 执行详情页
-
-![执行详情页截图占位](docs/images/webui-run-detail-placeholder.png)
 
 ### 7. Trace 页面
 
