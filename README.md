@@ -14,7 +14,7 @@
 ## 相关链接
 
 - OpenVitamin：<https://github.com/fengzhizi715/OpenVitamin>
-- 课程购买：<https://gttmx.xetlk.com/s/4aaPVM>
+- 基础课程购买：<https://gttmx.xetlk.com/s/4aaPVM>
 - 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
 
 ---
@@ -282,17 +282,6 @@ webui/          # Vue3 + Vite 前端
 课程购买链接：
 
 <https://gttmx.xetlk.com/s/4aaPVM>
-
----
-
-## 设计原则
-
-- 先跑通，再抽象。
-- 先保持 v1 稳定，再演进 v2。
-- Agent 必须通过 Tool 执行动作。
-- Contract 优先，避免在核心边界传裸字典。
-- Trace 和运行历史是一等能力，不是附属日志。
-- 教学项目要能解释清楚每一层为什么存在。
 
 ---
 
