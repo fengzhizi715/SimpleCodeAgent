@@ -1,179 +1,155 @@
-# Simple Code Agent
+# SimpleCodeAgent
 
-一个用于演示编程智能体演进路径的 Python 项目。
+一个用于演示 **编程智能体工程化演进** 的开源项目：  
+在同一仓库中同时维护可运行的 `v1`（单 Agent）与 `v2`（中心化多 Agent）。
 
-当前仓库采用单仓库双版本结构：
+---
 
-- `app/v1`：当前可运行的单 Agent 版本
-- `app/v2`：中心化多 Agent 版本，当前为 MVP 骨架阶段
+## 项目亮点
 
-当前已经具备这些能力：
+- 双版本共存：`v1` 稳定教学闭环 + `v2` 多 Agent 编排演进
+- 完整运行入口：CLI、FastAPI、Web UI（Vite）
+- 可观测性：Trace 事件、运行历史、回放与执行详情页面
+- RAG 能力：文档导入、向量检索、RAG 库管理
+- 工程化边界清晰：`core/contracts/trace/api` 与 `v1/v2` 实现层分离
 
-- OpenAI-compatible LLM Provider 抽象
-- Pydantic contract 层
-- Tool Registry 与代码操作工具
-- Session memory 与 SQLite 持久化
-- Planner + Agent loop
-- RAG 文档导入与检索
-- Trace 记录、查看与 API 查询
-- CLI 与 FastAPI 服务入口
-- Web UI（概况、运行、历史、智能体、执行详情/Trace）
-- 统一日志输出
+---
+
+## 版本定位
+
+- `app/v1`：单 Agent Runtime（稳定、可预测、便于教学）
+- `app/v2`：中心化多 Agent Runtime（Orchestrator + Planner/Analyst/Coder/Tester/Reviewer）
+
+### RAG 策略（当前版本）
+
+- **v1：严格单库**
+  - 仅允许默认库 `default`
+  - 任意路径不支持多库并查
+- **v2：支持多库**
+  - 支持 `rag_id` 与 `rag_ids`
+  - 支持多库并查与统一重排
+  - 对 `rag_id` 做严格规范化校验（与创建接口一致）
+
+---
 
 ## 快速开始
 
-1. 创建并激活虚拟环境
+### 1) 创建虚拟环境并安装依赖
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-```
-
-2. 安装依赖
-
-```bash
 pip install -r requirements.txt
 ```
 
-3. 配置环境变量
+### 2) 配置环境变量
 
 ```bash
 cp .env.example .env
 ```
 
-4. 填写至少这几个配置
+最小可用配置示例：
 
 ```env
 LLM_BASE_URL=http://127.0.0.1:8000/v1
 LLM_AUTH_MODE=service_token
 LLM_SERVICE_TOKEN=your-service-token
 LLM_MODEL=your-model
-SESSION_ID=demo-session
 WORKDIR=/absolute/path/to/your/project
+SESSION_ID=demo-session
 ```
 
-5. 运行一个最小任务
+### 3) 运行方式
 
-```bash
-.venv/bin/python scripts/run_cli.py "解释一下这个类的作用" \
-  --version v1
-```
-
-如果你在 `.env` 里配置了 `SESSION_ID`，连续运行时会默认落到同一个会话。
-
-## 目录结构
-
-```text
-app/
-  api/          # HTTP 服务入口与路由
-  cli/          # CLI 入口复用的参数与执行封装
-  contracts/    # 跨模块共享的数据协议
-  core/         # 配置、日志、异常等基础能力
-  db/           # SQLite 连接与迁移
-  llm/          # LLM Provider 抽象与适配
-  trace/        # Trace 记录、存储与展示
-  v1/           # 当前单 Agent 版本实现
-    memory/     # 会话记忆与摘要记忆
-    planner/    # 任务拆解与步骤规划
-    rag/        # 文档切分、向量化与检索
-    runtime/    # Agent 主循环、规划执行与 direct tool 执行
-    tools/      # 工具定义、注册与代码操作工具
-  v2/           # 中心化多 Agent MVP 实现（持续演进）
-docs/           # 项目文档与使用手册
-scripts/        # 本地运行、导入和调试脚本
-demo_workspace/ # 编程任务演示工作区
-logs/           # 按天滚动的运行日志（默认保留 30 天）
-```
-
-## 版本说明
-
-- `v1`：当前默认版本，已实现单 Agent runtime、planner、memory、tools、rag
-- `v2`：已具备多 Agent MVP 骨架，包括 orchestrator runtime、planner / analyst / coder / tester、shared workspace 与基础 trace，但仍未完成全部目标能力
-
-当前 CLI 与 API 都支持显式传 `version`：
-
-- CLI：`--version v1|v2`
-- API：请求体中的 `"version": "v1" | "v2"`
-
-当前 API 与 CLI 都已可进入 `v2`，但 `v2` 仍处于持续演进阶段。
-
-## 使用说明
-
-详细使用手册见：
-
-- [docs/usage_guide.md](docs/usage_guide.md)
-
-其中包含：
-
-- CLI 用法
-- Demo 演示脚本与推荐提示词
-- `SESSION_ID` 默认会话行为
-- 项目级 session 自动派生
-- `WORKDIR` / `--workdir` 用法
-- RAG 文档导入与单文件导入
-- 如何触发 RAG 检索
-- `OpenVitamin` 接入建议
-- FastAPI 调用方式
-- 可选 `webui/` 浏览器界面（`v2` 演示，见 `usage_guide` 的「5.1 Web UI」）
-- Trace 查看
-- Coding demo 演示流程
-
-## Web UI 亮点（当前版本）
-
-- 概况页：显示 API 健康状态、`LLM_BASE_URL`、`LLM_MODEL`，并支持在线更新 LLM 配置
-- 运行页：支持 `v1/v2`，可设置 `max_steps` 与 `run_timeout_seconds`
-- 历史页：支持分页、筛选、删除与回放入口
-- 智能体页：只读展示当前注册智能体列表
-- 执行详情页：支持流程可视化（agent 交接链路、状态颜色、节点摘要）
-
-单文件导入示例：
-
-```bash
-.venv/bin/python scripts/ingest_docs.py --file /absolute/path/to/file.docx
-```
-
-开发者架构说明见：
-
-- [docs/architecture.md](docs/architecture.md)
-- [docs/teaching_roadmap.md](docs/teaching_roadmap.md)
-- [docs/v2_status.md](docs/v2_status.md)
-
-## 常用入口
-
-模块入口（快速本地验证）：
-
-```bash
-python -m app.main "你好，介绍一下你自己" --version v1
-```
-
-启动脚本：
-
-```bash
-./start.sh "你好，介绍一下你自己"
-```
-
-一键启动 **API（8000）+ Web UI（5173）**（推荐，避免只开 Vite 时出现代理 `ECONNREFUSED`）：
+一键启动 API + Web UI（推荐）：
 
 ```bash
 ./run-all.sh
 ```
 
-若仅启动后端（用于 API / Swagger / Web UI 代理）：
+或分别启动：
 
 ```bash
+# backend
 .venv/bin/uvicorn app.api.server:app --host 127.0.0.1 --port 8000
-```
 
-若你已手动启动了 `uvicorn`，只需 Web UI：
-
-```bash
+# frontend
 ./webui/start.sh
 ```
 
+---
+
+## 使用示例
+
+### CLI
+
+```bash
+.venv/bin/python scripts/run_cli.py "解释这个模块的主要职责" --version v1
+```
+
+```bash
+.venv/bin/python scripts/run_cli.py "先分析再改代码并执行测试" --version v2
+```
+
+### 文档导入（RAG）
+
+```bash
+.venv/bin/python scripts/ingest_docs.py --file /absolute/path/to/your/file.md
+```
+
+---
+
+## Web UI 页面
+
+默认地址：`http://localhost:5173`
+
+- `/overview`：系统概况与运行状态
+- `/run`：任务运行入口（支持 v1/v2）
+- `/history`：运行历史与回放入口
+- `/agents`：Agent 列表
+- `/rag`：RAG 列表页（创建/查看各知识库）
+- `/rag/:ragId`：RAG 详情页（该库上传、重建、删除、概览）
+- `/runs/:runId`：执行详情
+- `/runs/:runId/trace`：Trace 时间线
+
+---
+
+## API 入口（简要）
+
+- `POST /agent/run`：运行任务（`version: v1|v2`）
+- `GET /debug/rag/collections`：列出 RAG 库
+- `POST /debug/rag/collections`：创建 RAG 库
+- `GET /debug/rag/overview`：查询指定库概览
+- `POST /debug/rag/upload`：上传并导入文件
+- `POST /debug/rag/reindex-source`：重建单文件索引
+- `POST /debug/rag/delete-source`：按 source 删除向量分块
+
+---
+
+## 目录结构
+
+```text
+app/
+  api/          # HTTP 路由与服务入口
+  cli/          # CLI 运行封装
+  contracts/    # 跨模块协议（Pydantic）
+  core/         # 配置、日志、异常
+  db/           # SQLite 基础能力
+  llm/          # LLM Provider 抽象
+  trace/        # Trace 记录与查询
+  v1/           # 单 Agent 实现
+  v2/           # 多 Agent 实现
+docs/           # 架构与使用文档
+scripts/        # 本地脚本入口
+webui/          # Vue3 + Vite 前端
+```
+
+---
+
 ## 文档导航
 
-- 使用与演示：[`docs/usage_guide.md`](docs/usage_guide.md)
-- 架构与边界：[`docs/architecture.md`](docs/architecture.md)
+- 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
+- 架构说明：[`docs/architecture.md`](docs/architecture.md)
 - Runtime 约束：[`docs/agent_runtime.md`](docs/agent_runtime.md)
 - Tool 总览：[`docs/tooling.md`](docs/tooling.md)
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
@@ -181,8 +157,17 @@ python -m app.main "你好，介绍一下你自己" --version v1
 - 演进路线：[`docs/teaching_roadmap.md`](docs/teaching_roadmap.md)
 - V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
-## 当前限制
+---
 
-- `v2` 仍是 MVP 骨架，尚未完成全部多 Agent 能力
-- 当前默认 Provider 是 OpenAI-compatible 协议
-- streaming API 还没有接入
+## 开源建议
+
+- 提交 Issue 时附上：
+  - 运行命令
+  - `version`（v1/v2）
+  - 关键日志或 Trace 片段
+  - 复现步骤
+- 提交 PR 时建议说明：
+  - 改动动机（why）
+  - 行为变化（what changed）
+  - 回归风险与测试范围
+
