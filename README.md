@@ -114,6 +114,40 @@ SESSION_ID=demo-session
 
 ---
 
+## Web UI 截图（占位）
+
+> 说明：下面先保留占位，你后续把图片放到 `docs/images/`（或你自己的目录）后，直接替换链接即可。
+
+### 1) Overview 页面
+
+![Overview 页面截图占位](docs/images/webui-overview-placeholder.png)
+
+### 2) Run 页面
+
+![Run 页面截图占位](docs/images/webui-run-placeholder.png)
+
+### 3) History 页面
+
+![History 页面截图占位](docs/images/webui-history-placeholder.png)
+
+### 4) RAG 列表页
+
+![RAG 列表页截图占位](docs/images/webui-rag-list-placeholder.png)
+
+### 5) RAG 详情页
+
+![RAG 详情页截图占位](docs/images/webui-rag-detail-placeholder.png)
+
+### 6) 执行详情页
+
+![执行详情页截图占位](docs/images/webui-run-detail-placeholder.png)
+
+### 7) Trace 页面
+
+![Trace 页面截图占位](docs/images/webui-trace-placeholder.png)
+
+---
+
 ## API 入口（简要）
 
 - `POST /agent/run`：运行任务（`version: v1|v2`）
