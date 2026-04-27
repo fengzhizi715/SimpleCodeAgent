@@ -271,7 +271,7 @@ webui/          # Vue3 + Vite 前端
 - Tool 总览：[`docs/tooling.md`](docs/tooling.md)
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
-- 教学路线：[`docs/teaching_roadmap.md`](docs/teaching_roadmap.md)
+- 教学路线：[`docs/teaching_roadmap.md`](docs/v1/teaching_roadmap.md)
 - V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ---
