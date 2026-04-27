@@ -4,10 +4,10 @@
 
 这个仓库不是为了做一个“大而全”的 Agent 框架，而是用一套可运行、可观察、可逐步扩展的代码，讲清楚一个 Code Agent 如何从 **单 Agent Runtime** 演进到 **中心化多 Agent 编排系统**。
 
-你可以把它理解为一门课程的配套工程：
+你可以把它理解为一个系列课程的配套工程：
 
-- `v1`：从零实现一个可运行的单 Agent CodeAgent
-- `v2`：在不破坏 v1 的前提下，演进出多 Agent 协作、共享上下文、失败回流和可观测链路
+- `v1`基础课：从零实现一个可运行的单 Agent CodeAgent
+- `v2`高级课：在不破坏 v1 的前提下，演进出多 Agent 协作、共享上下文、失败回流和可观测链路
 
 ---
 
@@ -16,7 +16,6 @@
 - OpenVitamin：<https://github.com/fengzhizi715/OpenVitamin>
 - 课程购买：<https://course.example.com/simple-code-agent>（占位，后续替换为正式链接）
 - 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
-- V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ---
 
@@ -32,7 +31,7 @@
 
 ## 你会在这里看到什么
 
-### V1：单 Agent 基础闭环
+### V1：单 Agent 基础闭环(基础课)
 
 `app/v1` 是一个轻量、稳定、适合教学的单 Agent Runtime，重点讲清楚：
 
@@ -46,7 +45,7 @@
 - Trace 与运行记录
 - CLI / HTTP API 基础入口
 
-### V2：中心化多 Agent 编排
+### V2：中心化多 Agent 编排(高级课)
 
 `app/v2` 是基于 v1 基础设施演进出来的多 Agent 版本，重点展示：
 
