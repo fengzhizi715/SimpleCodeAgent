@@ -80,6 +80,7 @@ ehthumbs.db
 chroma/
 backend/data/
 
+.rag/
 .traces/
 demo_workspace/
 
