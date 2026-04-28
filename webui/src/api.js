@@ -55,6 +55,12 @@ export async function updateLLMSettings(input) {
   });
 }
 
+export async function validateLLMSettings() {
+  return requestJson("/debug/settings/llm/validate", {
+    method: "POST",
+  });
+}
+
 export async function runAgent(input) {
   return requestJson("/agent/run", {
     method: "POST",
@@ -86,6 +92,13 @@ export async function deleteRun(runId) {
 
 export async function listAgents() {
   return requestJson("/debug/agents");
+}
+
+export async function getUsageSummary({ recentLimit = 20 } = {}) {
+  const params = new URLSearchParams({
+    recent_limit: String(recentLimit),
+  });
+  return requestJson(`/debug/usage/summary?${params.toString()}`);
 }
 
 export const listV2Runs = listRuns;

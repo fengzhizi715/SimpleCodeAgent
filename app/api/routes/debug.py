@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import base64
+from time import perf_counter
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.api.deps import get_trace_repository, get_v2_runtime
+from app.api.deps import get_provider, get_trace_repository, get_v2_runtime
+from app.contracts.message import ChatMessage
+from app.contracts.run import RunRequest
 from app.core.config import (
     BASE_DIR,
     get_effective_llm_base_url,
@@ -17,6 +20,7 @@ from app.core.config import (
     update_llm_runtime_settings,
 )
 from app.core.exceptions import RagIdValidationError
+from app.llm.client import LLMProviderError
 from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
@@ -52,6 +56,18 @@ class LLMSettingsUpdateRequest(BaseModel):
 
     llm_base_url: str = Field(min_length=1, description="新的 LLM_BASE_URL。")
     llm_model: str = Field(min_length=1, description="新的 LLM_MODEL。")
+
+
+class LLMSettingsValidateResponse(BaseModel):
+    """LLM 配置联通性校验响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    llm_base_url: str
+    llm_model: str
+    latency_ms: int
+    message: str = "LLM 配置校验通过。"
 
 
 class TraceQueryResponse(BaseModel):
@@ -162,6 +178,18 @@ class AgentCatalogResponse(BaseModel):
 
     total: int = 0
     agents: list[AgentCatalogItem] = Field(default_factory=list)
+
+
+class UsageSummaryResponse(BaseModel):
+    """Token usage Dashboard 聚合响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    totals: dict[str, object] = Field(default_factory=dict)
+    by_version: list[dict[str, object]] = Field(default_factory=list)
+    by_model: list[dict[str, object]] = Field(default_factory=list)
+    by_day: list[dict[str, object]] = Field(default_factory=list)
+    recent_runs: list[dict[str, object]] = Field(default_factory=list)
 
 
 class RagFileItem(BaseModel):
@@ -335,6 +363,36 @@ def update_llm_settings(request: LLMSettingsUpdateRequest) -> HealthResponse:
     return healthz()
 
 
+@router.post(
+    "/debug/settings/llm/validate",
+    response_model=LLMSettingsValidateResponse,
+    status_code=status.HTTP_200_OK,
+)
+def validate_llm_settings() -> LLMSettingsValidateResponse:
+    """校验当前生效的 LLM 配置是否可调用（发起一次最小 chat 请求）。"""
+    provider = get_provider()
+    started = perf_counter()
+    try:
+        provider.chat(
+            RunRequest(
+                messages=[ChatMessage(role="user", content="ping")],
+                model=get_effective_llm_model(),
+                reasoning_mode="low",
+                temperature=0.0,
+                max_tokens=8,
+            )
+        )
+    except (LLMProviderError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"LLM 配置校验失败：{exc}") from exc
+    latency_ms = int((perf_counter() - started) * 1000)
+    return LLMSettingsValidateResponse(
+        ok=True,
+        llm_base_url=get_effective_llm_base_url(),
+        llm_model=get_effective_llm_model(),
+        latency_ms=latency_ms,
+    )
+
+
 @router.get("/debug/traces/{run_id}", response_model=TraceQueryResponse, status_code=status.HTTP_200_OK)
 def get_trace(run_id: str) -> TraceQueryResponse:
     """按 run_id 查询 Trace 时间线。"""
@@ -399,6 +457,15 @@ def list_agents() -> AgentCatalogResponse:
         for spec in specs
     ]
     return AgentCatalogResponse(total=len(agents), agents=agents)
+
+
+@router.get("/debug/usage/summary", response_model=UsageSummaryResponse, status_code=status.HTTP_200_OK)
+def get_usage_summary(
+    recent_limit: int = Query(default=20, ge=1, le=100, description="最近高消耗 run 返回数量。"),
+) -> UsageSummaryResponse:
+    """返回 token usage 聚合数据，供 Dashboard 展示。"""
+    summary = get_v2_runtime().get_usage_summary_for_ui(recent_limit=recent_limit)
+    return UsageSummaryResponse.model_validate(summary)
 
 
 @router.delete("/debug/v2/runs/{run_id}", response_model=V2DeleteRunResponse, status_code=status.HTTP_200_OK)

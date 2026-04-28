@@ -20,6 +20,7 @@ from app.api.deps import (
 )
 from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
+from app.core.config import get_effective_llm_model
 from app.core.exceptions import AppError, RagIdValidationError, UnsupportedAgentVersionError
 from app.core.logger import get_logger, log_context
 from app.core.session import derive_project_session_id
@@ -135,7 +136,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                 status_code=400,
                 detail="v1 仅支持默认向量库（default）；请使用 v2 访问自定义 rag_id。",
             )
-    resolved_model = request.model or settings.llm_model
+    resolved_model = request.model or get_effective_llm_model()
     if not resolved_model:
         raise HTTPException(status_code=400, detail="缺少模型名，请在请求中传入 model 或配置 LLM_MODEL。")
     if not (request.api_key or request.service_token or settings.llm_api_key or settings.llm_service_token):
@@ -152,7 +153,7 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         logger.info(
             "Received API run request: version=%s model=%s workdir=%s reasoning_mode=%s include_trace=%s",
             request.version,
-            request.model or settings.llm_model or "<missing>",
+            resolved_model or "<missing>",
             resolved_workdir or "<current-repo>",
             request.reasoning_mode,
             request.include_trace,

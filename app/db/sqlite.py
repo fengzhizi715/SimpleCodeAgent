@@ -66,6 +66,7 @@ class SQLiteDB:
             self._ensure_runs_agent_version_column(conn)
             self._ensure_runs_hierarchy_columns(conn)
             self._ensure_runs_workdir_column(conn)
+            self._ensure_runs_usage_columns(conn)
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_trace_index_session_id_created_at
@@ -170,6 +171,21 @@ class SQLiteDB:
         }
         if "workdir" not in existing_columns:
             conn.execute("ALTER TABLE runs ADD COLUMN workdir TEXT")
+
+    def _ensure_runs_usage_columns(self, conn: sqlite3.Connection) -> None:
+        """为 runs 表补齐 token usage 统计列。"""
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+        }
+        required_columns = {
+            "prompt_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "completion_tokens": "INTEGER NOT NULL DEFAULT 0",
+            "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column_name, column_type in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {column_name} {column_type}")
 
     def connect(self) -> sqlite3.Connection:
         """打开或复用当前线程的 SQLite 连接。"""

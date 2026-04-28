@@ -135,13 +135,14 @@ class SQLiteMemoryRepository(MemoryRepository):
             """,
             (run.session_id, timestamp, timestamp),
         )
+        usage = run.usage
         self.db.execute(
             """
             INSERT INTO runs (
                 run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
-                created_at, updated_at, agent_version
+                prompt_tokens, completion_tokens, total_tokens, created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v1')
             ON CONFLICT(run_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 model = excluded.model,
@@ -152,6 +153,9 @@ class SQLiteMemoryRepository(MemoryRepository):
                 status = excluded.status,
                 step_count = excluded.step_count,
                 final_output = excluded.final_output,
+                prompt_tokens = excluded.prompt_tokens,
+                completion_tokens = excluded.completion_tokens,
+                total_tokens = excluded.total_tokens,
                 agent_version = 'v1',
                 updated_at = excluded.updated_at
             """,
@@ -166,6 +170,9 @@ class SQLiteMemoryRepository(MemoryRepository):
                 run.status,
                 run.step_count,
                 run.final_output,
+                usage.prompt_tokens if usage is not None else 0,
+                usage.completion_tokens if usage is not None else 0,
+                usage.total_tokens if usage is not None else 0,
                 timestamp,
                 timestamp,
             ),

@@ -104,14 +104,19 @@ class V2Repository:
             return
         self.ensure_session(result.session_id)
         timestamp = self.db.now()
+        usage = result.usage
         self.db.execute(
             """
             INSERT INTO runs (
                 run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
-                created_at, updated_at, agent_version
+                prompt_tokens, completion_tokens, total_tokens, created_at, updated_at, agent_version
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
             ON CONFLICT(run_id) DO UPDATE SET
+                model = CASE
+                    WHEN excluded.model = '' THEN runs.model
+                    ELSE excluded.model
+                END,
                 task = excluded.task,
                 workdir = COALESCE(excluded.workdir, runs.workdir),
                 is_top_level = excluded.is_top_level,
@@ -119,6 +124,9 @@ class V2Repository:
                 status = excluded.status,
                 step_count = excluded.step_count,
                 final_output = excluded.final_output,
+                prompt_tokens = excluded.prompt_tokens,
+                completion_tokens = excluded.completion_tokens,
+                total_tokens = excluded.total_tokens,
                 agent_version = 'v2',
                 updated_at = excluded.updated_at
             """,
@@ -133,6 +141,9 @@ class V2Repository:
                 result.status,
                 result.step_count,
                 result.final_output,
+                usage.prompt_tokens if usage is not None else 0,
+                usage.completion_tokens if usage is not None else 0,
+                usage.total_tokens if usage is not None else 0,
                 timestamp,
                 timestamp,
             ),
@@ -421,6 +432,101 @@ class V2Repository:
             """
         )
         return int(row["cnt"]) if row is not None else 0
+
+    def get_usage_summary_for_ui(self, *, recent_limit: int = 20) -> dict[str, Any]:
+        """聚合顶层运行的 token usage，供 Dashboard 展示。"""
+        where_clause = """
+            task NOT IN ('<trace-only>', '<artifact-only>')
+            AND task NOT LIKE '[direct-tool]%'
+            AND task NOT LIKE '总任务：%'
+            AND task NOT LIKE '请基于以下步骤结果%'
+            AND (
+              COALESCE(is_top_level, 1) = 1
+              OR COALESCE(agent_version, 'v1') = 'v1'
+            )
+            AND session_id NOT LIKE '%:v2:coder'
+        """
+        totals = self.db.fetchone(
+            f"""
+            SELECT
+                COUNT(1) AS run_count,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM runs
+            WHERE {where_clause}
+            """
+        )
+        by_version = self.db.fetchall(
+            f"""
+            SELECT
+                COALESCE(agent_version, 'v1') AS agent_version,
+                COUNT(1) AS run_count,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM runs
+            WHERE {where_clause}
+            GROUP BY COALESCE(agent_version, 'v1')
+            ORDER BY total_tokens DESC, run_count DESC
+            """
+        )
+        by_model = self.db.fetchall(
+            f"""
+            SELECT
+                model,
+                COUNT(1) AS run_count,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM runs
+            WHERE {where_clause}
+            GROUP BY model
+            ORDER BY total_tokens DESC, run_count DESC
+            """
+        )
+        by_day = self.db.fetchall(
+            f"""
+            SELECT
+                substr(updated_at, 1, 10) AS day,
+                COUNT(1) AS run_count,
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens
+            FROM runs
+            WHERE {where_clause}
+            GROUP BY substr(updated_at, 1, 10)
+            ORDER BY day DESC
+            LIMIT 14
+            """
+        )
+        recent_runs = self.db.fetchall(
+            f"""
+            SELECT
+                run_id,
+                session_id,
+                model,
+                task,
+                status,
+                COALESCE(agent_version, 'v1') AS agent_version,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                updated_at
+            FROM runs
+            WHERE {where_clause}
+            ORDER BY total_tokens DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (recent_limit,),
+        )
+        return {
+            "totals": dict(totals) if totals is not None else {},
+            "by_version": [dict(row) for row in by_version],
+            "by_model": [dict(row) for row in by_model],
+            "by_day": [dict(row) for row in by_day],
+            "recent_runs": [dict(row) for row in recent_runs],
+        }
 
     def delete_run_for_ui(self, run_id: str) -> bool:
         """删除单条 run 及其 V2 关联数据。"""

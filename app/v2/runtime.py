@@ -162,6 +162,7 @@ class OrchestratorRuntime:
             event_type="run_started",
             message="V2 orchestrator run started.",
             payload={
+                "model": model,
                 "orchestrator_policy": orchestrator_policy,
                 "strategy_profile": orchestrator_context.get("strategy_profile", {}),
                 "rag_enabled": use_rag,
@@ -521,6 +522,10 @@ class OrchestratorRuntime:
     def count_runs_for_ui(self) -> int:
         """返回带 workspace 的 V2 运行总数。"""
         return self.v2_repository.count_runs_with_workspace()
+
+    def get_usage_summary_for_ui(self, *, recent_limit: int = 20) -> dict[str, object]:
+        """返回 token usage 聚合数据，供 Dashboard 展示。"""
+        return self.v2_repository.get_usage_summary_for_ui(recent_limit=recent_limit)
 
     def delete_run_for_ui(self, run_id: str) -> bool:
         """删除单条 V2 run 及其关联记录。"""

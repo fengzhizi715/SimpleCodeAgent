@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import OverviewPage from "./pages/OverviewPage.vue";
+import DashboardPage from "./pages/DashboardPage.vue";
 import RunPage from "./pages/RunPage.vue";
 import HistoryPage from "./pages/HistoryPage.vue";
 import RunExecutionPage from "./pages/RunExecutionPage.vue";
@@ -12,6 +13,7 @@ import AgentsPage from "./pages/AgentsPage.vue";
 const routes = [
   { path: "/", redirect: "/overview" },
   { path: "/overview", name: "overview", component: OverviewPage, meta: { title: "系统概况" } },
+  { path: "/dashboard", name: "dashboard", component: DashboardPage, meta: { title: "Token Dashboard" } },
   { path: "/run", name: "run", component: RunPage, meta: { title: "运行任务" } },
   { path: "/history", name: "history", component: HistoryPage, meta: { title: "运行历史" } },
   { path: "/agents", name: "agents", component: AgentsPage, meta: { title: "智能体列表" } },

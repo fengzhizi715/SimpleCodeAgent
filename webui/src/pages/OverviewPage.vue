@@ -36,10 +36,20 @@
             <label>LLM_MODEL</label>
             <input v-model="llmForm.llm_model" placeholder="gpt-4.1-mini" />
             <div class="row overview-llm-actions">
-              <button class="btn-secondary btn-sm" :disabled="savingLLM" @click="saveLLMSettings">
-                {{ savingLLM ? "保存中…" : "保存 LLM 配置" }}
-              </button>
-              <span v-if="llmError" class="error">{{ llmError }}</span>
+              <div class="overview-llm-buttons">
+                <button class="btn-secondary btn-sm" :disabled="savingLLM" @click="saveLLMSettings">
+                  {{ savingLLM ? "保存中…" : "保存 LLM 配置" }}
+                </button>
+                <button
+                  class="btn-secondary btn-sm"
+                  :disabled="validatingLLM || savingLLM"
+                  @click="validateCurrentLLMSettings"
+                >
+                  {{ validatingLLM ? "校验中…" : "校验 LLM 连通性" }}
+                </button>
+              </div>
+              <span v-if="llmValidateMessage" class="muted overview-llm-message">{{ llmValidateMessage }}</span>
+              <span v-if="llmError" class="error overview-llm-message">{{ llmError }}</span>
             </div>
           </div>
           <p v-else class="muted overview-meta">请在本机 <code>8000</code> 端口启动 FastAPI 后刷新本页。</p>
@@ -97,7 +107,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import { getHealthz, listAgents, listV2Runs, updateLLMSettings } from "../api";
+import { getHealthz, listAgents, listV2Runs, updateLLMSettings, validateLLMSettings } from "../api";
 
 const overviewLoading = ref(true);
 const statsLoading = ref(true);
@@ -109,7 +119,9 @@ const agentsTotal = ref(null);
 const agentNames = ref([]);
 const lastUpdatedAt = ref(null);
 const savingLLM = ref(false);
+const validatingLLM = ref(false);
 const llmError = ref("");
+const llmValidateMessage = ref("");
 const llmForm = ref({
   llm_base_url: "",
   llm_model: "",
@@ -167,6 +179,7 @@ async function loadOverview() {
 
 async function saveLLMSettings() {
   llmError.value = "";
+  llmValidateMessage.value = "";
   const llmBaseUrl = llmForm.value.llm_base_url.trim();
   const llmModel = llmForm.value.llm_model.trim();
   if (!llmBaseUrl || !llmModel) {
@@ -190,6 +203,22 @@ async function saveLLMSettings() {
     llmError.value = err instanceof Error ? err.message : "保存失败";
   } finally {
     savingLLM.value = false;
+  }
+}
+
+async function validateCurrentLLMSettings() {
+  llmError.value = "";
+  llmValidateMessage.value = "";
+  validatingLLM.value = true;
+  try {
+    const result = await validateLLMSettings();
+    llmValidateMessage.value = `校验通过（${result.latency_ms} ms）`;
+    apiOk.value = true;
+    lastUpdatedAt.value = new Date();
+  } catch (err) {
+    llmError.value = err instanceof Error ? err.message : "校验失败";
+  } finally {
+    validatingLLM.value = false;
   }
 }
 
@@ -302,6 +331,19 @@ onMounted(loadOverview);
 
 .overview-llm-actions {
   margin-top: 14px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.overview-llm-buttons {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.overview-llm-message {
+  line-height: 1.3;
 }
 
 .overview-list {

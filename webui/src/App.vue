@@ -14,6 +14,9 @@
         <RouterLink to="/history" class="side-nav-link" active-class="is-active">
           历史记录
         </RouterLink>
+        <RouterLink to="/dashboard" class="side-nav-link" active-class="is-active">
+          Token Dashboard
+        </RouterLink>
         <RouterLink to="/agents" class="side-nav-link" active-class="is-active">
           智能体列表
         </RouterLink>
