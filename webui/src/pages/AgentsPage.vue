@@ -94,10 +94,18 @@
       <input v-model="reviewFocusAreasText" placeholder="例如 security, tests, v1-boundary" />
     </div>
 
-    <div class="row" style="margin-top: 14px">
-      <button type="button" class="btn-primary" @click="saveReviewerSettings">保存 Reviewer 配置</button>
-      <RouterLink class="btn-secondary" to="/run">去新建运行</RouterLink>
-      <span v-if="saveMessage" class="muted">{{ saveMessage }}</span>
+    <div class="reviewer-actions">
+      <div class="reviewer-save-actions">
+        <button type="button" class="btn-primary" @click="saveReviewerSettings">保存 Reviewer 配置</button>
+        <span v-if="saveMessage" class="muted">{{ saveMessage }}</span>
+      </div>
+      <RouterLink class="reviewer-run-cta" to="/run">
+        <span>
+          <strong>去新建运行</strong>
+          <small>启用 V2 Reviewer 后会自动使用当前策略</small>
+        </span>
+        <span class="reviewer-run-arrow">→</span>
+      </RouterLink>
     </div>
   </section>
 </template>
@@ -267,5 +275,96 @@ onMounted(() => {
 
 .reviewer-settings-panel {
   border-color: rgba(79, 70, 229, 0.18);
+}
+
+.reviewer-actions {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+}
+
+.reviewer-save-actions {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.reviewer-run-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 250px;
+  padding: 12px 14px 12px 16px;
+  border: 1px solid rgba(14, 116, 144, 0.26);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(14, 116, 144, 0.12), rgba(79, 70, 229, 0.08)),
+    #fff;
+  color: #0f766e;
+  text-decoration: none;
+  box-shadow: var(--shadow-sm, 0 1px 2px rgba(15, 20, 25, 0.04));
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.reviewer-run-cta:hover {
+  border-color: rgba(14, 116, 144, 0.44);
+  color: #0f766e;
+  text-decoration: none;
+  box-shadow: 0 10px 26px rgba(14, 116, 144, 0.14);
+  transform: translateY(-1px);
+}
+
+.reviewer-run-cta strong,
+.reviewer-run-cta small {
+  display: block;
+}
+
+.reviewer-run-cta strong {
+  font-size: 0.92rem;
+}
+
+.reviewer-run-cta small {
+  margin-top: 2px;
+  color: var(--text-muted, #8b929e);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.reviewer-run-arrow {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  background: #0f766e;
+  color: #fff;
+  font-weight: 800;
+}
+
+@media (max-width: 720px) {
+  .reviewer-actions {
+    flex-direction: column;
+  }
+
+  .reviewer-save-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .reviewer-run-cta {
+    min-width: 0;
+    width: 100%;
+  }
 }
 </style>

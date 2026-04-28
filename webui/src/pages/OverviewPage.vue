@@ -35,7 +35,7 @@
             <input v-model="llmForm.llm_base_url" placeholder="https://api.openai.com/v1" />
             <label>LLM_MODEL</label>
             <input v-model="llmForm.llm_model" placeholder="gpt-4.1-mini" />
-            <div class="row">
+            <div class="row overview-llm-actions">
               <button class="btn-secondary btn-sm" :disabled="savingLLM" @click="saveLLMSettings">
                 {{ savingLLM ? "保存中…" : "保存 LLM 配置" }}
               </button>
@@ -298,6 +298,10 @@ onMounted(loadOverview);
 
 .overview-llm-form label {
   margin-top: 6px;
+}
+
+.overview-llm-actions {
+  margin-top: 14px;
 }
 
 .overview-list {
