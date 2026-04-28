@@ -89,8 +89,7 @@
             <span class="overview-stat-value">{{ agentsTotal !== null ? `${agentsTotal} 个` : "—" }}</span>
           </p>
           <div v-if="agentNames.length" class="overview-agent-chips">
-            <span v-for="name in shownAgentNames" :key="name" class="overview-agent-chip">{{ name }}</span>
-            <span v-if="hiddenAgentCount > 0" class="overview-agent-chip">+{{ hiddenAgentCount }}</span>
+            <span v-for="name in agentNames" :key="name" class="overview-agent-chip">{{ name }}</span>
           </div>
           <p v-else class="muted overview-meta">
             暂未获取到智能体列表。
@@ -127,8 +126,6 @@ const llmForm = ref({
   llm_model: "",
 });
 
-const shownAgentNames = computed(() => agentNames.value.slice(0, 6));
-const hiddenAgentCount = computed(() => Math.max(0, agentNames.value.length - shownAgentNames.value.length));
 const lastUpdatedText = computed(() => {
   if (!lastUpdatedAt.value) return "—";
   return lastUpdatedAt.value.toLocaleTimeString();

@@ -150,6 +150,8 @@ class PlannerAgent(AgentBase):
             "input_requirements, success_criteria, and max_retries. "
             "Optional per step: verification_command (string shell command for testing/validation steps only; "
             "e.g. pytest tests/, ./gradlew test, mvn test — use when the repo is not plain Python pytest at root). "
+            "Optional per coding step: executor (internal|external), external_agent, external_command, external_prompt. "
+            "Use executor=external only for complex coding tasks that need external coding CLI. "
             "type must be one of analysis, coding, testing, planning, validation, general. "
             "suggested_agent must be one of analyst, coder, tester. "
             "System may prepend an analysis step if the first step is unsafe; prefer analyst before coder/tester. "
@@ -189,6 +191,10 @@ class PlannerAgent(AgentBase):
                 success_criteria=item.success_criteria,
                 max_retries=item.max_retries,
                 verification_command=item.verification_command,
+                executor=item.executor,
+                external_agent=item.external_agent,
+                external_command=item.external_command,
+                external_prompt=item.external_prompt,
             )
             for item in parsed.steps
         ], llm_result
@@ -202,7 +208,10 @@ class PlannerAgent(AgentBase):
         if step.tool_name in {"write_file", "replace_in_file", "multi_file_patch"}:
             step_type = "coding"
         routing_step = step.model_copy(update={"type": step_type})
-        suggested_agent = self._resolve_suggested_agent(step=routing_step)
+        if step_type == "coding" and step.executor == "external":
+            suggested_agent = "external_coder"
+        else:
+            suggested_agent = self._resolve_suggested_agent(step=routing_step)
         goal = step.goal or step.description or step.title
         input_requirements = list(step.input_requirements)
         success_criteria = list(step.success_criteria)

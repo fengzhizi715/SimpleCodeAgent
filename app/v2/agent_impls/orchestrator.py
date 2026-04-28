@@ -39,6 +39,7 @@ class OrchestratorAgent(AgentBase):
         max_replans: int,
         run_timeout_seconds: int,
         review_strategy: dict[str, object] | None,
+        external_coding: dict[str, object] | None = None,
         profile_name: str | None = None,
     ) -> dict[str, object]:
         """Build a serializable policy snapshot for workspace and trace."""
@@ -57,6 +58,7 @@ class OrchestratorAgent(AgentBase):
             "retry_policy": self._retry_policy(max_replans=max_replans),
             "routing_policy": self._routing_policy(enabled_agents=enabled_agents),
             "review_strategy": review_strategy or {},
+            "external_coding": external_coding or {},
         }
 
     def build_system_prompt(self, *, policy: dict[str, object]) -> str:
@@ -133,6 +135,7 @@ class OrchestratorAgent(AgentBase):
             "planner": "Planner is responsible for turning the user goal into a structured plan.",
             "analyst": "Analyst is best suited for project structure, key files, and implementation context.",
             "coder": "Coder is responsible for localized code changes using workspace context.",
+            "external_coder": "ExternalCoder uses a guarded template command to invoke external coding CLI.",
             "tester": "Tester validates the latest change and turns logs into structured feedback.",
             "reviewer": "Reviewer checks patch risk, maintainability, boundaries, and test-result consistency.",
         }.get(target_agent, "The selected agent matches the step's suggested role.")

@@ -32,6 +32,10 @@ class PlannerStepPayload(BaseModel):
     success_criteria: list[str] = Field(default_factory=list)
     max_retries: int = 1
     verification_command: str | None = None
+    executor: Literal["internal", "external"] = "internal"
+    external_agent: str | None = None
+    external_command: str | None = None
+    external_prompt: str | None = None
 
 
 class PlannerOutputPayload(BaseModel):

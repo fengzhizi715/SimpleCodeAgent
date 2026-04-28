@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.deps import (
     get_agent_loop,
@@ -53,6 +53,45 @@ class V2ReviewStrategyRequest(BaseModel):
     )
 
 
+class V2ExternalCodingRequest(BaseModel):
+    """V2 外部编码执行器运行级配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(default=False, description="是否允许 Planner 规划 external coding step。")
+    preferred_agent: Literal["codex_cli", "cursor_cli"] = Field(
+        default="codex_cli",
+        description="优先使用的外部 Coding CLI。",
+    )
+    allow_raw_external_command: bool = Field(
+        default=False,
+        description="是否允许 Planner 直接下发 external_command（默认关闭，优先模板构建）。",
+    )
+    codex_template: str = Field(
+        default="codex exec {prompt}",
+        description="codex_cli 命令模板，支持 {prompt} 和 {workdir} 占位符。",
+    )
+    cursor_template: str = Field(
+        default="cursor-agent --trust {prompt}",
+        description="cursor_cli 命令模板（默认可执行文件为 cursor-agent，后端非交互运行需 --trust）；支持 {prompt} 和 {workdir}。",
+    )
+    cursor_cli_path: str | None = Field(
+        default=None,
+        description="Cursor CLI 可执行文件绝对路径；与环境变量 CURSOR_CLI_PATH 等价，可解决 uvicorn PATH 中找不到 cursor。",
+    )
+    codex_cli_path: str | None = Field(
+        default=None,
+        description="Codex CLI 可执行文件绝对路径；与环境变量 CODEX_CLI_PATH 等价。",
+    )
+
+    @field_validator("cursor_cli_path", "codex_cli_path", mode="before")
+    @classmethod
+    def _blank_cli_paths_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
 class AgentRunRequest(BaseModel):
     """Agent 运行请求。"""
 
@@ -82,7 +121,9 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
     run_timeout_seconds: int = Field(default=120, ge=1, le=600, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
-    v2_enabled_agents: list[Literal["orchestrator", "planner", "analyst", "coder", "tester", "reviewer"]] | None = Field(
+    v2_enabled_agents: list[
+        Literal["orchestrator", "planner", "analyst", "coder", "external_coder", "tester", "reviewer"]
+    ] | None = Field(
         default=None,
         description="V2 可视化运行级 Agent 配置；orchestrator / planner 会始终启用。",
     )
@@ -98,6 +139,10 @@ class AgentRunRequest(BaseModel):
     rag_ids: list[str] | None = Field(
         default=None,
         description="可选知识库标识列表；v2 模式下用于多库并查。",
+    )
+    v2_external_coding: V2ExternalCodingRequest | None = Field(
+        default=None,
+        description="V2 外部编码执行器配置（Codex/Cursor CLI）。",
     )
 
 
@@ -191,6 +236,11 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                         use_rag=request.v2_use_rag,
                         rag_id=request.rag_id if request.v2_use_rag else None,
                         rag_ids=request.rag_ids if request.v2_use_rag else None,
+                        external_coding=(
+                            request.v2_external_coding.model_dump()
+                            if request.v2_external_coding is not None
+                            else None
+                        ),
                     )
                 except RagIdValidationError as exc:
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

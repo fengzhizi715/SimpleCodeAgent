@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,6 +27,9 @@ ALLOWED_EXECUTABLES = {
     "cmake",
     "ctest",
     "make",
+    "codex",
+    "cursor",
+    "cursor-agent",
     ".venv/bin/python",
 }
 
@@ -136,6 +140,19 @@ class ShellRunTool(Tool):
                 workdir,
                 timeout,
             )
+            exe0 = command_argv[0]
+            # External coding CLIs are often missing when the IDE shell PATH differs from uvicorn's.
+            if exe0 in {"cursor", "cursor-agent", "codex"} and shutil.which(exe0) is None:
+                return self.error(
+                    tool_call_id=tool_call_id,
+                    message=(
+                        f"Executable not found in PATH: {exe0}. "
+                        "Install the shell command from the app, or set CURSOR_CLI_PATH / CODEX_CLI_PATH "
+                        "to the full binary path (API field cursor_cli_path / codex_cli_path also supported)."
+                    ),
+                    command=command,
+                    workdir=str(workdir),
+                )
             completed = subprocess.run(
                 command_argv,
                 cwd=workdir,
@@ -162,6 +179,21 @@ class ShellRunTool(Tool):
                     "exit_code": completed.returncode,
                     "timed_out": False,
                 },
+            )
+        except FileNotFoundError as exc:
+            hint = ""
+            name = Path(command_argv[0]).name
+            if name in {"cursor", "cursor-agent", "codex"}:
+                hint = (
+                    " Set CURSOR_CLI_PATH or CODEX_CLI_PATH to the full path of the CLI binary, "
+                    "or install the shell command from the Cursor/Codex app."
+                )
+            return self.error(
+                tool_call_id=tool_call_id,
+                message=f"Executable not found: {command_argv[0]}.{hint}",
+                command=command,
+                workdir=str(workdir),
+                detail=str(exc),
             )
         except subprocess.TimeoutExpired as exc:
             logger.error("Shell command timed out: timeout=%ss command=%s", timeout, command)

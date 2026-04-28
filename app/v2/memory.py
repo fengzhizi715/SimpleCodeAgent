@@ -25,6 +25,7 @@ class V2MemoryPolicy(BaseModel):
             "planner": ["orchestrator"],
             "analyst": ["analyst"],
             "coder": ["analyst"],
+            "external_coder": ["analyst", "orchestrator"],
             "tester": ["coder", "analyst"],
             "reviewer": ["coder", "analyst", "reviewer"],
         }
@@ -118,6 +119,11 @@ class V2MemoryManager:
         if agent_id == "coder":
             data = shared.snapshot(["project_summary", "latest_test_result", "latest_patch_summary"])
             data["analysis_context"] = private.read("analyst")
+            return data
+        if agent_id == "external_coder":
+            data = shared.snapshot(["project_summary", "latest_test_result", "latest_patch_summary"])
+            data["analysis_context"] = private.read("analyst")
+            data["orchestrator_context"] = private.read("orchestrator")
             return data
         if agent_id == "tester":
             data = shared.snapshot(["latest_patch_summary", "project_summary"])

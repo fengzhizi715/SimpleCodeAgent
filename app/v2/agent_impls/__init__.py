@@ -5,6 +5,7 @@ from typing import TypeAlias
 from app.v2.base import AgentBase
 from app.v2.agent_impls.analyst import AnalystAgent
 from app.v2.agent_impls.coder import CoderAgent
+from app.v2.agent_impls.external_coder import ExternalCodingAgent
 from app.v2.agent_impls.orchestrator import OrchestratorAgent
 from app.v2.agent_impls.planner import PlannerAgent
 from app.v2.agent_impls.reviewer import ReviewerAgent
@@ -17,6 +18,7 @@ AGENT_CLASS_MAP: dict[str, AgentClass] = {
     "planner": PlannerAgent,
     "analyst": AnalystAgent,
     "coder": CoderAgent,
+    "external_coder": ExternalCodingAgent,
     "tester": TesterAgent,
     "reviewer": ReviewerAgent,
 }
@@ -43,6 +45,7 @@ def describe_agent_matrix() -> list[dict[str, object]]:
 __all__ = [
     "AnalystAgent",
     "CoderAgent",
+    "ExternalCodingAgent",
     "OrchestratorAgent",
     "PlannerAgent",
     "ReviewerAgent",

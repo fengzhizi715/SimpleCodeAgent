@@ -99,6 +99,7 @@ class OrchestratorRuntime:
         max_replans: int = 1,
         enabled_agents: set[str] | list[str] | tuple[str, ...] | None = None,
         review_strategy: dict[str, object] | None = None,
+        external_coding: dict[str, object] | None = None,
         use_rag: bool = True,
         rag_id: str | None = None,
         rag_ids: list[str] | None = None,
@@ -116,6 +117,7 @@ class OrchestratorRuntime:
             max_replans=max_replans,
             run_timeout_seconds=run_timeout_seconds,
             review_strategy=review_strategy,
+            external_coding=external_coding,
         )
         orchestrator_context = self._build_orchestrator_context(policy=orchestrator_policy)
         workspace.private_context["orchestrator"] = orchestrator_context
@@ -215,7 +217,11 @@ class OrchestratorRuntime:
             )
 
         plan = Plan.model_validate(planner_result.output_data.get("plan", {}))
-        plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=allowed_agents)
+        plan = self._filter_plan_by_enabled_agents(
+            plan=plan,
+            enabled_agents=allowed_agents,
+            external_coding=orchestrator_policy.get("external_coding"),
+        )
         workspace_store.set_plan(plan)
         plan_explanation = self._explain_plan(plan=plan, policy=orchestrator_policy)
         workspace.private_context["orchestrator"]["plan_explanation"] = plan_explanation
@@ -284,7 +290,7 @@ class OrchestratorRuntime:
                 step_id=step.id,
                 goal=step.goal or step.description or step.title,
                 step_type=step.type,
-                target_agent=step.suggested_agent or "coder",
+                target_agent=self._resolve_step_target_agent(step),
                 input_data=self._build_step_input(
                     step,
                     rag_id=normalized_rag_id if use_rag else None,
@@ -662,7 +668,7 @@ class OrchestratorRuntime:
                 },
             )
             return
-        if step_task.target_agent == "coder":
+        if step_task.target_agent in {"coder", "external_coder"}:
             changed_files = [
                 *[str(path) for path in result.output_data.get("modified_files", [])],
                 *[str(path) for path in result.output_data.get("created_files", [])],
@@ -877,11 +883,15 @@ class OrchestratorRuntime:
         if planner_result.status != "completed":
             return False
         plan = Plan.model_validate(planner_result.output_data.get("plan", {}))
-        plan = self._filter_plan_by_enabled_agents(plan=plan, enabled_agents=self._enabled_agents_from_workspace(workspace))
-        plan.replan_count = (workspace.current_plan.replan_count if workspace.current_plan else 0) + 1
-        workspace.current_plan = plan
         orchestrator_context = workspace.private_context.get("orchestrator", {})
         policy = orchestrator_context.get("policy", {}) if isinstance(orchestrator_context, dict) else {}
+        plan = self._filter_plan_by_enabled_agents(
+            plan=plan,
+            enabled_agents=self._enabled_agents_from_workspace(workspace),
+            external_coding=policy.get("external_coding") if isinstance(policy, dict) else None,
+        )
+        plan.replan_count = (workspace.current_plan.replan_count if workspace.current_plan else 0) + 1
+        workspace.current_plan = plan
         if isinstance(policy, dict):
             workspace.private_context["orchestrator"]["plan_explanation"] = self._explain_plan(plan=plan, policy=policy)
         self.v2_repository.save_workspace(workspace)
@@ -917,10 +927,22 @@ class OrchestratorRuntime:
         input_data: dict[str, object] = {}
         input_data["rag_enabled"] = rag_enabled
         step_type = getattr(step, "type", "")
+        executor = str(getattr(step, "executor", "internal") or "internal")
+        input_data["executor"] = executor
         if step_type == "testing":
             vcmd = getattr(step, "verification_command", None)
             if isinstance(vcmd, str) and vcmd.strip():
                 input_data["command"] = vcmd.strip()
+        if step_type == "coding" and executor == "external":
+            external_agent = getattr(step, "external_agent", None)
+            external_command = getattr(step, "external_command", None)
+            external_prompt = getattr(step, "external_prompt", None)
+            if external_agent:
+                input_data["external_agent"] = str(external_agent)
+            if external_command:
+                input_data["external_command"] = str(external_command)
+            if external_prompt:
+                input_data["external_prompt"] = str(external_prompt)
         input_data["step_title"] = str(getattr(step, "title", "") or "")
         input_summary = getattr(step, "input_summary", None)
         if input_summary:
@@ -937,6 +959,14 @@ class OrchestratorRuntime:
             if isinstance(rag_ids, list) and rag_ids:
                 input_data["rag_ids"] = [str(item).strip() for item in rag_ids if str(item).strip()]
         return input_data
+
+    def _resolve_step_target_agent(self, step) -> str:
+        """根据 Step 的 executor 与 suggested_agent 决定实际执行 Agent。"""
+        step_type = str(getattr(step, "type", "") or "")
+        executor = str(getattr(step, "executor", "internal") or "internal")
+        if step_type == "coding" and executor == "external":
+            return "external_coder"
+        return str(getattr(step, "suggested_agent", None) or "coder")
 
     def _normalize_enabled_agents(self, enabled_agents: set[str] | list[str] | tuple[str, ...] | None) -> set[str]:
         registered = {spec.agent_id for spec in self.registry.list_specs()}
@@ -957,6 +987,7 @@ class OrchestratorRuntime:
         max_replans: int,
         run_timeout_seconds: int,
         review_strategy: dict[str, object] | None,
+        external_coding: dict[str, object] | None,
     ) -> dict[str, object]:
         agent = self.registry.get("orchestrator")
         if agent is not None and hasattr(agent, "build_run_policy"):
@@ -966,6 +997,7 @@ class OrchestratorRuntime:
                 max_replans=max_replans,
                 run_timeout_seconds=run_timeout_seconds,
                 review_strategy=review_strategy,
+                external_coding=external_coding or {},
             )
         return {
             "orchestrator_agent_id": "orchestrator",
@@ -977,6 +1009,7 @@ class OrchestratorRuntime:
             "delegation_model": "orchestrator_only",
             "sub_agent_delegation_allowed": False,
             "review_strategy": review_strategy or {},
+            "external_coding": external_coding or {},
         }
 
     def _build_orchestrator_context(self, *, policy: dict[str, object]) -> dict[str, object]:
@@ -1035,8 +1068,21 @@ class OrchestratorRuntime:
                 return self._normalize_enabled_agents(raw)
         return self._normalize_enabled_agents(None)
 
-    def _filter_plan_by_enabled_agents(self, *, plan: Plan, enabled_agents: set[str]) -> Plan:
+    def _filter_plan_by_enabled_agents(
+        self,
+        *,
+        plan: Plan,
+        enabled_agents: set[str],
+        external_coding: object | None = None,
+    ) -> Plan:
         plan.metadata["enabled_agents"] = sorted(enabled_agents)
+        external_policy = external_coding if isinstance(external_coding, dict) else {}
+        plan.steps = self._route_disabled_coder_steps_to_external(
+            steps=list(plan.steps),
+            enabled_agents=enabled_agents,
+            external_coding=external_policy,
+            plan_metadata=plan.metadata,
+        )
         kept_steps: list[PlanStep] = []
         skipped: list[dict[str, object]] = []
         disabled_adjustments: list[str] = []
@@ -1092,6 +1138,61 @@ class OrchestratorRuntime:
             plan.metadata["disabled_agent_adjustments"] = disabled_adjustments
         plan.steps = kept_steps
         return plan
+
+    def _route_disabled_coder_steps_to_external(
+        self,
+        *,
+        steps: list[PlanStep],
+        enabled_agents: set[str],
+        external_coding: dict[str, object],
+        plan_metadata: dict[str, object],
+    ) -> list[PlanStep]:
+        """当内置 Coder 禁用但 ExternalCoder 可用时，把 coding step 改路由而不是丢弃。"""
+        if "coder" in enabled_agents or "external_coder" not in enabled_agents:
+            return steps
+        if not bool(external_coding.get("enabled", False)):
+            return steps
+
+        preferred_agent = str(external_coding.get("preferred_agent") or "codex_cli").strip() or "codex_cli"
+        rerouted: list[dict[str, object]] = []
+        updated_steps: list[PlanStep] = []
+        for step in steps:
+            if step.type == "coding" and (step.suggested_agent or "coder") == "coder":
+                adjustment = (
+                    "内置 Coder 被本次运行配置禁用；该编码步骤已路由给 ExternalCoder，"
+                    f"由 {preferred_agent} 外部 CLI 执行。"
+                )
+                updated_step = step.model_copy(
+                    update={
+                        "suggested_agent": "external_coder",
+                        "executor": "external",
+                        "external_agent": step.external_agent or preferred_agent,
+                        "external_prompt": step.external_prompt or step.goal or step.description or step.title,
+                        "disabled_agent_adjustment": self._join_adjustment(
+                            step.disabled_agent_adjustment,
+                            adjustment,
+                        ),
+                    }
+                )
+                updated_steps.append(updated_step)
+                rerouted.append(
+                    {
+                        "step_id": step.id,
+                        "title": step.title,
+                        "from_agent": "coder",
+                        "to_agent": "external_coder",
+                        "external_agent": preferred_agent,
+                        "reason": adjustment,
+                    }
+                )
+                continue
+            updated_steps.append(step)
+
+        if rerouted:
+            existing = plan_metadata.get("rerouted_external_coding_steps")
+            existing_items = existing if isinstance(existing, list) else []
+            plan_metadata["rerouted_external_coding_steps"] = [*existing_items, *rerouted]
+        return updated_steps
 
     def _describe_disabled_agent_adjustment(self, *, step: PlanStep, enabled_agents: set[str]) -> str:
         agent = step.suggested_agent or "unknown"

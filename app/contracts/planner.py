@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 PlanStepStatus = Literal["pending", "in_progress", "completed", "failed"]
 PlanStepType = Literal["analysis", "coding", "testing", "planning", "validation", "general"]
+PlanStepExecutor = Literal["internal", "external"]
 
 
 class PlanStep(BaseModel):
@@ -35,6 +36,14 @@ class PlanStep(BaseModel):
     replan_reason: str | None = None
     # 可选：验证步骤在 workspace 根目录下执行的 shell 命令（如 ./gradlew test、pytest tests/）
     verification_command: str | None = None
+    # 可选：执行器选择。external 主要用于复杂 coding 任务委派给外部 Coding CLI。
+    executor: PlanStepExecutor = "internal"
+    # 当 executor=external 时，建议标记目标外部执行器（如 codex_cli / cursor_cli）。
+    external_agent: str | None = None
+    # 当 executor=external 时可显式给出命令模板（由 ExternalCodingAgent 通过 shell_run 执行）。
+    external_command: str | None = None
+    # 当 executor=external 时可选：给外部 Coding CLI 的任务描述（默认回退到 step goal）。
+    external_prompt: str | None = None
 
 
 class Plan(BaseModel):
