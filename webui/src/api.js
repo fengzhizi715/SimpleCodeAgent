@@ -104,11 +104,23 @@ export async function listRagCollections() {
   return requestJson("/debug/rag/collections");
 }
 
-export async function createRagCollection(ragId) {
+export async function createRagCollection(ragId, options = {}) {
   const id = String(ragId ?? "").trim();
+  const chunkSize = Number(options.chunk_size);
+  const overlap = Number(options.overlap);
   return requestJson("/debug/rag/collections", {
     method: "POST",
-    body: JSON.stringify({ rag_id: id }),
+    body: JSON.stringify({
+      rag_id: id,
+      ...(Number.isFinite(chunkSize) ? { chunk_size: chunkSize } : {}),
+      ...(Number.isFinite(overlap) ? { overlap } : {}),
+    }),
+  });
+}
+
+export async function deleteRagCollection(ragId) {
+  return requestJson(`/debug/rag/collections/${encodeURIComponent(ragId)}`, {
+    method: "DELETE",
   });
 }
 

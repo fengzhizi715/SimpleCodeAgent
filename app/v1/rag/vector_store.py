@@ -138,6 +138,18 @@ class ChromaVectorStore:
         collection = self._collection_for_rag_id(rag_id)
         return {"rag_id": normalized, "collection_name": collection.name}
 
+    def delete_rag_collection(self, rag_id: str | None) -> dict[str, Any]:
+        """删除指定 RAG 集合；default 集合不允许通过该方法删除。"""
+        normalized = self._normalize_rag_id(rag_id)
+        if normalized == "default":
+            raise ValueError("default 知识库不允许删除。")
+        collection_name = self.resolve_collection_name(normalized)
+        existing = {str(getattr(item, "name", "") or "") for item in self.client.list_collections()}
+        if collection_name not in existing:
+            raise KeyError(f"知识库不存在: {normalized}")
+        self.client.delete_collection(name=collection_name)
+        return {"rag_id": normalized, "collection_name": collection_name}
+
     def list_rag_collections(self) -> list[dict[str, Any]]:
         """列出当前持久化目录中的全部 RAG 集合。"""
         rows: list[dict[str, Any]] = []

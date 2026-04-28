@@ -17,6 +17,7 @@ from app.core.config import (
     update_llm_runtime_settings,
 )
 from app.core.exceptions import RagIdValidationError
+from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
 from app.v1.rag.vector_store import ChromaVectorStore
@@ -200,6 +201,8 @@ class RagCreateCollectionRequest(BaseModel):
         max_length=64,
         description="知识库标识；将规范化为小写，仅保留字母数字、连字符与下划线。",
     )
+    chunk_size: int = Field(default=800, ge=100, le=8000, description="文档切分窗口大小。")
+    overlap: int = Field(default=120, ge=0, le=4000, description="相邻 chunk 的重叠长度。")
 
     @field_validator("rag_id", mode="before")
     @classmethod
@@ -214,6 +217,18 @@ class RagCreateCollectionResponse(BaseModel):
 
     rag_id: str
     collection_name: str
+    chunk_size: int
+    overlap: int
+
+
+class RagDeleteCollectionResponse(BaseModel):
+    """删除 RAG 集合结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rag_id: str
+    collection_name: str
+    config_deleted: bool
 
 
 class RagOverviewResponse(BaseModel):
@@ -228,6 +243,8 @@ class RagOverviewResponse(BaseModel):
     embedding_provider: str
     embedding_model: str
     embedding_base_url: str
+    chunk_size: int
+    overlap: int
     total_chunks: int
     file_count: int
     limit: int
@@ -427,6 +444,7 @@ def get_rag_overview(
     normalized_rag_id = _normalize_debug_rag_id(rag_id)
     vector_store = ChromaVectorStore()
     overview = vector_store.inspect(rag_id=normalized_rag_id)
+    rag_config = RagConfigStore().get(normalized_rag_id)
 
     embedding_model = getattr(settings, "embedding_model", "") or "local-hash"
     embedding_api_key = getattr(settings, "embedding_api_key", "")
@@ -444,6 +462,8 @@ def get_rag_overview(
         embedding_provider=embedding_provider,
         embedding_model=embedding_model,
         embedding_base_url=embedding_base_url,
+        chunk_size=rag_config.chunk_size,
+        overlap=rag_config.overlap,
         total_chunks=overview["total_chunks"],
         file_count=overview["file_count"],
         limit=limit,
@@ -482,9 +502,51 @@ def create_rag_collection(request: RagCreateCollectionRequest) -> RagCreateColle
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     vector_store = ChromaVectorStore()
     info = vector_store.ensure_rag_collection(normalized_rag_id)
+    try:
+        rag_config = RagConfigStore().save(
+            RagIndexConfig(
+                rag_id=normalized_rag_id,
+                chunk_size=request.chunk_size,
+                overlap=request.overlap,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return RagCreateCollectionResponse(
         rag_id=str(info["rag_id"]),
         collection_name=str(info["collection_name"]),
+        chunk_size=rag_config.chunk_size,
+        overlap=rag_config.overlap,
+    )
+
+
+@router.delete(
+    "/debug/rag/collections/{rag_id}",
+    response_model=RagDeleteCollectionResponse,
+    status_code=status.HTTP_200_OK,
+)
+def delete_rag_collection(rag_id: str) -> RagDeleteCollectionResponse:
+    """删除非 default RAG 集合及其轻量配置。"""
+    try:
+        normalized_rag_id = strict_normalize_v2_rag_tokens([rag_id])[0]
+    except RagIdValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if normalized_rag_id == "default":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="default 知识库不允许删除。")
+
+    vector_store = ChromaVectorStore()
+    try:
+        info = vector_store.delete_rag_collection(normalized_rag_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    config_deleted = RagConfigStore().delete(normalized_rag_id)
+    return RagDeleteCollectionResponse(
+        rag_id=str(info["rag_id"]),
+        collection_name=str(info["collection_name"]),
+        config_deleted=config_deleted,
     )
 
 
@@ -516,9 +578,14 @@ def reindex_rag_source(request: RagReindexSourceRequest) -> RagReindexSourceResp
         raise HTTPException(status_code=404, detail=f"文件不存在: {source}")
 
     vector_store = ChromaVectorStore()
+    rag_config = RagConfigStore().get(normalized_rag_id)
     try:
         deleted_chunks = vector_store.delete_by_source(source, rag_id=normalized_rag_id)
-        ingested_chunks = DocsIngestor(vector_store=vector_store).ingest_file(target_path, rag_id=normalized_rag_id)
+        ingested_chunks = DocsIngestor(
+            vector_store=vector_store,
+            chunk_size=rag_config.chunk_size,
+            overlap=rag_config.overlap,
+        ).ingest_file(target_path, rag_id=normalized_rag_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -555,7 +622,11 @@ def upload_rag_file(request: RagUploadRequest) -> RagUploadResponse:
 
     try:
         target_path.write_bytes(content)
-        ingested_chunks = DocsIngestor().ingest_file(target_path, rag_id=normalized_rag_id)
+        rag_config = RagConfigStore().get(normalized_rag_id)
+        ingested_chunks = DocsIngestor(
+            chunk_size=rag_config.chunk_size,
+            overlap=rag_config.overlap,
+        ).ingest_file(target_path, rag_id=normalized_rag_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

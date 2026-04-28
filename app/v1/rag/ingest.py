@@ -20,9 +20,13 @@ class DocsIngestor:
         self,
         vector_store: ChromaVectorStore | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        chunk_size: int = 800,
+        overlap: int = 120,
     ) -> None:
         self.vector_store = vector_store or ChromaVectorStore()
         self.embedding_provider = embedding_provider or build_embedding_provider()
+        self.chunk_size = chunk_size
+        self.overlap = overlap
         self._readers: dict[str, SupportedReader] = {
             ".docx": self._read_docx,
             ".md": self._read_plain_text,
@@ -75,7 +79,14 @@ class DocsIngestor:
                 source = path.relative_to(BASE_DIR.resolve())
             except ValueError:
                 source = path.name
-            all_chunks.extend(chunk_text(source=source, text=text))
+            all_chunks.extend(
+                chunk_text(
+                    source=source,
+                    text=text,
+                    chunk_size=self.chunk_size,
+                    overlap=self.overlap,
+                )
+            )
         return all_chunks
 
     def _is_supported_file(self, path: Path) -> bool:

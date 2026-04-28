@@ -5,6 +5,7 @@ import HistoryPage from "./pages/HistoryPage.vue";
 import RunExecutionPage from "./pages/RunExecutionPage.vue";
 import RunTracePage from "./pages/RunTracePage.vue";
 import RagPage from "./pages/RagPage.vue";
+import RagCreatePage from "./pages/RagCreatePage.vue";
 import RagDetailPage from "./pages/RagDetailPage.vue";
 import AgentsPage from "./pages/AgentsPage.vue";
 
@@ -15,6 +16,12 @@ const routes = [
   { path: "/history", name: "history", component: HistoryPage, meta: { title: "运行历史" } },
   { path: "/agents", name: "agents", component: AgentsPage, meta: { title: "智能体列表" } },
   { path: "/rag", name: "rag", component: RagPage, meta: { title: "RAG 文档库" } },
+  {
+    path: "/rag/new",
+    name: "rag-create",
+    component: RagCreatePage,
+    meta: { title: "新建知识库", showBack: true },
+  },
   {
     path: "/rag/:ragId",
     name: "rag-detail",

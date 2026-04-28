@@ -53,6 +53,8 @@
         <tr><th>provider</th><td>{{ overview.embedding_provider }}</td></tr>
         <tr><th>model</th><td>{{ overview.embedding_model }}</td></tr>
         <tr><th>base_url</th><td class="mono">{{ overview.embedding_base_url }}</td></tr>
+        <tr><th>chunk_size</th><td>{{ overview.chunk_size }}</td></tr>
+        <tr><th>overlap</th><td>{{ overview.overlap }}</td></tr>
       </tbody>
     </table>
   </section>
