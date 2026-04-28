@@ -20,6 +20,16 @@ http://127.0.0.1:8000
 - `v2` 是中心化多 Agent Runtime，支持运行级 Agent 配置、多 RAG、Reviewer 策略等。
 - `/debug/*` 当前主要服务 WebUI、课程演示与本地调试，生产化前应增加鉴权与权限控制。
 
+## 目录
+
+- [1. 运行 Agent](#1-运行-agent)
+- [2. 健康检查与配置](#2-健康检查与配置)
+- [3. Trace 与运行历史](#3-trace-与运行历史)
+- [4. Agent Catalog](#4-agent-catalog)
+- [5. RAG 管理](#5-rag-管理)
+- [6. 常见错误](#6-常见错误)
+- [7. OpenAPI](#7-openapi)
+
 ## 1. 运行 Agent
 
 ### `POST /agent/run`
