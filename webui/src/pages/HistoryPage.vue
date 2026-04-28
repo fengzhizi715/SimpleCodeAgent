@@ -95,7 +95,7 @@
                     <RouterLink class="history-action history-action--primary" :to="{ name: 'execution', params: { runId: r.run_id } }">
                       详情
                     </RouterLink>
-                    <RouterLink class="history-action" :to="{ name: 'trace', params: { runId: r.run_id } }">
+                    <RouterLink class="history-action" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">
                       Trace
                     </RouterLink>
                   </template>
@@ -103,6 +103,9 @@
                     <button type="button" class="history-action history-action--primary" @click="toggleExpanded(r.run_id)">
                       {{ expandedRunId === r.run_id ? "收起" : "结果" }}
                     </button>
+                    <RouterLink class="history-action" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">
+                      Trace
+                    </RouterLink>
                   </template>
                   <button
                     type="button"

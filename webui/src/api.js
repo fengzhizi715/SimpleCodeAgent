@@ -66,6 +66,10 @@ export async function getRunReplay(runId) {
   return requestJson(`/debug/v2/runs/${encodeURIComponent(runId)}/replay`);
 }
 
+export async function getRunTrace(runId) {
+  return requestJson(`/debug/traces/${encodeURIComponent(runId)}`);
+}
+
 export async function listRuns({ limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
