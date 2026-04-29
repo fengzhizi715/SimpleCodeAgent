@@ -190,38 +190,30 @@ WebUI 主要用于教学演示、调试和回放。
 
 ---
 
-## WebUI 截图（占位）
-
-> 下面先保留截图占位。后续把图片放到 `docs/images/` 后，直接替换对应文件即可。
+## WebUI 截图
 
 ### 1. Overview 页面
 
-![Overview 页面截图占位](docs/images/webui-overview-placeholder.png)
+![Overview 页面截图](images/1.png)
 
 ### 2. Run 页面
 
-![Run 页面截图占位](docs/images/webui-run-placeholder.png)
+![Run 页面截图](images/2.png)
+
+![Run 页面截图](images/3.png)
 
 ### 3. 执行详情页
 
-![执行详情页截图占位](docs/images/webui-run-detail-placeholder.png)
+![执行详情页截图](images/5.png)
 
 ### 4. History 页面
 
-![History 页面截图占位](docs/images/webui-history-placeholder.png)
-
-### 5. RAG 列表页
-
-![RAG 列表页截图占位](docs/images/webui-rag-list-placeholder.png)
-
-### 6. RAG 详情页
-
-![RAG 详情页截图占位](docs/images/webui-rag-detail-placeholder.png)
+![History 页面截图](images/4.png)
 
 
-### 7. Trace 页面
+### 5. Trace 页面
 
-![Trace 页面截图占位](docs/images/webui-trace-placeholder.png)
+![Trace 页面截图](images/6.png)
 
 ---
 
