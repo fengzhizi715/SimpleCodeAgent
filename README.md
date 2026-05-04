@@ -51,7 +51,10 @@
 
 - Orchestrator 中心化调度
 - Planner / Analyst / Coder / External Coder / Tester / Reviewer 分工
-- External Coder（`external_coder`）：经白名单与模板生成命令，由 `shell_run` 调用 Codex、Cursor 等外部 Coding CLI；运行级 `external_coding` 策略（含开关与可选原始命令）；可与内置 Coder 并存，亦可在禁用内置 Coder 时由 Orchestrator 将编码步骤改路由到 External Coder
+- External Coder（`external_coder`）
+  - 经白名单与模板生成命令，由 `shell_run` 调用 `Codex`、`Cursor` 等外部 Coding CLI；
+  - 运行级 `external_coding` 策略（含开关与可选原始命令）；
+  - 可与内置 Coder 并存，亦可在禁用内置 Coder 时由 Orchestrator 将编码步骤改路由到 External Coder
 - Agent Registry 与统一 Contract
 - Shared Workspace 与 Private Context
 - Delegation 委派机制
