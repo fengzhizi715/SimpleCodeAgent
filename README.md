@@ -50,7 +50,8 @@
 `app/v2` 是基于 v1 基础设施演进出来的多 Agent 版本，重点展示：
 
 - Orchestrator 中心化调度
-- Planner / Analyst / Coder / Tester / Reviewer 分工
+- Planner / Analyst / Coder / **External Coder**（外部 Coding CLI）/ Tester / Reviewer 分工
+- External Coder：通过受控模板调用 `shell_run` 执行 Codex / Cursor 等外部 CLI；运行级策略开关；可与内置 Coder 组合或在内置 Coder 禁用时自动改路由
 - Agent Registry 与统一 Contract
 - Shared Workspace 与 Private Context
 - Delegation 委派机制
