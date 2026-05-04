@@ -95,7 +95,6 @@ class ExternalCodingAgent(AgentBase):
             tool_call_id=f"{task.task_id}-external-coding",
         )
         payload = parse_tool_content(shell_result.content)
-        ok = bool(payload.get("ok")) and not shell_result.is_error
         after_snapshot = snapshot_workspace(context.workspace_root)
         modified_files, created_files, deleted_files, diff_previews = build_workspace_diff(
             workspace_root=context.workspace_root,
@@ -106,10 +105,18 @@ class ExternalCodingAgent(AgentBase):
         stdout = str(payload.get("stdout") or "")
         stderr = str(payload.get("stderr") or "")
         tool_error = str(payload.get("error") or "")
+        changed_files = [*modified_files, *created_files, *deleted_files]
+        write_blocked = self._detect_write_blocked(stdout=stdout, stderr=stderr, error=tool_error)
+        ok = bool(payload.get("ok")) and not shell_result.is_error and not (write_blocked and not changed_files)
         exit_code = payload.get("exit_code")
         failure_detail = stderr.strip() or stdout.strip() or tool_error.strip()
         if not failure_detail and exit_code is not None:
             failure_detail = f"exit_code={exit_code}"
+        if write_blocked and not changed_files:
+            failure_detail = (
+                failure_detail
+                or "External coding CLI ran in read-only mode and produced no workspace changes."
+            )
         summary = (
             f"外部执行器 {effective_agent or 'external'} 完成编码步骤。"
             if ok
@@ -134,6 +141,7 @@ class ExternalCodingAgent(AgentBase):
                 "stdout": stdout,
                 "stderr": stderr,
                 "error": tool_error,
+                "write_blocked": write_blocked,
                 "modified_files": modified_files,
                 "created_files": created_files,
                 "deleted_files": deleted_files,
@@ -151,8 +159,22 @@ class ExternalCodingAgent(AgentBase):
                         "created_files": created_files,
                         "deleted_files": deleted_files,
                         "error": tool_error,
+                        "write_blocked": write_blocked,
                     },
                 )
             ],
             error_message=None if ok else (failure_detail[:1000] or summary),
         )
+
+    def _detect_write_blocked(self, *, stdout: str, stderr: str, error: str) -> bool:
+        combined = f"{stdout}\n{stderr}\n{error}".lower()
+        markers = (
+            "read-only sandbox",
+            "sandbox: read-only",
+            "writing is blocked",
+            "patch rejected",
+            "actual write",
+            "实际写入",
+            "只读沙箱",
+        )
+        return any(marker in combined for marker in markers)

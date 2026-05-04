@@ -193,6 +193,48 @@ def test_template_keeps_explicit_cursor_trust_flag(tmp_path: Path) -> None:
     assert shlex.split(cmd) == [str(fake_bin.resolve()), "--yolo", "hi"]
 
 
+def test_template_adds_codex_workspace_write_for_legacy_templates(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "codex"
+    fake_bin.write_text("#!/bin/sh\necho ok\n")
+    fake_bin.chmod(0o755)
+
+    cmd = build_external_command_from_template(
+        external_agent="codex_cli",
+        prompt="fix login",
+        workspace_root=tmp_path,
+        template_overrides={"codex_cli": "codex exec {prompt}"},
+        external_policy={"codex_cli_path": str(fake_bin)},
+    )
+
+    assert shlex.split(cmd) == [str(fake_bin.resolve()), "exec", "--sandbox", "workspace-write", "fix login"]
+
+
+def test_template_keeps_explicit_codex_sandbox(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "codex"
+    fake_bin.write_text("#!/bin/sh\necho ok\n")
+    fake_bin.chmod(0o755)
+
+    cmd = build_external_command_from_template(
+        external_agent="codex_cli",
+        prompt="fix login",
+        workspace_root=tmp_path,
+        template_overrides={"codex_cli": "codex exec --sandbox danger-full-access {prompt}"},
+        external_policy={"codex_cli_path": str(fake_bin)},
+    )
+
+    assert shlex.split(cmd) == [str(fake_bin.resolve()), "exec", "--sandbox", "danger-full-access", "fix login"]
+
+
+def test_external_coding_agent_detects_write_blocked_output() -> None:
+    agent = ExternalCodingAgent()
+
+    assert agent._detect_write_blocked(  # type: ignore[attr-defined]
+        stdout="patch rejected: writing is blocked by read-only sandbox",
+        stderr="",
+        error="",
+    )
+
+
 def test_template_builder_rejects_unknown_agent(tmp_path: Path) -> None:
     try:
         build_external_command_from_template(

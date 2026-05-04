@@ -191,14 +191,15 @@
           </div>
           <div>
             <label>Codex 模板</label>
-            <input v-model="form.v2_external_coding.codex_template" placeholder="codex exec {prompt}" />
+            <input v-model="form.v2_external_coding.codex_template" placeholder="codex exec --sandbox workspace-write {prompt}" />
           </div>
           <div>
             <label>Cursor 模板</label>
             <input v-model="form.v2_external_coding.cursor_template" placeholder="cursor-agent --trust {prompt}" />
           </div>
           <p class="muted grid-span-2" style="margin: 0">
-            默认从服务进程的 PATH 解析外部 CLI；Cursor 后端非交互运行会自动补 <code>--trust</code>。
+            默认从服务进程的 PATH 解析外部 CLI；Codex 会自动使用 <code>workspace-write</code>，
+            Cursor 后端非交互运行会自动补 <code>--trust</code>。
             如需固定路径，可在服务环境中配置 <code>CURSOR_CLI_PATH</code> 或 <code>CODEX_CLI_PATH</code>。
           </p>
         </div>
@@ -274,7 +275,7 @@ const form = reactive({
     enabled: false,
     preferred_agent: "codex_cli",
     allow_raw_external_command: false,
-    codex_template: "codex exec {prompt}",
+    codex_template: "codex exec --sandbox workspace-write {prompt}",
     cursor_template: "cursor-agent --trust {prompt}",
     cursor_cli_path: "",
     codex_cli_path: "",

@@ -66,7 +66,7 @@ http://127.0.0.1:8000
 | `temperature` | number | `0.0` | 采样温度 |
 | `reasoning_mode` | `default` / `low` / `medium` / `high` | `default` | 推理模式标记 |
 | `max_steps` | integer | `3` | 最大执行步数，范围 `1-20` |
-| `run_timeout_seconds` | integer | `120` | 单次运行超时时间，范围 `1-600` |
+| `run_timeout_seconds` | integer | `120` | 单次运行超时时间，范围 `1-1800` |
 | `include_trace` | boolean | `false` | 是否在响应中附带 trace |
 
 V2 专属字段：
