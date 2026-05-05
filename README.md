@@ -31,6 +31,32 @@
 
 ---
 
+## WebUI 截图
+
+### 1. Overview 页面
+
+![Overview 页面截图](images/1.png)
+
+### 2. Run 页面
+
+![Run 页面截图](images/2.png)
+
+![Run 页面截图](images/3.png)
+
+### 3. 执行详情页
+
+![执行详情页截图](images/5.png)
+
+### 4. History 页面
+
+![History 页面截图](images/4.png)
+
+### 5. Trace 页面
+
+![Trace 页面截图](images/6.png)
+
+---
+
 ## 当前版本能力
 
 ### V1：单 Agent 基础闭环
@@ -263,32 +289,6 @@ WebUI 主要用于教学演示、调试和回放。
 
 ---
 
-## WebUI 截图
-
-### 1. Overview 页面
-
-![Overview 页面截图](images/1.png)
-
-### 2. Run 页面
-
-![Run 页面截图](images/2.png)
-
-![Run 页面截图](images/3.png)
-
-### 3. 执行详情页
-
-![执行详情页截图](images/5.png)
-
-### 4. History 页面
-
-![History 页面截图](images/4.png)
-
-### 5. Trace 页面
-
-![Trace 页面截图](images/6.png)
-
----
-
 ## API 入口
 
 完整接口请看 [`docs/api_reference.md`](docs/api_reference.md)。
@@ -378,4 +378,3 @@ app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 - v2：可用增强版，适合讲中心化多 Agent 编排、External Coder、Workspace、Trace 与 WebUI。
 - WebUI：已具备运行、历史、回放、Agent 配置、RAG 管理、Workspace / Memory、Trace 与 Dashboard。
 - Reviewer / Memory / Multi-RAG / External Coder 仍会继续增强，但已经可以用于课程演示和局部真实任务闭环。
-
