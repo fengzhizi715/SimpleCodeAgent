@@ -17,7 +17,6 @@
 - 基础课程购买：<https://gttmx.xetlk.com/s/4aaPVM>
 - 使用指南：[`docs/usage_guide.md`](docs/usage_guide.md)
 - API 文档：[`docs/api_reference.md`](docs/api_reference.md)
-- V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ---
 
@@ -358,7 +357,6 @@ app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
 - V1 教学路线：[`docs/v1/teaching_roadmap.md`](docs/v1/teaching_roadmap.md)
-- V2 状态：[`docs/v2_status.md`](docs/v2_status.md)
 
 ---
 
