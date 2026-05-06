@@ -22,7 +22,82 @@
 
 `v1` 是当前教学主线，强调“可预测、可调试、可验证”。
 
-### 2.1 主流程
+### 2.1 架构图（组件与数据流）
+
+下图概括 **v1 Agent Runtime** 的职责拆分：编排只在 `AgentLoop`；外部动作只经由 **Tool**；LLM 调用隔离在 **RuntimeExecutor**；观测与会话落在共享底座。
+
+```mermaid
+flowchart TB
+  subgraph Entry["调用入口"]
+    CLI["CLI / scripts"]
+    API["FastAPI · version=v1"]
+  end
+
+  subgraph RuntimePkg["app/v1/runtime"]
+    AL["AgentLoop · loop.py"]
+    RUN["run() · 主循环"]
+    RWP["run_with_plan()"]
+    PE["PlanExecutor · plan_executor.py"]
+    DTE["DirectToolExecutor · direct_tool_executor.py"]
+    RE["RuntimeExecutor · executor.py"]
+    RC["RunContext · context.py"]
+    ST["AgentState · state.py"]
+  end
+
+  subgraph SharedLLM["app/llm"]
+    Prov["LLMProvider.chat()"]
+  end
+
+  subgraph Tools["app/v1/tools · 唯一外部动作入口"]
+    REG["ToolRegistry"]
+    RTR["ToolRouter"]
+    TImpl["ReadFile / ShellRun / WriteFile / RAG ..."]
+  end
+
+  subgraph Observability["Memory & Trace"]
+    MEM["SessionMemory / SummaryMemory · app/v1/memory"]
+    TR["SQLiteTraceRepository + JsonlTraceRecorder · app/trace"]
+    DB["SQLite · app/db"]
+  end
+
+  CLI --> AL
+  API --> AL
+  AL --> RUN
+  AL --> RWP
+
+  RWP --> PE
+  PE --> DTE
+  PE -->|"每步子任务再次调用"| RUN
+
+  RUN --- RC
+  RUN --- ST
+  RUN --> RE
+  RE --> Prov
+
+  RUN -->|"解析 tool_calls"| REG
+  DTE --> REG
+  REG --> RTR --> TImpl
+
+  RUN --> MEM
+  RUN --> TR
+  MEM --> DB
+  TR --> DB
+```
+
+同一次 API / CLI 调用只会进入 **`run()`** 与 **`run_with_plan()`** 二者之一；上图把两条路径画在同一图中便于对照。
+
+**读图要点**
+
+| 模块 | 职责 |
+|------|------|
+| `AgentLoop` | `max_steps` / 超时、`RunResult` 组装、trace 事件、fallback 收敛 |
+| `RuntimeExecutor` | 组装 `RunRequest`，调用 `LLMProvider`，捕获异常并返回同构 fallback |
+| `PlanExecutor` | 复杂任务：顺序执行 `PlanStep`，可跳过 LLM 直接写文件、汇总失败语义 |
+| `DirectToolExecutor` | 规划路径上的确定性工具执行与校验 |
+| `ToolRegistry` / `ToolRouter` | 路由模型 tool call；异常转为 `ToolResult(is_error=true)`，不炸主循环 |
+| `RunContext` / `AgentState` | 单次 run 的配置快照与可变对话/计数状态 |
+
+### 2.2 主流程
 
 1. 读取历史会话消息，组装本轮上下文。
 2. 进入 step 循环（受 `max_steps` 和超时限制）。
@@ -32,14 +107,14 @@
    - 空结果/异常：进入 fallback。
 4. 持久化 session 消息、run 元数据和 trace。
 
-### 2.2 失败收敛
+### 2.3 失败收敛
 
 - 超时：停止运行并返回失败结果。
 - 达到最大步数：主动停止，避免死循环。
 - 工具失败：以结构化 `ToolResult(is_error=true)` 回填给模型或上层处理。
 - 模型异常：构造同构 fallback 结果，保证上层可消费。
 
-### 2.3 关键实现位置
+### 2.4 关键实现位置
 
 - 主循环：`app/v1/runtime/loop.py`
 - 单步执行：`app/v1/runtime/executor.py`
