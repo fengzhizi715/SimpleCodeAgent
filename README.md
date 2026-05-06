@@ -355,7 +355,6 @@ app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 - Runtime 约束：[`docs/agent_runtime.md`](docs/agent_runtime.md)
 - Tool 总览：[`docs/tooling.md`](docs/tooling.md)
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
-- 编程工作流：[`docs/coding_workflow.md`](docs/coding_workflow.md)
 - V1 教学路线：[`docs/v1/teaching_roadmap.md`](docs/v1/teaching_roadmap.md)
 
 ---
