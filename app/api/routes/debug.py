@@ -7,6 +7,7 @@ from time import perf_counter
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.deps import get_provider, get_trace_repository, get_v2_runtime
@@ -21,6 +22,7 @@ from app.core.config import (
 )
 from app.core.exceptions import RagIdValidationError
 from app.llm.client import LLMProviderError
+from app.trace.viewer import load_and_format_root_timeline, load_and_format_timeline
 from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
@@ -405,6 +407,20 @@ def get_trace(run_id: str) -> TraceQueryResponse:
     )
 
 
+@router.get(
+    "/debug/traces/{run_id}/view",
+    response_class=PlainTextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_trace_view(run_id: str) -> PlainTextResponse:
+    """按 run_id 查询并返回格式化后的纯文本 Trace 时间线。"""
+    try:
+        rendered = load_and_format_timeline(get_trace_repository(), run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(rendered)
+
+
 @router.get("/debug/traces-root/{root_run_id}", response_model=RootTraceQueryResponse, status_code=status.HTTP_200_OK)
 def get_root_trace(root_run_id: str) -> RootTraceQueryResponse:
     """按 root_run_id 查询整棵运行树的 Trace 时间线，用于追踪 PlanExecutor 的完整执行流。"""
@@ -415,6 +431,20 @@ def get_root_trace(root_run_id: str) -> RootTraceQueryResponse:
         root_run_id=root_run_id,
         events=[event.model_dump() for event in events],
     )
+
+
+@router.get(
+    "/debug/traces-root/{root_run_id}/view",
+    response_class=PlainTextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_root_trace_view(root_run_id: str) -> PlainTextResponse:
+    """按 root_run_id 查询并返回格式化后的纯文本整树 Trace 时间线。"""
+    try:
+        rendered = load_and_format_root_timeline(get_trace_repository(), root_run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(rendered)
 
 
 @router.get("/debug/v2/runs", response_model=V2RunHistoryResponse, status_code=status.HTTP_200_OK)

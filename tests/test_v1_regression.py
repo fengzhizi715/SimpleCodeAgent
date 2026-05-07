@@ -9,6 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.routes.agent import AgentRunRequest, run_agent
+from app.api.routes.debug import get_root_trace_view, get_trace_view
 from app.api.routes.debug import (
     RagDeleteSourceRequest,
     RagUploadRequest,
@@ -22,6 +23,7 @@ from app.contracts.planner import PlanStep
 from app.contracts.run import RunChoice, RunRequest, RunResult
 from app.contracts.tool import ToolCall, ToolFunction
 from app.contracts.trace import TraceEvent
+from app.db.sqlite import SQLiteDB
 from app.llm.client import LLMProvider, OpenAICompatibleProvider
 from app.trace.repository import SQLiteTraceRepository
 from app.v1.memory.repository import SQLiteMemoryRepository
@@ -358,6 +360,65 @@ def test_v1_api_rejects_non_default_rag_id() -> None:
         )
     assert excinfo.value.status_code == 400
     assert "v1 仅支持默认向量库（default）" in str(excinfo.value.detail)
+
+
+def test_debug_trace_view_returns_plain_text(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-view.sqlite3"))
+    event = TraceEvent(
+        run_id="run-trace-view",
+        event_type="run_finished",
+        message="done",
+        payload={"status": "completed"},
+    )
+    repository.save_event("run-trace-view", event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_trace_view("run-trace-view")
+
+    assert response.media_type == "text/plain"
+    assert "run_finished" in response.body.decode("utf-8")
+    assert "run_id=run-trace-view" in response.body.decode("utf-8")
+
+
+def test_debug_trace_view_returns_404_for_missing_run(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-view-missing.sqlite3"))
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_trace_view("missing-run")
+
+    assert excinfo.value.status_code == 404
+    assert "未找到 run_id=missing-run 的 trace" in str(excinfo.value.detail)
+
+
+def test_debug_root_trace_view_returns_plain_text(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-root-view.sqlite3"))
+    child_event = TraceEvent(
+        run_id="run-child",
+        root_run_id="root-trace-view",
+        event_type="delegation_finished",
+        message="child done",
+        payload={"status": "completed"},
+    )
+    repository.save_event("run-child", child_event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_root_trace_view("root-trace-view")
+
+    assert response.media_type == "text/plain"
+    assert "delegation_finished" in response.body.decode("utf-8")
+    assert "run_id=run-child" in response.body.decode("utf-8")
+
+
+def test_debug_root_trace_view_returns_404_for_missing_root(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-root-view-missing.sqlite3"))
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_root_trace_view("missing-root")
+
+    assert excinfo.value.status_code == 404
+    assert "未找到 root_run_id=missing-root 的 trace" in str(excinfo.value.detail)
 
 
 def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:

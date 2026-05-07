@@ -25,3 +25,11 @@ def load_and_format_timeline(repository: SQLiteTraceRepository, run_id: str) -> 
     if not events:
         raise ValueError(f"未找到 run_id={run_id} 的 trace。")
     return format_timeline(events)
+
+
+def load_and_format_root_timeline(repository: SQLiteTraceRepository, root_run_id: str) -> str:
+    """按 root_run_id 加载并格式化整棵运行树时间线。"""
+    events = repository.query_timeline_by_root(root_run_id)
+    if not events:
+        raise ValueError(f"未找到 root_run_id={root_run_id} 的 trace。")
+    return format_timeline(events)
