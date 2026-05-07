@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
         task_argument_name="prompt",
         task_argument_help="Prompt sent to the model.",
         task_optional=True,
+        include_trace=True,
     )
 
 
@@ -49,11 +50,23 @@ def main() -> None:
             workdir=args.workdir,
             max_steps=args.max_steps,
             run_timeout_seconds=args.run_timeout_seconds,
-            include_trace=False,
+            include_trace=bool(getattr(args, "trace", False)),
         )
     except (AppError, LLMProviderError) as exc:
         logger.exception("Application failed: %s", exc)
         sys.exit(1)
+
+    if version == "v3":
+        report = result["report"]
+        logger.info(
+            "Run completed: version=%s run_id=%s graph_id=%s status=%s",
+            version,
+            report.run_id,
+            report.graph_id,
+            report.status.value,
+        )
+        print_run_result(result=result, version=version, session_id=session_id, trace_lines=trace_lines)
+        return
 
     logger.info(
         "Run completed: version=%s run_id=%s session_id=%s step_count=%s",

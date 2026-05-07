@@ -6,9 +6,9 @@ from fastapi import FastAPI
 
 from app.api.routes.agent import router as agent_router
 from app.api.routes.debug import router as debug_router
+from app.api.routes.v3 import router as v3_router
 from app.core.config import settings
 from app.core.logger import configure_logging, get_logger
-from app.v3.api.routes import router as v3_router
 
 configure_logging(settings.log_level)
 logger = get_logger(__name__)

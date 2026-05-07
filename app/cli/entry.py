@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from typing import Literal
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.v1.runtime.loop import AgentLoop
 from app.v1.tools.registry import ToolRegistry
 from app.v2.agent_impls import describe_agent_matrix
 from app.v2.factory import build_orchestrator_runtime
+from app.v3.runner import format_v3_result, run_v3
 
 logger = get_logger(__name__)
 
@@ -35,7 +37,7 @@ def build_cli_parser(
     """构建统一的 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument(task_argument_name, nargs="?" if task_optional else None, help=task_argument_help)
-    parser.add_argument("--version", dest="version", choices=["v1", "v2"], default="v1")
+    parser.add_argument("--version", dest="version", choices=["v1", "v2", "v3"], default="v1")
     parser.add_argument("--model", dest="model", default=settings.llm_model)
     parser.add_argument(
         "--reasoning-mode",
@@ -96,12 +98,14 @@ def build_cli_parser(
     return parser
 
 
-def ensure_supported_version(version: str) -> Literal["v1", "v2"]:
+def ensure_supported_version(version: str) -> Literal["v1", "v2", "v3"]:
     """校验当前 CLI 支持的 Agent 版本。"""
     if version == "v1":
         return "v1"
     if version == "v2":
         return "v2"
+    if version == "v3":
+        return "v3"
     raise UnsupportedAgentVersionError(f"不支持的 Agent 版本：{version}")
 
 
@@ -125,11 +129,29 @@ def run_agent_task(
     """执行一次 Agent 任务，供多个 CLI 入口复用。"""
     if not task:
         raise AppError("Prompt is required. Example: python -m app.main 'Hello'")
+    resolved_version = ensure_supported_version(version)
+
+    if resolved_version == "v3":
+        result = asyncio.run(
+            run_v3(
+                goal=task,
+                workdir=workdir or ".",
+                include_events=include_trace,
+                include_trace=include_trace,
+            )
+        )
+        report = result["report"]
+        return (
+            result,
+            resolved_version,
+            "",
+            [f"{item.get('event_type')}: {item.get('message')}" for item in result["trace"]] if include_trace else [],
+        )
+
     if not model:
         raise AppError("Missing model. Set LLM_MODEL or pass --model.")
     if not (api_key or service_token):
         raise AppError("Missing auth credentials. Set LLM_API_KEY / LLM_SERVICE_TOKEN or pass --api-key / --service-token.")
-    resolved_version = ensure_supported_version(version)
 
     provider = OpenAICompatibleProvider(
         base_url=base_url,
@@ -240,6 +262,16 @@ def print_run_result(
     trace_lines: list[str] | None = None,
 ) -> None:
     """统一输出运行结果。"""
+    if version == "v3":
+        report = result["report"]
+        print(
+            format_v3_result(
+                report=report,
+                events=result.get("events"),
+                trace=result.get("trace"),
+            )
+        )
+        return
     print("Answer:")
     print(result.final_output)
     print()

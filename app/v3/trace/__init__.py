@@ -1,7 +1,8 @@
 """V3 tracing helpers."""
 
-from app.v3.trace.v3_trace import V3TraceCollector
+from app.v3.trace.v3_trace import attach_trace_collector, event_to_trace
 
 __all__ = [
-    "V3TraceCollector",
+    "attach_trace_collector",
+    "event_to_trace",
 ]

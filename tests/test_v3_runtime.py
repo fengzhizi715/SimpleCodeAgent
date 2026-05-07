@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
-from app.v3.contracts.event_contracts import EventType
+from app.db.sqlite import SQLiteDB
+from app.trace.repository import SQLiteTraceRepository
+from app.trace.viewer import load_and_format_timeline
+from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNode
 from app.v3.contracts.skill_contracts import SkillInput, SkillOutput, SkillSpec, SkillType
 from app.v3.contracts.trigger_contracts import TriggerRule
+from app.v3 import build_default_skill_registry
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_validator import GraphValidator
 from app.v3.runtime.execution_kernel import ExecutionKernel
 from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
+from app.v3.runner import run_v3
 from app.v3.skills.base import Skill
 from app.v3.skills.registry import SkillRegistry
-from app.v3.trace.v3_trace import V3TraceCollector
+from app.v3.trace import attach_trace_collector
 from app.v3.trigger.trigger_engine import TriggerEngine
 from app.v3.trigger.trigger_registry import TriggerRegistry
 
@@ -63,18 +69,7 @@ def test_v3_kernel_executes_serial_graph_and_collects_events() -> None:
     registry.register(EchoSkill("code"))
     event_bus = EventBus()
     event_store = EventStore()
-    trace_collector = V3TraceCollector()
-
-    async def trace_handler(event) -> None:
-        trace_collector.record(event)
-
-    for event_type in [
-        EventType.GRAPH_STARTED.value,
-        EventType.GRAPH_FINISHED.value,
-        EventType.SKILL_STARTED.value,
-        EventType.SKILL_FINISHED.value,
-    ]:
-        event_bus.subscribe(event_type, trace_handler)
+    trace_events = attach_trace_collector(event_bus)
 
     kernel = ExecutionKernel(
         graph_executor=GraphExecutor(
@@ -116,7 +111,7 @@ def test_v3_kernel_executes_serial_graph_and_collects_events() -> None:
         "skill_finished",
         "graph_finished",
     ]
-    assert [event.event_type for event in trace_collector.list()] == [
+    assert [event.event_type for event in trace_events] == [
         "graph_started",
         "skill_started",
         "skill_finished",
@@ -159,3 +154,106 @@ def test_trigger_engine_maps_event_payload_into_skill_input() -> None:
     assert len(recording_skill.inputs) == 1
     assert recording_skill.inputs[0].payload["changed_files"] == ["app/v3/runtime/graph_executor.py"]
     assert recording_skill.inputs[0].payload["kind"] == "code_updated"
+
+
+def test_planning_skill_generates_repo_aware_graph(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+    planning = registry.get("planning")
+
+    output = asyncio.run(
+        planning.execute(
+            SkillInput(
+                run_id="run-plan",
+                payload={"goal": "修复一个 bug 并运行测试", "workspace_root": str(tmp_path)},
+                context={"workspace_root": str(tmp_path)},
+            )
+        )
+    )
+
+    graph = output.data["graph"]
+    assert output.success is True
+    assert output.data["repo_profile"] == "python_pytest"
+    assert [node["node_id"] for node in graph["nodes"]] == ["analyze_repo", "coding", "test_runner"]
+    assert graph["nodes"][2]["input_payload"]["command"] == "pytest -q"
+
+
+def test_test_runner_skill_executes_pytest_via_v1_adapter(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+    test_runner = registry.get("test_runner")
+
+    output = asyncio.run(
+        test_runner.execute(
+            SkillInput(
+                run_id="run-test",
+                payload={
+                    "workspace_root": str(tmp_path),
+                    "command": "pytest -q tests/test_sample.py",
+                },
+                context={"workspace_root": str(tmp_path)},
+            )
+        )
+    )
+
+    assert output.success is True
+    assert output.data["executed_command"] == "pytest -q tests/test_sample.py"
+
+
+def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    result = asyncio.run(
+        run_v3(
+            goal="run tests",
+            workdir=str(tmp_path),
+            include_events=True,
+            include_trace=True,
+        )
+    )
+
+    assert result["report"].status.value == "completed"
+    assert result["report"].completed_node_ids == ["analyze_repo", "test_runner"]
+    assert len(result["events"]) >= 4
+    assert len(result["trace"]) >= 4
+
+
+def test_v3_trace_can_be_persisted_and_viewed_through_shared_trace_layer(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    trace_db = SQLiteDB(tmp_path / "trace.sqlite3")
+    monkeypatch.setattr("app.v3.runner.SQLiteDB", lambda: trace_db)
+
+    result = asyncio.run(
+        run_v3(
+            goal="run tests",
+            workdir=str(tmp_path),
+            include_events=True,
+            include_trace=True,
+        )
+    )
+
+    run_id = result["report"].run_id
+    repository = SQLiteTraceRepository(trace_db)
+    loaded = repository.query_timeline(run_id)
+    rendered = load_and_format_timeline(repository, run_id)
+
+    assert len(loaded) >= 4
+    assert loaded[0].event_type == "graph_started"
+    assert "graph_started" in rendered
+    assert f"run_id={run_id}" in rendered

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph
 from app.v3.events.event_bus import EventBus
@@ -27,10 +29,19 @@ class ExecutionKernel:
         self.event_bus = event_bus
         self.event_store = event_store
 
-    async def run_graph(self, graph: TaskGraph) -> ExecutionContext:
+    async def run_graph(
+        self,
+        graph: TaskGraph,
+        *,
+        initial_shared_state: dict[str, Any] | None = None,
+    ) -> ExecutionContext:
         """Run a validated graph."""
         self.validator.validate(graph)
-        context = ExecutionContext(run_id=graph.run_id, graph_id=graph.graph_id)
+        context = ExecutionContext(
+            run_id=graph.run_id,
+            graph_id=graph.graph_id,
+            shared_state=initial_shared_state or {},
+        )
 
         await self._publish(
             V3Event(

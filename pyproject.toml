@@ -20,4 +20,4 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["app", "app.api", "app.api.routes", "app.contracts", "app.core", "app.db", "app.llm", "app.trace", "app.v1", "app.v1.memory", "app.v1.planner", "app.v1.rag", "app.v1.runtime", "app.v1.tools", "app.v2", "app.v3", "app.v3.adapters", "app.v3.api", "app.v3.cli", "app.v3.contracts", "app.v3.events", "app.v3.graph", "app.v3.runtime", "app.v3.skills", "app.v3.skills.builtin", "app.v3.trace", "app.v3.trigger"]
+packages = ["app", "app.api", "app.api.routes", "app.contracts", "app.core", "app.db", "app.llm", "app.trace", "app.v1", "app.v1.memory", "app.v1.planner", "app.v1.rag", "app.v1.runtime", "app.v1.tools", "app.v2", "app.v3", "app.v3.adapters", "app.v3.contracts", "app.v3.events", "app.v3.graph", "app.v3.runtime", "app.v3.skills", "app.v3.skills.builtin", "app.v3.trace", "app.v3.trigger"]
