@@ -33,3 +33,11 @@ def load_and_format_root_timeline(repository: SQLiteTraceRepository, root_run_id
     if not events:
         raise ValueError(f"未找到 root_run_id={root_run_id} 的 trace。")
     return format_timeline(events)
+
+
+def load_and_format_session_timeline(repository: SQLiteTraceRepository, session_id: str) -> str:
+    """按 session_id 加载并格式化整段会话时间线。"""
+    events = repository.query_timeline_by_session(session_id)
+    if not events:
+        raise ValueError(f"未找到 session_id={session_id} 的 trace。")
+    return format_timeline(events)

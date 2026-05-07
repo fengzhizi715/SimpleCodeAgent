@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.routes.agent import AgentRunRequest, run_agent
-from app.api.routes.debug import get_root_trace_view, get_trace_view
+from app.api.routes.debug import get_root_trace_view, get_session_trace_view, get_trace_view
 from app.api.routes.debug import (
     RagDeleteSourceRequest,
     RagUploadRequest,
@@ -419,6 +419,36 @@ def test_debug_root_trace_view_returns_404_for_missing_root(monkeypatch, tmp_pat
 
     assert excinfo.value.status_code == 404
     assert "未找到 root_run_id=missing-root 的 trace" in str(excinfo.value.detail)
+
+
+def test_debug_session_trace_view_returns_plain_text(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-session-view.sqlite3"))
+    session_event = TraceEvent(
+        run_id="run-session-child",
+        session_id="session-trace-view",
+        event_type="run_finished",
+        message="session done",
+        payload={"status": "completed"},
+    )
+    repository.save_event("run-session-child", session_event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_session_trace_view("session-trace-view")
+
+    assert response.media_type == "text/plain"
+    assert "run_finished" in response.body.decode("utf-8")
+    assert "run_id=run-session-child" in response.body.decode("utf-8")
+
+
+def test_debug_session_trace_view_returns_404_for_missing_session(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-session-view-missing.sqlite3"))
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_session_trace_view("missing-session")
+
+    assert excinfo.value.status_code == 404
+    assert "未找到 session_id=missing-session 的 trace" in str(excinfo.value.detail)
 
 
 def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:

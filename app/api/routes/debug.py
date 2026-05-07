@@ -22,7 +22,11 @@ from app.core.config import (
 )
 from app.core.exceptions import RagIdValidationError
 from app.llm.client import LLMProviderError
-from app.trace.viewer import load_and_format_root_timeline, load_and_format_timeline
+from app.trace.viewer import (
+    load_and_format_root_timeline,
+    load_and_format_session_timeline,
+    load_and_format_timeline,
+)
 from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
@@ -442,6 +446,20 @@ def get_root_trace_view(root_run_id: str) -> PlainTextResponse:
     """按 root_run_id 查询并返回格式化后的纯文本整树 Trace 时间线。"""
     try:
         rendered = load_and_format_root_timeline(get_trace_repository(), root_run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PlainTextResponse(rendered)
+
+
+@router.get(
+    "/debug/traces-session/{session_id}/view",
+    response_class=PlainTextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_session_trace_view(session_id: str) -> PlainTextResponse:
+    """按 session_id 查询并返回格式化后的纯文本会话 Trace 时间线。"""
+    try:
+        rendered = load_and_format_session_timeline(get_trace_repository(), session_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PlainTextResponse(rendered)

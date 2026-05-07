@@ -53,7 +53,10 @@ class GraphExecutor:
                     SkillInput(
                         run_id=context.run_id,
                         payload=node.input_payload,
-                        context=context.shared_state,
+                        context={
+                            **context.shared_state,
+                            "current_node_id": node.node_id,
+                        },
                     ),
                 )
 
@@ -74,6 +77,14 @@ class GraphExecutor:
                             },
                         )
                     )
+                    domain_event = self._build_domain_event_on_success(
+                        node_id=node.node_id,
+                        skill_name=node.skill_name,
+                        run_id=context.run_id,
+                        output=output.data,
+                    )
+                    if domain_event is not None:
+                        await self._publish(domain_event)
                     continue
 
                 node.status = TaskNodeStatus.FAILED
@@ -94,6 +105,16 @@ class GraphExecutor:
                         },
                     )
                 )
+                domain_event = self._build_domain_event_on_failure(
+                    node_id=node.node_id,
+                    skill_name=node.skill_name,
+                    run_id=context.run_id,
+                    error=output.error,
+                    summary=output.summary,
+                    data=output.data,
+                )
+                if domain_event is not None:
+                    await self._publish(domain_event)
 
         return context
 
@@ -102,3 +123,49 @@ class GraphExecutor:
             self.event_store.append(event)
         if self.event_bus is not None:
             await self.event_bus.publish(event)
+
+    def _build_domain_event_on_success(
+        self,
+        *,
+        node_id: str,
+        skill_name: str,
+        run_id: str,
+        output: dict[str, object],
+    ) -> V3Event | None:
+        if skill_name != "coding":
+            return None
+        return V3Event(
+            run_id=run_id,
+            event_type=EventType.CODE_UPDATED.value,
+            source=skill_name,
+            payload={
+                "node_id": node_id,
+                "changed_files": output.get("changed_files", []),
+                "patch_summary": output.get("patch_summary", ""),
+            },
+        )
+
+    def _build_domain_event_on_failure(
+        self,
+        *,
+        node_id: str,
+        skill_name: str,
+        run_id: str,
+        error: str | None,
+        summary: str,
+        data: dict[str, object],
+    ) -> V3Event | None:
+        if skill_name != "test_runner":
+            return None
+        return V3Event(
+            run_id=run_id,
+            event_type=EventType.TEST_FAILED.value,
+            source=skill_name,
+            payload={
+                "node_id": node_id,
+                "error": error,
+                "summary": summary,
+                "failure_type": data.get("failure_type"),
+                "executed_command": data.get("executed_command"),
+            },
+        )

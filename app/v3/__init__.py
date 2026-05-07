@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.v3.adapters.v1_tool_adapter import V1ToolAdapter
+from app.v3.adapters.v2_agent_adapter import V2AgentAdapter
 from app.v3.contracts.skill_contracts import SkillSpec, SkillType
 from app.v3.graph.graph_validator import GraphValidator
 from app.v3.runtime.execution_kernel import ExecutionKernel
@@ -47,7 +48,8 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
                 description="Execute a minimal coding skill.",
                 skill_type=SkillType.COMPOSITE,
                 capabilities=["code.modify"],
-            )
+            ),
+            agent_adapter=V2AgentAdapter.for_coder(workspace_root=workspace_root),
         )
     )
     registry.register(

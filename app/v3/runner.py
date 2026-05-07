@@ -14,6 +14,7 @@ from app.v3 import build_default_skill_registry
 from app.v3.contracts.execution_contracts import ExecutionReport
 from app.v3.contracts.graph_contracts import TaskGraph
 from app.v3.contracts.skill_contracts import SkillInput
+from app.v3.contracts.trigger_contracts import TriggerRule
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_builder import GraphBuilder
@@ -22,6 +23,9 @@ from app.v3.runtime.execution_kernel import ExecutionKernel
 from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.trace import attach_trace_collector
+from app.v3.trigger.trigger_engine import TriggerEngine
+from app.v3.trigger.trigger_registry import TriggerRegistry
+from app.v3.skills.registry import SkillRegistry
 
 
 async def run_v3(
@@ -31,14 +35,22 @@ async def run_v3(
     workdir: str | None = None,
     include_events: bool = True,
     include_trace: bool = True,
+    registry: SkillRegistry | None = None,
+    trigger_rules: list[TriggerRule] | None = None,
 ) -> dict[str, Any]:
     """Run a V3 goal or graph and return serializable output."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
     event_bus = EventBus()
     event_store = EventStore()
     trace_events = attach_trace_collector(event_bus)
-    registry = build_default_skill_registry(workspace_root=resolved_workdir)
-    skill_executor = SkillExecutor(registry)
+    skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
+    skill_executor = SkillExecutor(skill_registry)
+    _attach_trigger_engine(
+        event_bus=event_bus,
+        event_store=event_store,
+        trigger_rules=trigger_rules or [],
+        skill_executor=skill_executor,
+    )
     graph_executor = GraphExecutor(skill_executor, event_bus=event_bus, event_store=event_store)
     kernel = ExecutionKernel(
         graph_executor=graph_executor,
@@ -126,3 +138,26 @@ def _persist_v3_trace(*, run_id: str, trace_events: list[TraceEvent]) -> None:
     recorder = JsonlTraceRecorder(run_id=run_id)
     repository.save_events(run_id, trace_events)
     recorder.record_many(trace_events)
+
+
+def _attach_trigger_engine(
+    *,
+    event_bus: EventBus,
+    event_store: EventStore,
+    trigger_rules: list[TriggerRule],
+    skill_executor: SkillExecutor,
+) -> None:
+    """Attach a trigger engine to the event bus for configured rules."""
+    if not trigger_rules:
+        return
+    trigger_registry = TriggerRegistry()
+    for rule in trigger_rules:
+        trigger_registry.register(rule)
+    trigger_engine = TriggerEngine(
+        trigger_registry,
+        skill_executor,
+        event_bus=event_bus,
+        event_store=event_store,
+    )
+    for event_type in {rule.event_type for rule in trigger_rules if rule.enabled}:
+        event_bus.subscribe(event_type, trigger_engine.handle_event)
