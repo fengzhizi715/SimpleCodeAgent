@@ -34,7 +34,7 @@
 - Event Bus / Event Store
 - Trigger Engine
 - Graph Validation
-- 基于结构化节点的执行报告与回放
+- 基于结构化节点的执行报告与恢复语义
 
 `v3` 当前定位为：
 
@@ -47,8 +47,9 @@
 - repo-aware planning
 - graph-based task execution
 - coding / testing skill 编排
-- event-triggered retry / fix 流程
-- 更细粒度的 execution report 与事件记录
+- planner 生成的恢复模板
+- event-triggered fix / re-test 流程
+- 更细粒度的 execution report、virtual execution node 与事件记录
 
 `v3` 当前不应被描述为：
 
@@ -56,6 +57,20 @@
 - 无限并行的工作流引擎
 - 去中心化自组织 Agent 网络
 - 无边界事件自动化系统
+
+当前默认内建能力以最小闭环为主：
+
+- `planning`
+- `analyze_repo`
+- `coding`
+- `test_runner`
+- `tdd`
+
+其中：
+
+- `coding` 默认通过 `v2_agent_adapter` 复用真实 coder
+- `test_runner` 默认通过 `v1_tool_adapter` 复用 shell/test 能力
+- `tdd` 是受控的 fix -> re-test 组合 skill，不是自治系统
 
 ---
 
@@ -71,6 +86,7 @@
 - 支持 Trigger Rule 与 Trigger Engine
 - 通过 adapter 复用稳定的 `v1` / `v2` 执行能力
 - 提升 graph execution、event flow 与 trigger chain 的可观测性
+- 支持 graph 节点失败后由 trigger 虚拟节点完成恢复，并在最终 report 中收敛状态
 
 `v3` 当前应作为独立实现演进，不应直接破坏 `v1` / `v2` 的稳定性与课程边界。
 
@@ -85,6 +101,7 @@
 - Skill 是执行单元
 - Tool Skill 通过受控 adapter 访问外部能力
 - Composite Skill 负责组织执行，不应内嵌无边界副作用
+- `tdd` 这类组合 skill 只能做小规模、可解释的受控循环
 
 Execution Kernel、Graph Executor、Skill Executor 负责：
 
@@ -154,6 +171,18 @@ Trigger 是 `v3` 的重要能力，也是最容易失控的部分。
 - Trigger 应支持禁用
 - 不允许隐式扩散式自动触发
 
+允许 planner 在特定场景下生成默认 Trigger 模板，例如：
+
+- `test_failed -> coding`
+- `test_failed -> tdd`
+
+但必须保持：
+
+- planner 只生成有限模板，不做自由 trigger 编排
+- 显式传入的 `trigger_rules` 优先于 planner 模板
+- Trigger 结果必须进入 execution report
+- 不允许通过 trigger 在运行时动态改写原始 graph
+
 不要把“未来可能有用的自动化链路”提前塞进默认执行路径。
 
 ---
@@ -203,16 +232,18 @@ Trigger 是 `v3` 的重要能力，也是最容易失控的部分。
 - `graph_finished`
 - `skill_started`
 - `skill_finished`
-- `trigger_matched`
-- `trigger_executed`
-- `event_published`
+- `skill_failed`
+- `test_failed`
+- `code_updated`
 
 所有关键执行链路都应尽量满足：
 
 - 可通过 `run_id` 查询
-- 可回放
 - 可解释
 - 可定位失败点
+
+当前阶段优先保证 trace 可查、timeline 可读、恢复链路可解释。
+不要把“完整 replay 引擎”写成已完成能力。
 
 如果新增关键流程，应同步补充 trace / event 记录。
 
@@ -245,8 +276,8 @@ Skill 应具备：
 
 - 输入输出结构化
 - 能力边界清晰
-- 尽量可重放
 - 尽量避免隐式副作用
+- 对恢复型 Skill，优先把策略收敛在 Skill 内，而不是把 TriggerRule 做复杂
 
 ---
 
@@ -258,7 +289,7 @@ Skill 应具备：
 - Graph Executor
 - Skill Executor
 - Execution Context
-- 节点执行收敛与报告生成
+- 节点执行收敛、恢复状态判定与报告生成
 
 不得把具体业务策略散落到多个 runtime 文件中。
 
@@ -273,6 +304,7 @@ Skill 应具备：
 - 节点依赖关系表达
 
 图构建逻辑与图校验逻辑应尽量分离。
+当前 graph 只表达主执行链，trigger 后续动作通过 virtual execution node 进入 report，而不是回写 graph 结构。
 
 ---
 
@@ -302,6 +334,15 @@ Trigger 必须保持：
 - 可调试
 - 可关闭
 - 可追踪
+
+当前 Trigger 只负责：
+
+- 事件匹配
+- payload 映射
+- 触发 Skill
+- 记录 virtual execution node
+
+不要在 Trigger 层堆叠复杂条件、预算控制或多级自治链。
 
 ---
 
@@ -339,6 +380,14 @@ Trigger 必须保持：
 
 不要为了临时方便把边界打穿。
 
+当前目录边界也应与现状保持一致：
+
+- `app/v3` 保留内核目录：`contracts / skills / graph / runtime / events / trigger / adapters`
+- `app/v3/runner.py` 作为共享 API / CLI 的装配入口
+- HTTP 路由走共享 `app/api`
+- CLI 入口走共享 `app/cli` 或主入口
+- trace 存储与 viewer 优先复用共享 `app/trace`，`app/v3/trace` 只保留薄 helper
+
 ---
 
 ## 安全边界
@@ -366,5 +415,6 @@ Trigger 必须保持：
 - 不要把 `v3` 做成“更复杂的 v2”
 - 不要为了未来过度抽象
 - 无边界事件自动化和无限扩张图执行不应提前塞入当前阶段
+- 不要把 planner 模板演进成动态 graph 改写器
 - 共享能力成熟后，再考虑上提到共享层
 - 不要让 `v3` 的实验性需求反向污染 `v1` / `v2`
