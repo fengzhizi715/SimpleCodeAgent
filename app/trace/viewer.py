@@ -13,9 +13,13 @@ def format_timeline(events: list[TraceEvent]) -> str:
     lines: list[str] = []
     for event in events:
         payload = json.dumps(event.payload, ensure_ascii=False, sort_keys=True)
-        lines.append(
+        line = (
             f"[{event.created_at}] {event.event_type} | run_id={event.run_id} | {event.message} | payload={payload}"
         )
+        extras = _format_v3_trace_extras(event)
+        if extras:
+            line = f"{line}\n{extras}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -41,3 +45,64 @@ def load_and_format_session_timeline(repository: SQLiteTraceRepository, session_
     if not events:
         raise ValueError(f"未找到 session_id={session_id} 的 trace。")
     return format_timeline(events)
+
+
+def _format_v3_trace_extras(event: TraceEvent) -> str:
+    if event.event_type != "graph_finished":
+        return ""
+    payload = event.payload
+    if not isinstance(payload, dict):
+        return ""
+    shared_state = payload.get("shared_state")
+    if not isinstance(shared_state, dict):
+        return ""
+    planning = shared_state.get("planning")
+    if not isinstance(planning, dict) or not planning:
+        return ""
+
+    lines = ["  planning:"]
+    if planning.get("goal_kind"):
+        lines.append(f"    goal_kind={planning['goal_kind']}")
+    if planning.get("repo_profile"):
+        lines.append(f"    repo_profile={planning['repo_profile']}")
+    if planning.get("recovery_strategy"):
+        lines.append(f"    recovery_strategy={planning['recovery_strategy']}")
+    if planning.get("template_name"):
+        lines.append(f"    template_name={planning['template_name']}")
+    if planning.get("template_reason"):
+        lines.append(f"    template_reason={planning['template_reason']}")
+    execution_layers = planning.get("execution_layers")
+    if isinstance(execution_layers, list) and execution_layers:
+        lines.append(f"    execution_layers={execution_layers}")
+    recovery_summary = _format_recovery_branch_summary(payload)
+    if recovery_summary:
+        lines.append("  recovery:")
+        lines.extend(f"    {line}" for line in recovery_summary)
+    return "\n".join(lines)
+
+
+def _format_recovery_branch_summary(payload: dict[str, object]) -> list[str]:
+    execution_nodes = payload.get("execution_nodes")
+    if not isinstance(execution_nodes, list):
+        return []
+    for node in execution_nodes:
+        if not isinstance(node, dict):
+            continue
+        output_data = node.get("output_data")
+        if not isinstance(output_data, dict):
+            continue
+        branch = output_data.get("verification_branch_summary")
+        if not isinstance(branch, dict):
+            continue
+        failed_stage = branch.get("failed_stage")
+        if not failed_stage:
+            continue
+        lines = [f"failed_stage={failed_stage}"]
+        focused_passed = branch.get("focused_commands_passed")
+        if isinstance(focused_passed, list) and focused_passed:
+            lines.append(f"focused_commands_passed={focused_passed}")
+        failed_command = branch.get("failed_command")
+        if failed_command:
+            lines.append(f"failed_command={failed_command}")
+        return lines
+    return []

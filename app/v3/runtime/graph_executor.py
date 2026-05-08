@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNodeStatus
 from app.v3.contracts.skill_contracts import SkillInput
@@ -13,7 +15,7 @@ from app.v3.runtime.skill_executor import SkillExecutor
 
 
 class GraphExecutor:
-    """Execute a graph serially for the V3 MVP."""
+    """Execute a graph with simple wave-based parallelism for ready nodes."""
 
     def __init__(
         self,
@@ -37,6 +39,7 @@ class GraphExecutor:
             if not ready_nodes:
                 break
 
+            context_snapshot = dict(context.shared_state)
             for node in ready_nodes:
                 node.status = TaskNodeStatus.RUNNING
                 await self._publish(
@@ -48,18 +51,24 @@ class GraphExecutor:
                     )
                 )
 
-                output = await self.skill_executor.execute(
-                    node.skill_name,
-                    SkillInput(
-                        run_id=context.run_id,
-                        payload=node.input_payload,
-                        context={
-                            **context.shared_state,
-                            "current_node_id": node.node_id,
-                        },
-                    ),
-                )
+            outputs = await asyncio.gather(
+                *[
+                    self.skill_executor.execute(
+                        node.skill_name,
+                        SkillInput(
+                            run_id=context.run_id,
+                            payload=node.input_payload,
+                            context={
+                                **context_snapshot,
+                                "current_node_id": node.node_id,
+                            },
+                        ),
+                    )
+                    for node in ready_nodes
+                ]
+            )
 
+            for node, output in zip(ready_nodes, outputs, strict=True):
                 if output.success:
                     node.status = TaskNodeStatus.DONE
                     completed.add(node.node_id)

@@ -267,6 +267,8 @@ def print_run_result(
         print(
             format_v3_result(
                 report=report,
+                planning=result.get("planning"),
+                inspection=result.get("inspection"),
                 events=result.get("events"),
                 trace=result.get("trace"),
             )

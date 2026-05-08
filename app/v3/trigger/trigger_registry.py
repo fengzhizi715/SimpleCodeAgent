@@ -17,4 +17,7 @@ class TriggerRegistry:
 
     def match(self, event_type: str) -> list[TriggerRule]:
         """Match enabled rules by event type."""
-        return [rule for rule in self._rules if rule.enabled and rule.event_type == event_type]
+        return sorted(
+            [rule for rule in self._rules if rule.enabled and rule.event_type == event_type],
+            key=lambda rule: (rule.priority, rule.rule_id),
+        )

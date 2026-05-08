@@ -18,6 +18,7 @@ def inspect_workspace(workspace_root: str | Path | None) -> dict[str, object]:
     has_requirements = (root / "requirements.txt").exists()
     has_gradle_kts = (root / "build.gradle.kts").exists() or (root / "settings.gradle.kts").exists()
     has_gradlew = (root / "gradlew").exists()
+    candidate_test_targets = _discover_test_targets(root)
 
     repo_profile = "generic"
     candidate_test_commands: list[str] = []
@@ -27,6 +28,8 @@ def inspect_workspace(workspace_root: str | Path | None) -> dict[str, object]:
         candidate_test_commands.append("./gradlew test" if has_gradlew else "gradle test")
     elif has_python_tests or has_pyproject or has_requirements:
         repo_profile = "python_pytest"
+        for target in candidate_test_targets:
+            candidate_test_commands.append(f"pytest -q {target}")
         candidate_test_commands.append("pytest -q")
 
     return {
@@ -34,6 +37,7 @@ def inspect_workspace(workspace_root: str | Path | None) -> dict[str, object]:
         "repo_profile": repo_profile,
         "root_entries": entries[:50],
         "has_python_tests": has_python_tests,
+        "candidate_test_targets": candidate_test_targets,
         "candidate_test_commands": candidate_test_commands,
     }
 
@@ -43,8 +47,24 @@ def infer_goal_kind(goal: str) -> str:
     text = goal.lower()
     if any(keyword in text for keyword in ("修复", "fix", "bug", "实现", "add", "modify", "change", "update")):
         return "coding"
-    if any(keyword in text for keyword in ("测试", "pytest", "test only", "run tests", "执行测试")):
+    if any(keyword in text for keyword in ("测试", "pytest", "test only", "run tests", "run all tests", "执行测试")):
         return "testing"
     if any(keyword in text for keyword in ("分析", "explain", "summarize", "review", "阅读代码")):
         return "analysis"
     return "general"
+
+
+def _discover_test_targets(root: Path, *, limit: int = 3) -> list[str]:
+    tests_dir = root / "tests"
+    if not tests_dir.exists() or not tests_dir.is_dir():
+        return []
+
+    targets: list[str] = []
+    for path in sorted(tests_dir.rglob("test_*.py")):
+        try:
+            targets.append(path.relative_to(root).as_posix())
+        except ValueError:
+            continue
+        if len(targets) >= limit:
+            break
+    return targets

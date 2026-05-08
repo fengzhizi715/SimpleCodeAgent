@@ -14,6 +14,7 @@ from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.skills.builtin.coding_skill import CodingSkill
 from app.v3.skills.builtin.planning_skill import PlanningSkill
 from app.v3.skills.builtin.repo_analysis_skill import RepoAnalysisSkill
+from app.v3.skills.builtin.tdd_skill import TDDSkill
 from app.v3.skills.builtin.test_runner_skill import TestRunnerSkill
 from app.v3.skills.registry import SkillRegistry
 
@@ -61,6 +62,18 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
                 capabilities=["test.run"],
             ),
             shell_adapter=V1ToolAdapter.for_shell_run(workspace_root=workspace_root),
+        )
+    )
+    skill_executor = SkillExecutor(registry)
+    registry.register(
+        TDDSkill(
+            SkillSpec(
+                name="tdd",
+                description="Run a tiny fix-and-retest recovery loop.",
+                skill_type=SkillType.COMPOSITE,
+                capabilities=["code.recover", "test.retry"],
+            ),
+            skill_executor=skill_executor,
         )
     )
     return registry

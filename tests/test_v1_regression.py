@@ -380,6 +380,49 @@ def test_debug_trace_view_returns_plain_text(monkeypatch, tmp_path: Path) -> Non
     assert "run_id=run-trace-view" in response.body.decode("utf-8")
 
 
+def test_debug_trace_view_formats_v3_planning_details(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-view-v3.sqlite3"))
+    event = TraceEvent(
+        run_id="run-v3-trace-view",
+        event_type="graph_finished",
+        message="v3:graph_finished",
+        payload={
+            "shared_state": {
+                "planning": {
+                    "goal_kind": "testing",
+                    "repo_profile": "python_pytest",
+                    "recovery_strategy": "fix_and_retest",
+                    "template_name": "default",
+                    "template_reason": "Planner selected the default linear graph because no richer template was strongly indicated by the goal.",
+                    "execution_layers": [["analyze_repo"], ["test_runner"]],
+                }
+            },
+            "execution_nodes": [
+                {
+                    "kind": "trigger",
+                    "output_data": {
+                        "verification_branch_summary": {
+                            "failed_stage": "full_suite",
+                            "focused_commands_passed": ["pytest -q tests/test_scope.py"],
+                            "failed_command": "pytest -q",
+                        }
+                    },
+                }
+            ],
+        },
+    )
+    repository.save_event("run-v3-trace-view", event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_trace_view("run-v3-trace-view")
+    text = response.body.decode("utf-8")
+
+    assert "recovery_strategy=fix_and_retest" in text
+    assert "execution_layers=[['analyze_repo'], ['test_runner']]" in text
+    assert "template_reason=Planner selected the default linear graph" in text
+    assert "failed_stage=full_suite" in text
+
+
 def test_debug_trace_view_returns_404_for_missing_run(monkeypatch, tmp_path: Path) -> None:
     repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-view-missing.sqlite3"))
     monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)

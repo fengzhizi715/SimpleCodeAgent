@@ -38,3 +38,17 @@ class TaskGraph(BaseModel):
     graph_id: str
     run_id: str
     nodes: list[TaskNode]
+
+
+class GraphInspection(BaseModel):
+    """Inspectable metadata for a validated V3 graph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    graph: TaskGraph
+    is_valid: bool = True
+    node_count: int
+    edge_count: int
+    root_node_ids: list[str] = Field(default_factory=list)
+    leaf_node_ids: list[str] = Field(default_factory=list)
+    execution_layers: list[list[str]] = Field(default_factory=list)

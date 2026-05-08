@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.v3.contracts.event_contracts import EventType, V3Event
+from app.v3.contracts.execution_contracts import ExecutionNode
 from app.v3.contracts.graph_contracts import TaskGraph
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
@@ -34,6 +35,7 @@ class ExecutionKernel:
         graph: TaskGraph,
         *,
         initial_shared_state: dict[str, Any] | None = None,
+        trigger_execution_nodes: list[ExecutionNode] | None = None,
     ) -> ExecutionContext:
         """Run a validated graph."""
         self.validator.validate(graph)
@@ -42,6 +44,8 @@ class ExecutionKernel:
             graph_id=graph.graph_id,
             shared_state=initial_shared_state or {},
         )
+        if trigger_execution_nodes is not None:
+            context.trigger_execution_nodes = trigger_execution_nodes
 
         await self._publish(
             V3Event(
