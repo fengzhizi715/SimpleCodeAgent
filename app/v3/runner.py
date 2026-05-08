@@ -11,7 +11,7 @@ from app.contracts.trace import TraceEvent
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v3 import build_default_skill_registry
-from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport
+from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport, TriggerDiagnostic
 from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph
 from app.v3.contracts.planning_contracts import PlanningResult
 from app.v3.contracts.skill_contracts import SkillInput
@@ -46,6 +46,7 @@ async def run_v3(
     event_store = EventStore()
     trace_events = attach_trace_collector(event_bus)
     trigger_execution_nodes: list[ExecutionNode] = []
+    trigger_diagnostics: list[TriggerDiagnostic] = []
     skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
     skill_executor = SkillExecutor(skill_registry)
     graph_executor = GraphExecutor(skill_executor, event_bus=event_bus, event_store=event_store)
@@ -92,6 +93,7 @@ async def run_v3(
         event_bus=event_bus,
         event_store=event_store,
         execution_nodes=trigger_execution_nodes,
+        diagnostics=trigger_diagnostics,
         trigger_rules=effective_trigger_rules,
         skill_executor=skill_executor,
     )
@@ -110,6 +112,7 @@ async def run_v3(
             ),
         },
         trigger_execution_nodes=trigger_execution_nodes,
+        trigger_diagnostics=trigger_diagnostics,
     )
     report = context.to_report(resolved_graph)
     _persist_v3_trace(run_id=report.run_id, trace_events=trace_events)
@@ -272,6 +275,7 @@ def _attach_trigger_engine(
     event_bus: EventBus,
     event_store: EventStore,
     execution_nodes: list[ExecutionNode],
+    diagnostics: list[TriggerDiagnostic],
     trigger_rules: list[TriggerRule],
     skill_executor: SkillExecutor,
 ) -> None:
@@ -287,6 +291,7 @@ def _attach_trigger_engine(
         event_bus=event_bus,
         event_store=event_store,
         execution_nodes=execution_nodes,
+        diagnostics=diagnostics,
     )
     for event_type in {rule.event_type for rule in trigger_rules if rule.enabled}:
         event_bus.subscribe(event_type, trigger_engine.handle_event)

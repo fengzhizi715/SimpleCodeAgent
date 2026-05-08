@@ -400,7 +400,13 @@ def test_debug_trace_view_formats_v3_planning_details(monkeypatch, tmp_path: Pat
             "execution_nodes": [
                 {
                     "kind": "trigger",
+                    "node_id": "trigger:rule-1:event-1",
                     "output_data": {
+                        "trigger_governance": {
+                            "dedupe_key": "rule-1:test_runner",
+                            "cooldown_key": "rule-1:test_runner",
+                            "cooldown_seconds": 30.0,
+                        },
                         "verification_branch_summary": {
                             "failed_stage": "full_suite",
                             "focused_commands_passed": ["pytest -q tests/test_scope.py"],
@@ -421,6 +427,35 @@ def test_debug_trace_view_formats_v3_planning_details(monkeypatch, tmp_path: Pat
     assert "execution_layers=[['analyze_repo'], ['test_runner']]" in text
     assert "template_reason=Planner selected the default linear graph" in text
     assert "failed_stage=full_suite" in text
+    assert "dedupe_key=rule-1:test_runner" in text
+    assert "cooldown_key=rule-1:test_runner" in text
+
+
+def test_debug_trace_view_formats_trigger_skipped_details(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-view-skip.sqlite3"))
+    event = TraceEvent(
+        run_id="run-trigger-skip",
+        event_type="trigger_skipped",
+        message="v3:trigger_skipped",
+        payload={
+            "payload": {
+                "trigger_rule_id": "cooldown-rule",
+                "skip_reason": "cooldown",
+                "dedupe_key": "cooldown-rule:test_runner",
+                "cooldown_key": "cooldown-rule:test_runner",
+                "cooldown_seconds": 30.0,
+            }
+        },
+    )
+    repository.save_event("run-trigger-skip", event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_trace_view("run-trigger-skip")
+    text = response.body.decode("utf-8")
+
+    assert "skip_reason=cooldown" in text
+    assert "rule_id=cooldown-rule" in text
+    assert "cooldown_key=cooldown-rule:test_runner" in text
 
 
 def test_debug_trace_view_returns_404_for_missing_run(monkeypatch, tmp_path: Path) -> None:

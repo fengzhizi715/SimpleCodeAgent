@@ -48,6 +48,8 @@ def load_and_format_session_timeline(repository: SQLiteTraceRepository, session_
 
 
 def _format_v3_trace_extras(event: TraceEvent) -> str:
+    if event.event_type == "trigger_skipped":
+        return _format_trigger_skipped(event)
     if event.event_type != "graph_finished":
         return ""
     payload = event.payload
@@ -78,6 +80,10 @@ def _format_v3_trace_extras(event: TraceEvent) -> str:
     if recovery_summary:
         lines.append("  recovery:")
         lines.extend(f"    {line}" for line in recovery_summary)
+    trigger_governance = _format_trigger_governance(payload)
+    if trigger_governance:
+        lines.append("  trigger_governance:")
+        lines.extend(f"    {line}" for line in trigger_governance)
     return "\n".join(lines)
 
 
@@ -106,3 +112,45 @@ def _format_recovery_branch_summary(payload: dict[str, object]) -> list[str]:
             lines.append(f"failed_command={failed_command}")
         return lines
     return []
+
+
+def _format_trigger_governance(payload: dict[str, object]) -> list[str]:
+    execution_nodes = payload.get("execution_nodes")
+    if not isinstance(execution_nodes, list):
+        return []
+    lines: list[str] = []
+    for node in execution_nodes:
+        if not isinstance(node, dict) or node.get("kind") != "trigger":
+            continue
+        output_data = node.get("output_data")
+        if not isinstance(output_data, dict):
+            continue
+        governance = output_data.get("trigger_governance")
+        if not isinstance(governance, dict):
+            continue
+        node_id = node.get("node_id") or "trigger"
+        lines.append(
+            f"{node_id}: dedupe_key={governance.get('dedupe_key')} cooldown_key={governance.get('cooldown_key')} cooldown_seconds={governance.get('cooldown_seconds')}"
+        )
+    return lines
+
+
+def _format_trigger_skipped(event: TraceEvent) -> str:
+    payload = event.payload
+    if not isinstance(payload, dict):
+        return ""
+    event_payload = payload.get("payload")
+    if not isinstance(event_payload, dict):
+        return ""
+    lines = ["  trigger_skip:"]
+    if event_payload.get("trigger_rule_id"):
+        lines.append(f"    rule_id={event_payload['trigger_rule_id']}")
+    if event_payload.get("skip_reason"):
+        lines.append(f"    skip_reason={event_payload['skip_reason']}")
+    if event_payload.get("dedupe_key") is not None:
+        lines.append(f"    dedupe_key={event_payload.get('dedupe_key')}")
+    if event_payload.get("cooldown_key") is not None:
+        lines.append(f"    cooldown_key={event_payload.get('cooldown_key')}")
+    if event_payload.get("cooldown_seconds") is not None:
+        lines.append(f"    cooldown_seconds={event_payload.get('cooldown_seconds')}")
+    return "\n".join(lines)

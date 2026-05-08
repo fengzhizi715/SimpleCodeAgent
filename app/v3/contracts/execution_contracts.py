@@ -38,6 +38,26 @@ class ExecutionNode(BaseModel):
     output_data: dict[str, Any] = Field(default_factory=dict)
 
 
+class TriggerDiagnostic(BaseModel):
+    """Lightweight diagnostic record for trigger execution or suppression."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trigger_rule_id: str
+    source_event_type: str
+    target_skill_name: str
+    status: Literal["executed", "skipped"]
+    skip_reason: str | None = None
+    dedupe_key: str | None = None
+    cooldown_key: str | None = None
+    cooldown_seconds: float | None = None
+    priority: int | None = None
+    once_per_run: bool | None = None
+    suppress_repeats: bool | None = None
+    source_event_id: str | None = None
+    parent_node_id: str | None = None
+
+
 class ExecutionReport(BaseModel):
     """Serializable V3 execution report."""
 
@@ -53,3 +73,4 @@ class ExecutionReport(BaseModel):
     node_outputs: dict[str, Any] = Field(default_factory=dict)
     shared_state: dict[str, Any] = Field(default_factory=dict)
     execution_nodes: list[ExecutionNode] = Field(default_factory=list)
+    trigger_diagnostics: list[TriggerDiagnostic] = Field(default_factory=list)

@@ -6,7 +6,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport, ExecutionStatus
+from app.v3.contracts.execution_contracts import (
+    ExecutionNode,
+    ExecutionReport,
+    ExecutionStatus,
+    TriggerDiagnostic,
+)
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNodeStatus
 
 
@@ -20,6 +25,7 @@ class ExecutionContext(BaseModel):
     shared_state: dict[str, Any] = Field(default_factory=dict)
     node_outputs: dict[str, Any] = Field(default_factory=dict)
     trigger_execution_nodes: list[ExecutionNode] = Field(default_factory=list)
+    trigger_diagnostics: list[TriggerDiagnostic] = Field(default_factory=list)
 
     def to_report(self, graph: TaskGraph) -> ExecutionReport:
         """Create a serializable execution report."""
@@ -60,6 +66,7 @@ class ExecutionContext(BaseModel):
             node_outputs=self.node_outputs,
             shared_state=self.shared_state,
             execution_nodes=graph_execution_nodes + list(self.trigger_execution_nodes),
+            trigger_diagnostics=list(self.trigger_diagnostics),
         )
 
     def _collect_recovered_node_ids(self, failed_node_ids: list[str]) -> list[str]:

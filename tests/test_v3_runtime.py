@@ -458,6 +458,177 @@ def test_trigger_engine_can_apply_cooldown_within_one_run(monkeypatch) -> None:
     assert len(recording_skill.inputs) == 1
 
 
+def test_trigger_engine_records_governance_metadata_on_trigger_execution(monkeypatch) -> None:
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    execution_nodes = []
+    event_store = EventStore()
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="governed",
+            event_type="test_failed",
+            target_skill_name="recording",
+            suppress_repeats=True,
+            dedupe_key_template="event.payload.node_id",
+            cooldown_key="event.payload.node_id",
+            cooldown_seconds=10.0,
+            priority=5,
+        )
+    )
+    engine = TriggerEngine(
+        trigger_registry,
+        SkillExecutor(registry),
+        event_store=event_store,
+        execution_nodes=execution_nodes,
+    )
+    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: 500.0)
+
+    asyncio.run(
+        engine.handle_event(
+            V3Event(
+                run_id="run-governed",
+                event_type="test_failed",
+                source="test_runner",
+                payload={"node_id": "test_runner"},
+            )
+        )
+    )
+
+    governance = execution_nodes[0].output_data["trigger_governance"]
+    assert governance["dedupe_key"] == "governed:test_runner"
+    assert governance["cooldown_key"] == "governed:test_runner"
+    assert governance["cooldown_seconds"] == 10.0
+
+
+def test_trigger_engine_publishes_trigger_skipped_event_for_cooldown(monkeypatch) -> None:
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    event_store = EventStore()
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="cooldown",
+            event_type="test_failed",
+            target_skill_name="recording",
+            cooldown_key="event.payload.node_id",
+            cooldown_seconds=30.0,
+        )
+    )
+    engine = TriggerEngine(trigger_registry, SkillExecutor(registry), event_store=event_store)
+
+    current_time = {"value": 700.0}
+    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+
+    first = V3Event(
+        run_id="run-cooldown-skip",
+        event_type="test_failed",
+        source="test_runner",
+        payload={"node_id": "test_runner"},
+    )
+    second = V3Event(
+        run_id="run-cooldown-skip",
+        event_type="test_failed",
+        source="test_runner",
+        payload={"node_id": "test_runner"},
+    )
+
+    asyncio.run(engine.handle_event(first))
+    current_time["value"] = 705.0
+    asyncio.run(engine.handle_event(second))
+
+    skipped = [event for event in event_store.list() if event.event_type == EventType.TRIGGER_SKIPPED.value]
+    assert len(skipped) == 1
+    assert skipped[0].payload["skip_reason"] == "cooldown"
+    assert skipped[0].payload["cooldown_key"] == "cooldown:test_runner"
+
+
+def test_run_v3_report_includes_trigger_diagnostics_for_skipped_trigger(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_fail.py").write_text(
+        "def test_fail():\n    assert False\n",
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+
+    result = asyncio.run(
+        run_v3(
+            goal="run tests",
+            workdir=str(tmp_path),
+            include_events=True,
+            include_trace=True,
+            registry=registry,
+            trigger_rules=[
+                TriggerRule(
+                    rule_id="cooldown",
+                    event_type=EventType.TEST_FAILED.value,
+                    target_skill_name="recording",
+                    cooldown_key="event.payload.node_id",
+                    cooldown_seconds=30.0,
+                )
+            ],
+        )
+    )
+
+    diagnostics = result["report"].trigger_diagnostics
+    assert diagnostics
+    assert diagnostics[0].status == "executed"
+    assert diagnostics[0].trigger_rule_id == "cooldown"
+    assert diagnostics[0].cooldown_key == "cooldown:test_runner"
+
+
+def test_trigger_engine_records_skipped_trigger_diagnostic(monkeypatch) -> None:
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    diagnostics = []
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="cooldown",
+            event_type="test_failed",
+            target_skill_name="recording",
+            cooldown_key="event.payload.node_id",
+            cooldown_seconds=30.0,
+        )
+    )
+    engine = TriggerEngine(
+        trigger_registry,
+        SkillExecutor(registry),
+        diagnostics=diagnostics,
+    )
+
+    current_time = {"value": 900.0}
+    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+
+    first = V3Event(
+        run_id="run-diagnostics",
+        event_type="test_failed",
+        source="test_runner",
+        payload={"node_id": "test_runner"},
+    )
+    second = V3Event(
+        run_id="run-diagnostics",
+        event_type="test_failed",
+        source="test_runner",
+        payload={"node_id": "test_runner"},
+    )
+
+    asyncio.run(engine.handle_event(first))
+    current_time["value"] = 905.0
+    asyncio.run(engine.handle_event(second))
+
+    assert len(diagnostics) == 2
+    assert diagnostics[0].status == "executed"
+    assert diagnostics[1].status == "skipped"
+    assert diagnostics[1].skip_reason == "cooldown"
+    assert diagnostics[1].cooldown_key == "cooldown:test_runner"
+
+
 def test_trigger_engine_allows_trigger_after_cooldown_window(monkeypatch) -> None:
     registry = SkillRegistry()
     recording_skill = RecordingSkill()
