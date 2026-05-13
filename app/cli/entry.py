@@ -136,6 +136,8 @@ def run_agent_task(
             run_v3(
                 goal=task,
                 workdir=workdir or ".",
+                session_id=session_id or None,
+                model=model or None,
                 include_events=include_trace,
                 include_trace=include_trace,
             )

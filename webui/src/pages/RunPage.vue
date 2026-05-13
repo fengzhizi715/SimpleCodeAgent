@@ -2,8 +2,8 @@
   <section class="panel">
     <h2>新建运行任务</h2>
     <p class="muted">
-      选择版本后提交任务：<code>v2</code> 会跳转执行页并轮询回放；<code>v1</code> 与 <code>v3</code>
-      会在当前页直接展示结果。<RouterLink to="/history">查看历史运行</RouterLink>
+      选择版本后提交任务：<code>v2</code> 与 <code>v3</code> 会跳转执行详情页；<code>v1</code> 会在当前页直接展示结果。
+      <code>v3</code> 的 <code>plan_only</code> 仍会在当前页直接展示结构化结果。<RouterLink to="/history">查看历史运行</RouterLink>
     </p>
 
     <div>
@@ -407,6 +407,56 @@
           <tr><th>rag_ids</th><td>{{ formatRagIds(v3Result.planning.rag_ids, v3Result.planning.rag_id) }}</td></tr>
         </tbody>
       </table>
+      <div v-if="planningNodes(v3Result.planning).length" class="planning-node-section">
+        <div class="planning-node-head">
+          <h4>Graph Nodes</h4>
+          <p class="muted">按 planner 生成顺序展示节点、依赖与关键输入，方便快速扫一眼执行骨架。</p>
+        </div>
+        <div class="planning-node-list">
+          <article
+            v-for="(node, index) in planningNodes(v3Result.planning)"
+            :key="node.node_id || index"
+            class="planning-node-card"
+          >
+            <div class="planning-node-top">
+              <div class="planning-node-title">
+                <span class="planning-node-index">#{{ index + 1 }}</span>
+                <strong>{{ node.node_id }}</strong>
+              </div>
+              <span class="agent-version agent-version--v3">{{ node.skill_name }}</span>
+            </div>
+            <p class="planning-node-deps muted">
+              depends on:
+              <span v-if="node.dependencies?.length">{{ node.dependencies.join(", ") }}</span>
+              <span v-else>—</span>
+            </p>
+            <table class="planning-node-table">
+              <tbody>
+                <tr v-if="node.input_payload?.goal">
+                  <th>goal</th>
+                  <td>{{ node.input_payload.goal }}</td>
+                </tr>
+                <tr v-if="node.input_payload?.command">
+                  <th>command</th>
+                  <td><code>{{ node.input_payload.command }}</code></td>
+                </tr>
+                <tr v-if="node.input_payload?.query">
+                  <th>query</th>
+                  <td>{{ node.input_payload.query }}</td>
+                </tr>
+                <tr v-if="node.input_payload?.execution_mode">
+                  <th>mode</th>
+                  <td>{{ node.input_payload.execution_mode }}</td>
+                </tr>
+                <tr v-if="node.input_payload?.rag_id || (Array.isArray(node.input_payload?.rag_ids) && node.input_payload.rag_ids.length)">
+                  <th>rag</th>
+                  <td>{{ formatRagIds(node.input_payload.rag_ids, node.input_payload.rag_id) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </article>
+        </div>
+      </div>
       <JsonBlock :data="v3Result.planning" />
     </section>
 
@@ -584,6 +634,11 @@ function formatRagIds(ragIds, ragId) {
   return "—";
 }
 
+function planningNodes(planning) {
+  const nodes = planning?.graph?.nodes;
+  return Array.isArray(nodes) ? nodes : [];
+}
+
 async function submitRun() {
   error.value = "";
   v1Result.value = null;
@@ -661,6 +716,14 @@ async function submitRun() {
       return;
     }
     if (form.version === "v3") {
+      if (!form.plan_only && result.run_id) {
+        await router.push({
+          name: "execution",
+          params: { runId: result.run_id },
+          query: { version: "v3", sessionId: result.session_id || "" },
+        });
+        return;
+      }
       v3Result.value = result;
       return;
     }

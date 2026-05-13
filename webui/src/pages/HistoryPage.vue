@@ -91,7 +91,7 @@
               <td class="muted history-time td-time">{{ formatDateTimeCompact(r.updated_at) }}</td>
               <td class="history-actions td-actions">
                 <div class="history-action-group">
-                  <template v-if="normalizeVersion(r.agent_version) === 'v2'">
+                  <template v-if="normalizeVersion(r.agent_version) === 'v2' || normalizeVersion(r.agent_version) === 'v3'">
                     <RouterLink class="history-action history-action--primary" :to="{ name: 'execution', params: { runId: r.run_id } }">
                       详情
                     </RouterLink>

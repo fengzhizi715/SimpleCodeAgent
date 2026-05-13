@@ -659,6 +659,93 @@ tbody tr:last-child td {
   padding-left: 1.25rem;
 }
 
+.planning-node-section {
+  margin-top: 16px;
+}
+
+.planning-node-head {
+  margin-bottom: 10px;
+}
+
+.planning-node-head h4 {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.planning-node-head p {
+  margin: 0;
+}
+
+.planning-node-list {
+  display: grid;
+  gap: 12px;
+}
+
+.planning-node-card {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: #fbfcfe;
+  padding: 14px;
+}
+
+.planning-node-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.planning-node-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.planning-node-title strong {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.planning-node-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.planning-node-deps {
+  margin: 0 0 10px;
+}
+
+.planning-node-table {
+  width: 100%;
+}
+
+.planning-node-table tbody th {
+  width: 92px;
+  background: transparent;
+  padding: 8px 10px 8px 0;
+  font-size: 0.75rem;
+}
+
+.planning-node-table tbody td {
+  padding: 8px 0;
+  vertical-align: top;
+}
+
 /* Agent 版本徽章（历史列表等） */
 
 .agent-version {

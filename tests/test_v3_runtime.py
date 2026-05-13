@@ -1257,6 +1257,40 @@ def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) ->
     assert len(result["trace"]) >= 4
 
 
+def test_run_v3_persists_run_metadata_with_session_id(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_persist(*, report, task, workdir, session_id, model) -> None:
+        captured["run_id"] = report.run_id
+        captured["task"] = task
+        captured["workdir"] = workdir
+        captured["session_id"] = session_id
+        captured["model"] = model
+
+    monkeypatch.setattr("app.v3.runner._persist_v3_run_metadata", fake_persist)
+
+    asyncio.run(
+        run_v3(
+            goal="run tests",
+            workdir=str(tmp_path),
+            session_id="session-v3",
+            model="demo-model",
+            include_events=False,
+            include_trace=False,
+        )
+    )
+
+    assert captured["task"] == "run tests"
+    assert captured["workdir"] == str(tmp_path.resolve())
+    assert captured["session_id"] == "session-v3"
+    assert captured["model"] == "demo-model"
+
+
 def test_unified_run_agent_supports_v3_plan_only(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(

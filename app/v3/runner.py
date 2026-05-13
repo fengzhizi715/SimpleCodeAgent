@@ -34,6 +34,8 @@ async def run_v3(
     goal: str | None = None,
     graph: TaskGraph | None = None,
     workdir: str | None = None,
+    session_id: str | None = None,
+    model: str | None = None,
     rag_id: str | None = None,
     rag_ids: list[str] | None = None,
     coding_execution_mode: str = "internal",
@@ -124,6 +126,13 @@ async def run_v3(
     )
     report = context.to_report(resolved_graph)
     _persist_v3_trace(run_id=report.run_id, trace_events=trace_events)
+    _persist_v3_run_metadata(
+        report=report,
+        task=goal or resolved_graph.graph_id,
+        workdir=resolved_workdir,
+        session_id=session_id or report.run_id,
+        model=model or "",
+    )
     return {
         "report": report,
         "planning": planning_result,
@@ -299,6 +308,60 @@ def _persist_v3_trace(*, run_id: str, trace_events: list[TraceEvent]) -> None:
     recorder = JsonlTraceRecorder(run_id=run_id)
     repository.save_events(run_id, trace_events)
     recorder.record_many(trace_events)
+
+
+def _persist_v3_run_metadata(
+    *,
+    report: ExecutionReport,
+    task: str,
+    workdir: str,
+    session_id: str,
+    model: str,
+) -> None:
+    """Persist V3 run metadata into the shared runs table for history/detail views."""
+    db = SQLiteDB()
+    timestamp = db.now()
+    db.execute(
+        """
+        INSERT INTO sessions (id, created_at, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at
+        """,
+        (session_id, timestamp, timestamp),
+    )
+    db.execute(
+        """
+        INSERT INTO runs (
+            run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
+            prompt_tokens, completion_tokens, total_tokens, created_at, updated_at, agent_version
+        )
+        VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, 0, 0, 0, ?, ?, 'v3')
+        ON CONFLICT(run_id) DO UPDATE SET
+            session_id = excluded.session_id,
+            model = excluded.model,
+            task = excluded.task,
+            workdir = excluded.workdir,
+            is_top_level = 1,
+            parent_run_id = NULL,
+            status = excluded.status,
+            step_count = excluded.step_count,
+            final_output = excluded.final_output,
+            agent_version = 'v3',
+            updated_at = excluded.updated_at
+        """,
+        (
+            report.run_id,
+            session_id,
+            model,
+            task,
+            workdir,
+            report.status.value,
+            len(report.execution_nodes),
+            report.model_dump_json(indent=2),
+            timestamp,
+            timestamp,
+        ),
+    )
 
 
 def _attach_trigger_engine(

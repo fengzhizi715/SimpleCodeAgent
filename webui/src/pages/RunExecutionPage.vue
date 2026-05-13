@@ -3,14 +3,126 @@
     <h2>Run Execution</h2>
     <div class="row">
       <span class="badge">run_id: {{ runId }}</span>
+      <span v-if="detailVersion" class="badge">{{ detailVersion.toUpperCase() }}</span>
       <button class="btn-secondary" @click="fetchReplay">手动刷新</button>
       <button class="btn-secondary" @click="goTrace">查看 Trace</button>
     </div>
-    <p class="muted" style="margin-top: 8px">轮询状态：{{ polling ? "开启" : "关闭" }}</p>
+    <p class="muted" style="margin-top: 8px">
+      {{
+        isV3Detail
+          ? "当前展示 v3 的 graph execution 详情视图。"
+          : `轮询状态：${polling ? "开启" : "关闭"}`
+      }}
+    </p>
     <p v-if="error" class="error">{{ error }}</p>
   </section>
 
-  <nav class="run-tabs" aria-label="Run detail tabs">
+  <template v-if="isV3Detail">
+    <section class="panel" v-if="replay.run">
+      <h3>运行摘要</h3>
+      <table>
+        <tbody>
+          <tr><th>status</th><td>{{ replay.run.status }}</td></tr>
+          <tr><th>session_id</th><td>{{ replay.run.session_id || "—" }}</td></tr>
+          <tr><th>workdir</th><td>{{ replay.run.workdir || "—" }}</td></tr>
+          <tr><th>task</th><td>{{ replay.run.task || "—" }}</td></tr>
+          <tr><th>model</th><td>{{ replay.run.model || "—" }}</td></tr>
+          <tr><th>step_count</th><td>{{ replay.run.step_count ?? 0 }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" v-if="v3Planning">
+      <h3>Planning Summary</h3>
+      <table>
+        <tbody>
+          <tr><th>goal_kind</th><td>{{ v3Planning.goal_kind || "—" }}</td></tr>
+          <tr><th>repo_profile</th><td>{{ v3Planning.repo_profile || "—" }}</td></tr>
+          <tr><th>recovery_strategy</th><td>{{ v3Planning.recovery_strategy || "—" }}</td></tr>
+          <tr><th>coding_mode</th><td>{{ v3Planning.coding_execution_mode || "—" }}</td></tr>
+          <tr><th>rag_ids</th><td>{{ formatRagIds(v3Planning.rag_ids, v3Planning.rag_id) }}</td></tr>
+          <tr><th>template</th><td>{{ v3Planning.template_name || "—" }}</td></tr>
+          <tr><th>execution_layers</th><td>{{ formatExecutionLayers(v3Planning.execution_layers) }}</td></tr>
+        </tbody>
+      </table>
+      <p class="muted" style="margin-top: 10px">{{ v3Planning.template_reason || "—" }}</p>
+    </section>
+
+    <section class="panel" v-if="v3ExecutionNodes.length">
+      <h3>Execution Nodes</h3>
+      <div class="planning-node-list">
+        <article
+          v-for="(node, index) in v3ExecutionNodes"
+          :key="node.node_id || index"
+          class="planning-node-card"
+        >
+          <div class="planning-node-top">
+            <div class="planning-node-title">
+              <span class="planning-node-index">#{{ index + 1 }}</span>
+              <strong>{{ node.node_id }}</strong>
+            </div>
+            <span class="agent-version" :class="node.kind === 'trigger' ? 'agent-version--v3' : 'agent-version--v2'">
+              {{ node.skill_name }}
+            </span>
+          </div>
+          <p class="planning-node-deps muted">
+            status: <strong>{{ node.status || "unknown" }}</strong>
+            <span v-if="node.kind === 'trigger'"> · kind: trigger</span>
+            <span v-if="node.source_event_type"> · event: {{ node.source_event_type }}</span>
+          </p>
+          <p class="planning-node-deps muted">
+            dependencies:
+            <span v-if="Array.isArray(node.dependencies) && node.dependencies.length">{{ node.dependencies.join(", ") }}</span>
+            <span v-else>—</span>
+          </p>
+          <pre class="flow-detail-pre">{{ node.summary || "暂无摘要。" }}</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" v-if="v3TriggerDiagnostics.length">
+      <h3>Trigger Diagnostics</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>rule</th>
+            <th>status</th>
+            <th>target skill</th>
+            <th>reason / governance</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in v3TriggerDiagnostics" :key="`${item.trigger_rule_id}-${item.source_event_id || item.parent_node_id || ''}`">
+            <td>{{ item.trigger_rule_id }}</td>
+            <td>{{ item.status }}</td>
+            <td>{{ item.target_skill_name }}</td>
+            <td>
+              {{
+                [
+                  item.skip_reason ? `skip=${item.skip_reason}` : null,
+                  item.dedupe_key ? `dedupe=${item.dedupe_key}` : null,
+                  item.cooldown_key ? `cooldown=${item.cooldown_key}` : null,
+                  item.cooldown_seconds != null ? `window=${item.cooldown_seconds}s` : null,
+                ].filter(Boolean).join(" · ") || "—"
+              }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel" v-if="v3Report">
+      <h3>Execution Report</h3>
+      <JsonBlock :data="v3Report" />
+    </section>
+
+    <section class="panel" v-if="trace.length">
+      <h3>Trace Snapshot</h3>
+      <JsonBlock :data="trace" />
+    </section>
+  </template>
+
+  <nav v-else class="run-tabs" aria-label="Run detail tabs">
     <button
       v-for="tab in tabs"
       :key="tab.id"
@@ -24,7 +136,7 @@
     </button>
   </nav>
 
-  <template v-if="activeTab === 'execution'">
+  <template v-if="!isV3Detail && activeTab === 'execution'">
   <section class="panel" v-if="replay.run">
     <h3>运行摘要</h3>
     <table>
@@ -176,7 +288,7 @@
   </section>
   </template>
 
-  <template v-else-if="activeTab === 'memory'">
+  <template v-else-if="!isV3Detail && activeTab === 'memory'">
     <section class="panel memory-panel" v-if="replay.workspace">
       <div class="memory-panel-head">
         <div>
@@ -293,8 +405,8 @@ import {
   ref,
   watch,
 } from "vue";
-import { useRouter } from "vue-router";
-import { getRunReplay } from "../api";
+import { useRoute, useRouter } from "vue-router";
+import { getRunDetail } from "../api";
 import JsonBlock from "../components/JsonBlock.vue";
 
 const props = defineProps({
@@ -302,9 +414,11 @@ const props = defineProps({
 });
 
 const router = useRouter();
+const route = useRoute();
 const error = ref("");
 const polling = ref(true);
 const activeTab = ref("execution");
+const detailVersion = ref(String(route.query.version || "").trim().toLowerCase());
 const replay = reactive({
   run: null,
   workspace: null,
@@ -313,9 +427,15 @@ const replay = reactive({
   teaching_view: null,
   artifacts: [],
 });
+const trace = ref([]);
+const v3Report = ref(null);
+const v3Planning = ref(null);
+const v3TriggerDiagnostics = ref([]);
+const v3ExecutionNodes = ref([]);
 const selectedDelegationId = ref("");
 const nodeEls = ref(new Map());
 const copyHint = ref("复制摘要");
+const isV3Detail = computed(() => detailVersion.value === "v3");
 
 const tabs = computed(() => [
   {
@@ -497,13 +617,24 @@ watch(
 async function fetchReplay() {
   try {
     error.value = "";
-    const data = await getRunReplay(props.runId);
+    const data = await getRunDetail(props.runId);
+    detailVersion.value = normalizeVersion(data.version || route.query.version || "");
     replay.run = data.run || null;
     replay.workspace = data.workspace || null;
     replay.delegations = data.delegations || [];
     replay.execution_log = data.execution_log || [];
     replay.teaching_view = data.teaching_view || null;
     replay.artifacts = data.artifacts || [];
+    trace.value = Array.isArray(data.trace) ? data.trace : [];
+    v3Report.value = data.report || null;
+    v3Planning.value = data.planning || null;
+    v3TriggerDiagnostics.value = Array.isArray(data.trigger_diagnostics) ? data.trigger_diagnostics : [];
+    v3ExecutionNodes.value = Array.isArray(data.execution_nodes) ? data.execution_nodes : [];
+    if (detailVersion.value === "v3") {
+      polling.value = false;
+      stopPolling();
+      return;
+    }
     if (Array.isArray(replay.delegations) && replay.delegations.length) {
       const currentExists = replay.delegations.some(
         (item, index) =>
@@ -542,7 +673,11 @@ function stopPolling() {
 }
 
 function goTrace() {
-  router.push({ name: "trace", params: { runId: props.runId } });
+  router.push({
+    name: "trace",
+    params: { runId: props.runId },
+    query: { version: detailVersion.value || undefined },
+  });
 }
 
 function selectDelegation(id) {
@@ -644,9 +779,35 @@ function compactText(value, maxLength = 180) {
   return `${text.slice(0, maxLength)}…`;
 }
 
+function normalizeVersion(v) {
+  if (!v || typeof v !== "string") return "";
+  const s = v.trim().toLowerCase();
+  if (s === "v1" || s === "v2" || s === "v3") return s;
+  return s;
+}
+
+function formatRagIds(ragIds, ragId) {
+  if (Array.isArray(ragIds) && ragIds.length) {
+    return ragIds.join(", ");
+  }
+  if (ragId) {
+    return String(ragId);
+  }
+  return "—";
+}
+
+function formatExecutionLayers(layers) {
+  if (!Array.isArray(layers) || !layers.length) {
+    return "—";
+  }
+  return layers
+    .map((layer) => `[${Array.isArray(layer) ? layer.join(", ") : String(layer)}]`)
+    .join(" -> ");
+}
+
 onMounted(async () => {
   await fetchReplay();
-  if (polling.value) {
+  if (polling.value && detailVersion.value !== "v3") {
     startPolling();
   }
 });

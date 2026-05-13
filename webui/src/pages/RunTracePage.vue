@@ -5,7 +5,7 @@
       <span class="badge">run_id: {{ runId }}</span>
       <span v-if="version" class="badge">{{ formatVersion(version) }}</span>
       <button class="btn-secondary" @click="refresh">刷新</button>
-      <RouterLink v-if="normalizeVersion(version) === 'v2'" :to="{ name: 'execution', params: { runId } }">
+      <RouterLink v-if="['v2', 'v3'].includes(normalizeVersion(version))" :to="{ name: 'execution', params: { runId }, query: { version: normalizeVersion(version) } }">
         返回执行页
       </RouterLink>
       <RouterLink v-else to="/history">返回历史</RouterLink>

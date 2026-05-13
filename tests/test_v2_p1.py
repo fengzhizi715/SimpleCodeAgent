@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.api.routes.debug import get_v2_run_replay, get_v2_session_replay
+from app.api.routes.debug import get_run_detail, get_v2_run_replay, get_v2_session_replay
 from app.contracts.agent import AgentResult, AgentSpec, AgentTask, SharedWorkspace, TestReport
 from app.contracts.planner import Plan, PlanStep
 from app.contracts.run import RunRequest, RunResult
@@ -318,3 +318,97 @@ def test_debug_routes_and_viewers_expose_replay(monkeypatch) -> None:
         assert exc.status_code == 404
     else:  # pragma: no cover - defensive
         raise AssertionError("Expected HTTPException for missing replay.")
+
+
+def test_generic_run_detail_routes_v2_replay(monkeypatch) -> None:
+    replay = {
+        "run": {"run_id": "run-1", "status": "completed", "step_count": 2, "final_output": "done"},
+        "workspace": {"project_summary": "summary"},
+        "delegations": [],
+        "artifacts": [],
+        "trace": [],
+        "execution_log": [],
+        "delegation_tree": [],
+        "execution_nodes": [],
+        "teaching_view": {},
+    }
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-1",
+                "session_id": "session-1",
+                "model": "fake-model",
+                "task": "task",
+                "workdir": ".",
+                "status": "completed",
+                "step_count": 2,
+                "final_output": "done",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v2",
+            }
+
+    class FakeRuntime:
+        def get_run_replay(self, run_id: str) -> dict[str, object]:
+            return replay if run_id == "run-1" else {}
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_v2_runtime", lambda: FakeRuntime())
+
+    response = get_run_detail("run-1")
+
+    assert response.version == "v2"
+    assert response.run["run_id"] == "run-1"
+
+
+def test_generic_run_detail_routes_v3_report(monkeypatch) -> None:
+    graph_finished = TraceEvent(
+        run_id="run-v3",
+        event_type="graph_finished",
+        message="v3 done",
+        payload={
+            "run_id": "run-v3",
+            "graph_id": "graph-v3",
+            "status": "completed",
+            "shared_state": {
+                "planning": {
+                    "goal_kind": "testing",
+                    "template_name": "default",
+                    "recovery_strategy": "fix_and_retest",
+                }
+            },
+            "execution_nodes": [{"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "done"}],
+            "trigger_diagnostics": [{"trigger_rule_id": "rule-1", "source_event_type": "test_failed", "target_skill_name": "coding", "status": "executed"}],
+        },
+    )
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-v3",
+                "session_id": "session-v3",
+                "model": "",
+                "task": "run tests",
+                "workdir": ".",
+                "status": "completed",
+                "step_count": 2,
+                "final_output": "{}",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v3",
+            }
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [graph_finished] if run_id == "run-v3" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-v3")
+
+    assert response.version == "v3"
+    assert response.report is not None
+    assert response.planning["goal_kind"] == "testing"
+    assert response.execution_nodes[0]["node_id"] == "test_runner"

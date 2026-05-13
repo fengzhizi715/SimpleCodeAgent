@@ -27,6 +27,7 @@ from app.trace.viewer import (
     load_and_format_session_timeline,
     load_and_format_timeline,
 )
+from app.db.sqlite import SQLiteDB
 from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
@@ -108,6 +109,26 @@ class RunReplayResponse(BaseModel):
     delegation_tree: list[dict[str, object]] = Field(default_factory=list)
     execution_nodes: list[dict[str, object]] = Field(default_factory=list)
     teaching_view: dict[str, object] = Field(default_factory=dict)
+
+
+class RunDetailResponse(BaseModel):
+    """统一 run 详情响应，按版本返回 V2/V3 所需内容。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    run: dict[str, object]
+    workspace: dict[str, object] | None = None
+    delegations: list[dict[str, object]] = Field(default_factory=list)
+    artifacts: list[dict[str, object]] = Field(default_factory=list)
+    trace: list[dict[str, object]] = Field(default_factory=list)
+    execution_log: list[dict[str, object]] = Field(default_factory=list)
+    delegation_tree: list[dict[str, object]] = Field(default_factory=list)
+    execution_nodes: list[dict[str, object]] = Field(default_factory=list)
+    teaching_view: dict[str, object] = Field(default_factory=dict)
+    report: dict[str, object] | None = None
+    planning: dict[str, object] | None = None
+    trigger_diagnostics: list[dict[str, object]] = Field(default_factory=list)
 
 
 class SessionReplayResponse(BaseModel):
@@ -529,6 +550,62 @@ def delete_v2_run(run_id: str) -> V2DeleteRunResponse:
 def delete_run(run_id: str) -> V2DeleteRunResponse:
     """删除单条 run 及其关联回放数据。"""
     return delete_v2_run(run_id)
+
+
+@router.get("/debug/runs/{run_id}/detail", response_model=RunDetailResponse, status_code=status.HTTP_200_OK)
+def get_run_detail(run_id: str) -> RunDetailResponse:
+    """按 run_id 查询统一详情视图，当前支持 v2 / v3 分流。"""
+    db = SQLiteDB()
+    row = db.fetchone(
+        """
+        SELECT run_id, session_id, model, task, workdir, status, step_count, final_output, created_at, updated_at,
+               COALESCE(agent_version, 'v1') AS agent_version
+        FROM runs
+        WHERE run_id = ?
+        """,
+        (run_id,),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id}。")
+
+    version = str(row["agent_version"] or "v1").strip().lower()
+    if version == "v2":
+        replay = get_v2_runtime().get_run_replay(run_id)
+        if not replay or not replay.get("run"):
+            raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id} 的 v2 replay。")
+        return RunDetailResponse(version="v2", **replay)
+
+    run_data = dict(row)
+    trace_events = [event.model_dump() for event in get_trace_repository().query_timeline(run_id)]
+    detail = RunDetailResponse(
+        version=version,
+        run=run_data,
+        trace=trace_events,
+    )
+    if version == "v3":
+        graph_finished = next(
+            (
+                event
+                for event in reversed(trace_events)
+                if event.get("event_type") == "graph_finished" and isinstance(event.get("payload"), dict)
+            ),
+            None,
+        )
+        if graph_finished is not None:
+            payload = dict(graph_finished["payload"])
+            detail.report = payload
+            shared_state = payload.get("shared_state")
+            if isinstance(shared_state, dict):
+                planning = shared_state.get("planning")
+                if isinstance(planning, dict):
+                    detail.planning = planning
+            execution_nodes = payload.get("execution_nodes")
+            if isinstance(execution_nodes, list):
+                detail.execution_nodes = execution_nodes
+            trigger_diagnostics = payload.get("trigger_diagnostics")
+            if isinstance(trigger_diagnostics, list):
+                detail.trigger_diagnostics = trigger_diagnostics
+    return detail
 
 
 @router.get("/debug/v2/runs/{run_id}/replay", response_model=RunReplayResponse, status_code=status.HTTP_200_OK)

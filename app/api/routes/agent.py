@@ -298,6 +298,8 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                     goal=request.task,
                     graph=request.graph,
                     workdir=resolved_workdir,
+                    session_id=session_id,
+                    model=request.model,
                     rag_id=request.rag_id,
                     rag_ids=request.rag_ids,
                     coding_execution_mode=request.v3_coding_execution_mode,
