@@ -34,6 +34,10 @@ async def run_v3(
     goal: str | None = None,
     graph: TaskGraph | None = None,
     workdir: str | None = None,
+    rag_id: str | None = None,
+    rag_ids: list[str] | None = None,
+    coding_execution_mode: str = "internal",
+    external_coding: dict[str, object] | None = None,
     include_events: bool = True,
     include_trace: bool = True,
     registry: SkillRegistry | None = None,
@@ -68,6 +72,10 @@ async def run_v3(
             goal=goal or "",
             workdir=resolved_workdir,
             skill_executor=skill_executor,
+            rag_id=rag_id,
+            rag_ids=rag_ids,
+            coding_execution_mode=coding_execution_mode,
+            external_coding=external_coding,
         )
         resolved_graph = planning_result.graph
         planned_trigger_rules = list(planning_result.trigger_rules)
@@ -130,6 +138,10 @@ async def plan_v3_graph(
     goal: str,
     workdir: str,
     skill_executor: SkillExecutor,
+    rag_id: str | None = None,
+    rag_ids: list[str] | None = None,
+    coding_execution_mode: str = "internal",
+    external_coding: dict[str, object] | None = None,
 ) -> PlanningResult:
     """Generate a graph for a V3 goal."""
     run_id = str(uuid4())
@@ -137,7 +149,14 @@ async def plan_v3_graph(
         "planning",
         SkillInput(
             run_id=run_id,
-            payload={"goal": goal, "workspace_root": workdir},
+            payload={
+                "goal": goal,
+                "workspace_root": workdir,
+                "rag_id": rag_id,
+                "rag_ids": rag_ids or [],
+                "coding_execution_mode": coding_execution_mode,
+                **(external_coding or {}),
+            },
             context={"workspace_root": workdir},
         ),
     )
@@ -152,6 +171,10 @@ async def inspect_v3_graph(
     graph: TaskGraph | None = None,
     workdir: str | None = None,
     registry: SkillRegistry | None = None,
+    rag_id: str | None = None,
+    rag_ids: list[str] | None = None,
+    coding_execution_mode: str = "internal",
+    external_coding: dict[str, object] | None = None,
 ) -> tuple[GraphInspection, PlanningResult | None]:
     """Inspect a V3 graph or a planner-generated graph without executing it."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
@@ -166,6 +189,10 @@ async def inspect_v3_graph(
             goal=goal or "",
             workdir=resolved_workdir,
             skill_executor=SkillExecutor(skill_registry),
+            rag_id=rag_id,
+            rag_ids=rag_ids,
+            coding_execution_mode=coding_execution_mode,
+            external_coding=external_coding,
         )
         resolved_graph = planning_result.graph
 
@@ -191,6 +218,8 @@ def format_v3_result(
                     f"Goal Kind: {planning.goal_kind}",
                     f"Repo Profile: {planning.repo_profile}",
                     f"Recovery Strategy: {planning.recovery_strategy.value}",
+                    f"Coding Mode: {planning.coding_execution_mode}",
+                    f"RAG IDs: {planning.rag_ids or ([planning.rag_id] if planning.rag_id else [])}",
                     f"Template: {planning.template_name}",
                 ]
             )
@@ -223,6 +252,8 @@ def format_v3_result(
                 f"Goal Kind: {planning.get('goal_kind') or '-'}",
                 f"Repo Profile: {planning.get('repo_profile') or '-'}",
                 f"Recovery Strategy: {planning.get('recovery_strategy') or '-'}",
+                f"Coding Mode: {planning.get('coding_execution_mode') or '-'}",
+                f"RAG IDs: {planning.get('rag_ids') or ([planning.get('rag_id')] if planning.get('rag_id') else []) or '-'}",
                 f"Template: {planning.get('template_name') or '-'}",
                 f"Execution Layers: {planning.get('execution_layers') or '-'}",
             ]

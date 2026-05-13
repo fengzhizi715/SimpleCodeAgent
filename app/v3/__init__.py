@@ -14,6 +14,7 @@ from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.skills.builtin.coding_skill import CodingSkill
 from app.v3.skills.builtin.planning_skill import PlanningSkill
 from app.v3.skills.builtin.repo_analysis_skill import RepoAnalysisSkill
+from app.v3.skills.builtin.retrieve_docs_skill import RetrieveDocsSkill
 from app.v3.skills.builtin.tdd_skill import TDDSkill
 from app.v3.skills.builtin.test_runner_skill import TestRunnerSkill
 from app.v3.skills.registry import SkillRegistry
@@ -33,6 +34,17 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
         )
     )
     registry.register(
+        RetrieveDocsSkill(
+            SkillSpec(
+                name="retrieve_docs",
+                description="Retrieve external documentation context for the current goal.",
+                skill_type=SkillType.TOOL,
+                capabilities=["docs.retrieve", "rag.query"],
+            ),
+            docs_adapter=V1ToolAdapter.for_retrieve_docs(workspace_root=workspace_root, allow_multi_rag=True),
+        )
+    )
+    registry.register(
         RepoAnalysisSkill(
             SkillSpec(
                 name="analyze_repo",
@@ -46,11 +58,12 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
         CodingSkill(
             SkillSpec(
                 name="coding",
-                description="Execute a minimal coding skill.",
+                description="Execute coding through an internal or external backend.",
                 skill_type=SkillType.COMPOSITE,
                 capabilities=["code.modify"],
             ),
-            agent_adapter=V2AgentAdapter.for_coder(workspace_root=workspace_root),
+            internal_agent_adapter=V2AgentAdapter.for_coder(workspace_root=workspace_root),
+            external_agent_adapter=V2AgentAdapter.for_external_coder(workspace_root=workspace_root),
         )
     )
     registry.register(

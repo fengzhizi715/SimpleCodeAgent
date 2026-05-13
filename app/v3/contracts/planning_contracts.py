@@ -27,9 +27,12 @@ class PlanningResult(BaseModel):
     repo_profile: str
     goal_kind: str
     recovery_strategy: RecoveryStrategy = RecoveryStrategy.NONE
+    coding_execution_mode: str = "internal"
     template_name: str = "default"
     template_reason: str = ""
     planner_notes: list[str] = Field(default_factory=list)
+    rag_id: str | None = None
+    rag_ids: list[str] = Field(default_factory=list)
     candidate_test_commands: list[str] = Field(default_factory=list)
     candidate_test_targets: list[str] = Field(default_factory=list)
     trigger_rules: list[TriggerRule] = Field(default_factory=list)

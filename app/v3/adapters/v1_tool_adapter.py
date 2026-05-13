@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.v1.tools.base import Tool
+from app.v1.tools.retrieve_docs import RetrieveDocsTool
 from app.v1.tools.shell_run import ShellRunTool
 
 
@@ -47,3 +48,18 @@ class V1ToolAdapter:
     def for_shell_run(cls, workspace_root: str | Path | None = None) -> "V1ToolAdapter":
         """Build an adapter for the V1 shell_run tool."""
         return cls.from_tool(ShellRunTool(workspace_root=workspace_root))
+
+    @classmethod
+    def for_retrieve_docs(
+        cls,
+        workspace_root: str | Path | None = None,
+        *,
+        allow_multi_rag: bool = True,
+    ) -> "V1ToolAdapter":
+        """Build an adapter for the V1 retrieve_docs tool."""
+        return cls.from_tool(
+            RetrieveDocsTool(
+                workspace_root=str(workspace_root) if workspace_root is not None else None,
+                allow_multi_rag=allow_multi_rag,
+            )
+        )

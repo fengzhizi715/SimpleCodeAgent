@@ -19,6 +19,14 @@ class PlanningSkill(Skill):
             or skill_input.context.get("workspace_root")
             or "."
         )
+        rag_id = str(skill_input.payload.get("rag_id") or "").strip() or None
+        rag_ids = [
+            str(item).strip()
+            for item in skill_input.payload.get("rag_ids", [])
+            if str(item).strip()
+        ]
+        coding_execution_mode = str(skill_input.payload.get("coding_execution_mode") or "internal").strip().lower() or "internal"
+        external_coding = self._build_external_coding_payload(skill_input.payload)
         profile = inspect_workspace(str(workspace_root))
         goal_kind = infer_goal_kind(user_goal)
         commands = profile.get("candidate_test_commands", [])
@@ -34,6 +42,10 @@ class PlanningSkill(Skill):
             workspace_root=str(profile["workspace_root"]),
             candidate_test_commands=candidate_test_commands,
             candidate_test_targets=candidate_test_targets,
+            rag_id=rag_id,
+            rag_ids=rag_ids,
+            coding_execution_mode=coding_execution_mode,
+            external_coding=external_coding,
         )
 
         trigger_rules = self._build_trigger_templates(
@@ -42,6 +54,8 @@ class PlanningSkill(Skill):
             workspace_root=str(profile["workspace_root"]),
             test_command=self._select_full_suite_command(candidate_test_commands),
             candidate_test_targets=candidate_test_targets,
+            coding_execution_mode=coding_execution_mode,
+            external_coding=external_coding,
         )
         recovery_strategy = self._select_recovery_strategy(
             user_goal=user_goal,
@@ -57,9 +71,12 @@ class PlanningSkill(Skill):
                 "repo_profile": profile["repo_profile"],
                 "goal_kind": goal_kind,
                 "recovery_strategy": recovery_strategy.value,
+                "coding_execution_mode": coding_execution_mode,
                 "template_name": template_name,
                 "template_reason": template_reason,
                 "planner_notes": planner_notes,
+                "rag_id": rag_id,
+                "rag_ids": rag_ids,
                 "candidate_test_commands": candidate_test_commands,
                 "candidate_test_targets": candidate_test_targets,
                 "trigger_rules": trigger_rules,
@@ -82,6 +99,8 @@ class PlanningSkill(Skill):
         workspace_root: str,
         test_command: str,
         candidate_test_targets: list[str],
+        coding_execution_mode: str,
+        external_coding: dict[str, object],
     ) -> list[dict[str, object]]:
         if goal_kind not in {"coding", "testing", "general"} or not test_command:
             return []
@@ -107,9 +126,11 @@ class PlanningSkill(Skill):
                         "allow_mock_fallback": False,
                         "resume_from_failure": True,
                         "max_rounds": 2,
+                        "coding_execution_mode": coding_execution_mode,
                         "success_criteria": [f"{test_command} passes"],
                         "preferred_test_targets": candidate_test_targets[:2],
                         "verify_full_suite": True,
+                        **external_coding,
                     },
                 }
             ]
@@ -123,7 +144,9 @@ class PlanningSkill(Skill):
                     "goal": fix_goal,
                     "workspace_root": workspace_root,
                     "allow_mock_fallback": False,
+                    "execution_mode": coding_execution_mode,
                     "success_criteria": [f"{test_command} passes"],
+                    **external_coding,
                 },
             }
         ]
@@ -168,7 +191,31 @@ class PlanningSkill(Skill):
         workspace_root: str,
         candidate_test_commands: list[str],
         candidate_test_targets: list[str],
+        rag_id: str | None,
+        rag_ids: list[str],
+        coding_execution_mode: str,
+        external_coding: dict[str, object],
     ) -> tuple[str, str, list[str], list[dict[str, object]]]:
+        retrieval_required = self._should_include_retrieval(user_goal=user_goal, rag_id=rag_id, rag_ids=rag_ids)
+        nodes: list[dict[str, object]] = []
+        analyze_dependencies: list[str] = []
+        if retrieval_required:
+            nodes.append(
+                {
+                    "node_id": "retrieve_docs",
+                    "skill_name": "retrieve_docs",
+                    "input_payload": {
+                        "goal": user_goal,
+                        "query": user_goal,
+                        "workspace_root": workspace_root,
+                        "rag_id": rag_id,
+                        "rag_ids": rag_ids,
+                    },
+                    "dependencies": [],
+                }
+            )
+            analyze_dependencies.append("retrieve_docs")
+
         analyze_node = {
             "node_id": "analyze_repo",
             "skill_name": "analyze_repo",
@@ -176,14 +223,26 @@ class PlanningSkill(Skill):
                 "goal": user_goal,
                 "workspace_root": workspace_root,
             },
-            "dependencies": [],
+            "dependencies": analyze_dependencies,
         }
+        nodes.append(analyze_node)
         if goal_kind == "analysis":
             return (
-                "analysis_only",
-                "Goal is analysis-oriented, so planning stops after repository inspection.",
-                ["Selected analysis-only template because the goal does not require coding or test execution."],
-                [analyze_node],
+                "analysis_with_context" if retrieval_required else "analysis_only",
+                (
+                    "Goal is analysis-oriented and retrieval context was requested, so planning loads docs before repository inspection."
+                    if retrieval_required
+                    else "Goal is analysis-oriented, so planning stops after repository inspection."
+                ),
+                [
+                    "Selected analysis-only template because the goal does not require coding or test execution.",
+                    *(
+                        [f"Prepended retrieve_docs because RAG context was requested for: {', '.join(rag_ids or [rag_id or 'default'])}."]
+                        if retrieval_required
+                        else []
+                    ),
+                ],
+                nodes,
             )
 
         full_suite_command = self._select_full_suite_command(candidate_test_commands)
@@ -194,7 +253,6 @@ class PlanningSkill(Skill):
         ]
 
         if goal_kind == "testing" and focused_commands and self._should_use_branch_testing_template(user_goal):
-            nodes = [analyze_node]
             for index, command in enumerate(focused_commands[:2], start=1):
                 nodes.append(
                     {
@@ -231,7 +289,6 @@ class PlanningSkill(Skill):
                 nodes,
             )
 
-        nodes = [analyze_node]
         if goal_kind in {"coding", "general"}:
             nodes.append(
                 {
@@ -240,6 +297,8 @@ class PlanningSkill(Skill):
                     "input_payload": {
                         "goal": user_goal,
                         "workspace_root": workspace_root,
+                        "execution_mode": coding_execution_mode,
+                        **external_coding,
                     },
                     "dependencies": ["analyze_repo"],
                 }
@@ -306,6 +365,12 @@ class PlanningSkill(Skill):
             [
                 f"Goal kind inferred as {goal_kind}.",
                 f"Primary verification command: {full_suite_command or 'none'}.",
+                f"Coding execution mode: {coding_execution_mode}.",
+                *(
+                    [f"Prepended retrieve_docs for RAG context: {', '.join(rag_ids or [rag_id or 'default'])}."]
+                    if retrieval_required
+                    else []
+                ),
             ],
             nodes,
         )
@@ -345,3 +410,41 @@ class PlanningSkill(Skill):
                 "先跑相关测试",
             )
         )
+
+    def _should_include_retrieval(self, *, user_goal: str, rag_id: str | None, rag_ids: list[str]) -> bool:
+        if rag_id or rag_ids:
+            return True
+        text = user_goal.lower()
+        return any(
+            marker in text
+            for marker in (
+                "rag",
+                "docs",
+                "document",
+                "knowledge base",
+                "知识库",
+                "文档",
+                "检索",
+            )
+        )
+
+    def _build_external_coding_payload(self, payload: dict[str, object]) -> dict[str, object]:
+        preferred_agent = str(payload.get("preferred_agent") or "").strip()
+        external_payload: dict[str, object] = {}
+        for key in (
+            "external_agent",
+            "preferred_agent",
+            "allow_raw_external_command",
+            "external_command",
+            "external_timeout_seconds",
+            "codex_template",
+            "cursor_template",
+            "cursor_cli_path",
+            "codex_cli_path",
+        ):
+            value = payload.get(key)
+            if value not in (None, "", []):
+                external_payload[key] = value
+        if preferred_agent and "external_agent" not in external_payload:
+            external_payload["external_agent"] = preferred_agent
+        return external_payload

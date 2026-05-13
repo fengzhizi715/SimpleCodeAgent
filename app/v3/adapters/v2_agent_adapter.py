@@ -14,6 +14,7 @@ from app.trace.repository import SQLiteTraceRepository
 from app.db.sqlite import SQLiteDB
 from app.v1.tools.registry import ToolRegistry
 from app.v2.agents import CoderAgent
+from app.v2.agent_impls.external_coder import ExternalCodingAgent
 from app.v2.base import AgentContext
 
 
@@ -100,6 +101,96 @@ class V2AgentAdapter:
                 prompt_context["latest_test_result"] = workspace.latest_test_result.model_dump(mode="json")
             coder = CoderAgent()
             result = coder.run(
+                task=task,
+                workspace=workspace,
+                context=context,
+                prompt_context=prompt_context,
+            )
+            output = dict(result.output_data)
+            output.setdefault("summary", result.summary)
+            output.setdefault("status", result.status)
+            return output
+
+        return cls(_run)
+
+    @classmethod
+    def for_external_coder(cls, workspace_root: str | Path | None = None) -> "V2AgentAdapter":
+        """Build an adapter around the V2 external coding agent."""
+
+        async def _run(payload: dict[str, Any]) -> dict[str, Any]:
+            run_id = str(payload.get("run_id") or "").strip()
+            if not run_id:
+                raise ValueError("Missing run_id for V2 external coder adapter.")
+
+            resolved_workspace_root = Path(
+                payload.get("workspace_root") or workspace_root or settings.workdir or "."
+            ).expanduser().resolve()
+            tool_registry = ToolRegistry(workspace_root=resolved_workspace_root)
+            tool_registry.register_default_tools()
+            trace_repository = SQLiteTraceRepository(SQLiteDB())
+            context = AgentContext(
+                provider=None,  # type: ignore[arg-type]
+                model="external-coder",
+                reasoning_mode="default",
+                tool_registry=tool_registry,
+                trace_repository=trace_repository,
+                trace_recorder=JsonlTraceRecorder(run_id=run_id),
+                workspace_root=resolved_workspace_root,
+                session_id=f"{run_id}:v3",
+                run_id=run_id,
+            )
+            workspace = SharedWorkspace(
+                session_id=context.session_id,
+                run_id=run_id,
+                user_goal=str(payload.get("goal") or ""),
+                project_summary=_build_project_summary(payload),
+                latest_test_result=_build_latest_test_result(payload),
+            )
+            external_policy = {
+                "enabled": True,
+                "preferred_agent": str(payload.get("external_agent") or payload.get("preferred_agent") or "codex_cli"),
+                "allow_raw_external_command": bool(payload.get("allow_raw_external_command", False)),
+                "codex_template": str(payload.get("codex_template") or "").strip(),
+                "cursor_template": str(payload.get("cursor_template") or "").strip(),
+                "cursor_cli_path": str(payload.get("cursor_cli_path") or "").strip(),
+                "codex_cli_path": str(payload.get("codex_cli_path") or "").strip(),
+            }
+            task = AgentTask(
+                session_id=context.session_id,
+                run_id=run_id,
+                step_id=str(payload.get("node_id") or "coding"),
+                goal=str(payload.get("goal") or ""),
+                step_type="external_coding",
+                target_agent="external_coder",
+                success_criteria=[
+                    str(item)
+                    for item in payload.get("success_criteria", ["Produce focused code changes and summarize them."])
+                    if str(item).strip()
+                ],
+                constraints=[str(item) for item in payload.get("constraints", []) if str(item).strip()],
+                max_retries=int(payload.get("max_retries", 1)),
+                input_data={
+                    "external_agent": str(
+                        payload.get("external_agent") or payload.get("preferred_agent") or "codex_cli"
+                    ),
+                    "external_prompt": str(payload.get("goal") or ""),
+                    "external_command": str(payload.get("external_command") or "").strip(),
+                    "external_timeout_seconds": int(payload.get("external_timeout_seconds", 300)),
+                },
+            )
+            prompt_context = {
+                "project_summary": workspace.project_summary,
+                "analysis_context": payload.get("analysis_context", {}),
+                "orchestrator_context": {
+                    "policy": {
+                        "external_coding": external_policy,
+                    }
+                },
+            }
+            if workspace.latest_test_result is not None:
+                prompt_context["latest_test_result"] = workspace.latest_test_result.model_dump(mode="json")
+            agent = ExternalCodingAgent()
+            result = agent.run(
                 task=task,
                 workspace=workspace,
                 context=context,

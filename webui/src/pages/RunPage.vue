@@ -95,6 +95,99 @@
           </span>
         </label>
       </div>
+      <label class="v2-rag-toggle" style="margin-top: 12px">
+        <input type="checkbox" v-model="form.v3_use_rag" />
+        <span>
+          <strong>为 V3 图增加 RAG 检索节点</strong>
+          <small>启用后 planner 可以生成 <code>retrieve_docs -&gt; analyze_repo -&gt; ...</code> 这样的结构。</small>
+        </span>
+      </label>
+      <div class="grid-two" style="margin-top: 10px">
+        <div :class="{ 'is-disabled-block': !form.v3_use_rag }">
+          <label>RAG ID（v3）</label>
+          <select v-model="form.v3_rag_id" :disabled="!form.v3_use_rag">
+            <option v-for="item in ragCollections" :key="`v3-${item.rag_id}`" :value="item.rag_id">
+              {{ item.rag_id }} ({{ item.collection_name }})
+            </option>
+          </select>
+          <p class="muted" style="margin: 6px 0 0">
+            {{ form.v3_use_rag ? "启用后 planner 会把该知识库作为 retrieve_docs 的候选来源。" : "关闭后 v3 默认不注入 RAG 检索节点。" }}
+          </p>
+        </div>
+        <div :class="{ 'is-disabled-block': !form.v3_use_rag }">
+          <label>多 RAG 并查（v3，可选）</label>
+          <select v-model="selectedV3RagIds" multiple size="4" :disabled="!form.v3_use_rag">
+            <option v-for="item in ragCollections" :key="`v3-multi-${item.rag_id}`" :value="item.rag_id">
+              {{ item.rag_id }}
+            </option>
+          </select>
+          <p class="muted" style="margin: 6px 0 0">配置后 retrieve_docs skill 会在多个知识库中统一检索与重排。</p>
+        </div>
+      </div>
+      <div class="reviewer-config-card" style="margin-top: 12px">
+        <label>V3 Coding Backend</label>
+        <div class="row" style="margin-top: 6px">
+          <label class="v2-agent-option">
+            <input
+              type="radio"
+              name="v3-coding-executor"
+              value="internal"
+              :checked="form.v3_coding_executor === 'internal'"
+              @change="setV3CodingExecutor('internal')"
+            />
+            <span>
+              <strong>Internal coder</strong>
+              <small>走内置 coder 通路，适合默认的小范围修复。</small>
+            </span>
+          </label>
+          <label class="v2-agent-option">
+            <input
+              type="radio"
+              name="v3-coding-executor"
+              value="external"
+              :checked="form.v3_coding_executor === 'external'"
+              @change="setV3CodingExecutor('external')"
+            />
+            <span>
+              <strong>External coder</strong>
+              <small>把 <code>coding</code> skill 切到外部 CLI 后端，适合更复杂的编码任务。</small>
+            </span>
+          </label>
+        </div>
+        <p class="muted" style="margin: 6px 0 0">
+          在 v3 里这不是“另一个 Agent”，而是同一个 <code>coding skill</code> 的不同执行后端。
+        </p>
+      </div>
+      <div v-if="form.v3_coding_executor === 'external'" class="reviewer-config-card" style="margin-top: 10px">
+        <label>V3 External Coding 配置</label>
+        <div class="grid-two" style="margin-top: 8px">
+          <div>
+            <label>偏好外部 Agent</label>
+            <select v-model="form.v3_external_coding.preferred_agent">
+              <option value="codex_cli">codex_cli</option>
+              <option value="cursor_cli">cursor_cli</option>
+            </select>
+          </div>
+          <div>
+            <label>允许 raw external_command</label>
+            <select v-model="form.v3_external_coding.allow_raw_external_command">
+              <option :value="false">否（推荐）</option>
+              <option :value="true">是（高风险）</option>
+            </select>
+          </div>
+          <div>
+            <label>Codex 模板</label>
+            <input v-model="form.v3_external_coding.codex_template" placeholder="codex exec --sandbox workspace-write {prompt}" />
+          </div>
+          <div>
+            <label>Cursor 模板</label>
+            <input v-model="form.v3_external_coding.cursor_template" placeholder="cursor-agent --trust {prompt}" />
+          </div>
+          <p class="muted grid-span-2" style="margin: 0">
+            当前配置会作为 <code>coding skill</code> 的 external backend 选项传给后端，不会改变 v3 的 graph / trigger 语义。
+          </p>
+        </div>
+      </div>
       <p class="muted" style="margin: 10px 0 0">
         当前页面主要覆盖 v3 MVP：<code>Skill + TaskGraph + ExecutionKernel + Basic Event/Trigger</code>。
       </p>
@@ -290,6 +383,8 @@
           <tr><th>step_count</th><td>{{ v3Result.step_count ?? 0 }}</td></tr>
           <tr><th>planning.template</th><td>{{ v3Result.planning?.template_name || "—" }}</td></tr>
           <tr><th>planning.recovery_strategy</th><td>{{ v3Result.planning?.recovery_strategy || "—" }}</td></tr>
+          <tr><th>planning.coding_mode</th><td>{{ v3Result.planning?.coding_execution_mode || "—" }}</td></tr>
+          <tr><th>planning.rag_ids</th><td>{{ formatRagIds(v3Result.planning?.rag_ids, v3Result.planning?.rag_id) }}</td></tr>
           <tr><th>inspection.layers</th><td>{{ formatExecutionLayers(v3Result.inspection?.execution_layers) }}</td></tr>
           <tr><th>events</th><td>{{ Array.isArray(v3Result.events) ? v3Result.events.length : 0 }}</td></tr>
           <tr><th>trace</th><td>{{ Array.isArray(v3Result.trace) ? v3Result.trace.length : 0 }}</td></tr>
@@ -308,6 +403,8 @@
           <tr><th>repo_profile</th><td>{{ v3Result.planning.repo_profile || "—" }}</td></tr>
           <tr><th>template_name</th><td>{{ v3Result.planning.template_name || "—" }}</td></tr>
           <tr><th>recovery_strategy</th><td>{{ v3Result.planning.recovery_strategy || "—" }}</td></tr>
+          <tr><th>coding_execution_mode</th><td>{{ v3Result.planning.coding_execution_mode || "—" }}</td></tr>
+          <tr><th>rag_ids</th><td>{{ formatRagIds(v3Result.planning.rag_ids, v3Result.planning.rag_id) }}</td></tr>
         </tbody>
       </table>
       <JsonBlock :data="v3Result.planning" />
@@ -355,6 +452,7 @@ const v1Result = ref(null);
 const v3Result = ref(null);
 const ragCollections = ref([{ rag_id: "default", collection_name: "codeagent_docs" }]);
 const selectedRagIds = ref([]);
+const selectedV3RagIds = ref([]);
 const defaultV2Agents = ["planner", "analyst", "coder", "external_coder", "tester", "reviewer"];
 const configurableV2Agents = [
   { id: "analyst", label: "Analyst", help: "识别项目结构和关键文件" },
@@ -373,6 +471,17 @@ const form = reactive({
   include_trace: false,
   include_events: true,
   plan_only: false,
+  v3_use_rag: false,
+  v3_rag_id: "default",
+  v3_coding_executor: "internal",
+  v3_external_coding: {
+    preferred_agent: "codex_cli",
+    allow_raw_external_command: false,
+    codex_template: "codex exec --sandbox workspace-write {prompt}",
+    cursor_template: "cursor-agent --trust {prompt}",
+    cursor_cli_path: "",
+    codex_cli_path: "",
+  },
   system_prompt: "You are a helpful assistant.",
   v2_enabled_agents: ["planner", "analyst", "coder", "tester", "reviewer"],
   v2_coding_executor: "internal",
@@ -404,6 +513,9 @@ async function loadRagCollections() {
       ragCollections.value = items;
       if (!items.some((item) => item.rag_id === form.rag_id)) {
         form.rag_id = items[0].rag_id;
+      }
+      if (!items.some((item) => item.rag_id === form.v3_rag_id)) {
+        form.v3_rag_id = items[0].rag_id;
       }
     }
   } catch {
@@ -451,11 +563,25 @@ function syncExternalCodingAgentSelection() {
   form.v2_enabled_agents = defaultV2Agents.filter((id) => selected.has(id));
 }
 
+function setV3CodingExecutor(mode) {
+  form.v3_coding_executor = mode;
+}
+
 function formatExecutionLayers(layers) {
   if (!Array.isArray(layers) || !layers.length) {
     return "—";
   }
   return layers.map((layer) => `[${layer.join(", ")}]`).join(" -> ");
+}
+
+function formatRagIds(ragIds, ragId) {
+  if (Array.isArray(ragIds) && ragIds.length) {
+    return ragIds.join(", ");
+  }
+  if (ragId) {
+    return String(ragId);
+  }
+  return "—";
 }
 
 async function submitRun() {
@@ -480,6 +606,22 @@ async function submitRun() {
     } else if (form.version === "v3") {
       payload.include_events = Boolean(form.include_events);
       payload.plan_only = Boolean(form.plan_only);
+      payload.v3_coding_execution_mode = form.v3_coding_executor;
+      if (form.v3_use_rag) {
+        payload.rag_id = form.v3_rag_id?.trim() || "default";
+        const ragIds = selectedV3RagIds.value
+          .map((item) => String(item).trim())
+          .filter(Boolean);
+        if (ragIds.length) {
+          payload.rag_ids = ragIds;
+        }
+      }
+      if (form.v3_coding_executor === "external") {
+        payload.v2_external_coding = {
+          ...form.v3_external_coding,
+          enabled: true,
+        };
+      }
     } else {
       syncExternalCodingAgentSelection();
       if (form.v2_coding_executor === "external" && !form.v2_external_coding.enabled) {

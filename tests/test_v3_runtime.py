@@ -114,6 +114,25 @@ class FakeV2CoderAdapter(V2AgentAdapter):
         super().__init__(_run)
 
 
+class FakeExternalCoderAdapter(V2AgentAdapter):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+        async def _run(payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append(payload)
+            return {
+                "summary": "External coder executed",
+                "executor": "external",
+                "modified_files": ["app/external.py"],
+                "created_files": [],
+                "deleted_files": [],
+                "diff_previews": {"app/external.py": "+print('external patch')"},
+                "patch_summary": "Patched through external coder",
+            }
+
+        super().__init__(_run)
+
+
 class SleepSkill(Skill):
     def __init__(self, name: str, delay: float) -> None:
         super().__init__(
@@ -710,6 +729,42 @@ def test_planning_skill_generates_repo_aware_graph(tmp_path: Path) -> None:
     assert trigger_rules[0].input_mapping["resume_from_failure"] is True
 
 
+def test_planning_skill_can_include_retrieve_docs_and_external_coding_mode(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+    planning = registry.get("planning")
+
+    output = asyncio.run(
+        planning.execute(
+            SkillInput(
+                run_id="run-plan-rag-external",
+                payload={
+                    "goal": "use docs knowledge to fix bug and run tests",
+                    "workspace_root": str(tmp_path),
+                    "rag_ids": ["default", "course"],
+                    "coding_execution_mode": "external",
+                    "preferred_agent": "codex_cli",
+                },
+                context={"workspace_root": str(tmp_path)},
+            )
+        )
+    )
+
+    planning_result = PlanningResult.model_validate(output.data)
+    graph = planning_result.graph.model_dump(mode="json")
+
+    assert planning_result.rag_ids == ["default", "course"]
+    assert planning_result.coding_execution_mode == "external"
+    assert graph["nodes"][0]["node_id"] == "retrieve_docs"
+    assert graph["nodes"][1]["node_id"] == "analyze_repo"
+    assert graph["nodes"][2]["input_payload"]["execution_mode"] == "external"
+    assert graph["nodes"][2]["input_payload"]["preferred_agent"] == "codex_cli"
+
+
 def test_planning_skill_can_choose_fix_only_recovery_template(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(
@@ -796,7 +851,7 @@ def test_test_runner_skill_executes_pytest_via_v1_adapter(tmp_path: Path) -> Non
 def test_coding_skill_uses_v2_agent_adapter_when_available() -> None:
     adapter = FakeV2CoderAdapter()
     skill = build_default_skill_registry().get("coding")
-    skill.agent_adapter = adapter
+    skill.internal_agent_adapter = adapter
 
     output = asyncio.run(
         skill.execute(
@@ -815,6 +870,76 @@ def test_coding_skill_uses_v2_agent_adapter_when_available() -> None:
     assert output.success is True
     assert output.data["modified_files"] == ["app/example.py"]
     assert adapter.calls[0]["goal"] == "patch a file"
+    assert output.data["execution_mode"] == "internal"
+
+
+def test_coding_skill_can_use_external_execution_mode() -> None:
+    internal_adapter = FakeV2CoderAdapter()
+    external_adapter = FakeExternalCoderAdapter()
+    skill = build_default_skill_registry().get("coding")
+    skill.internal_agent_adapter = internal_adapter
+    skill.external_agent_adapter = external_adapter
+
+    output = asyncio.run(
+        skill.execute(
+            SkillInput(
+                run_id="run-coding-external",
+                payload={
+                    "goal": "patch a file through external coder",
+                    "workspace_root": ".",
+                    "execution_mode": "external",
+                    "preferred_agent": "codex_cli",
+                },
+                context={
+                    "workspace_root": ".",
+                    "analyze_repo": {"repo_profile": "python_pytest"},
+                },
+            )
+        )
+    )
+
+    assert output.success is True
+    assert output.data["execution_mode"] == "external"
+    assert output.data["executor"] == "external"
+    assert external_adapter.calls[0]["preferred_agent"] == "codex_cli"
+    assert internal_adapter.calls == []
+
+
+def test_retrieve_docs_skill_supports_multi_rag_via_adapter() -> None:
+    async def fake_docs_tool(payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "ok": True,
+            "query": payload["query"],
+            "rag_id": None,
+            "rag_ids": payload["rag_ids"],
+            "match_count": 2,
+            "matches": [
+                {"source": "docs/a.md", "content": "A"},
+                {"source": "docs/b.md", "content": "B"},
+            ],
+        }
+
+    registry = build_default_skill_registry()
+    retrieve_skill = registry.get("retrieve_docs")
+    retrieve_skill.docs_adapter.v1_tool_func = fake_docs_tool
+
+    output = asyncio.run(
+        retrieve_skill.execute(
+            SkillInput(
+                run_id="run-retrieve",
+                payload={
+                    "query": "how to apply patch",
+                    "rag_ids": ["default", "course"],
+                    "top_k": 2,
+                },
+                context={},
+            )
+        )
+    )
+
+    assert output.success is True
+    assert output.data["rag_ids"] == ["default", "course"]
+    assert output.data["match_count"] == 2
 
 
 def test_tdd_skill_can_resume_from_failed_test_event() -> None:
@@ -1174,6 +1299,29 @@ def test_v3_plan_route_returns_structured_planning_result(tmp_path: Path) -> Non
     assert response.planning.repo_profile == "python_pytest"
     assert response.planning.recovery_strategy == RecoveryStrategy.FIX_AND_RETEST
     assert response.planning.graph.nodes[-1].skill_name == "test_runner"
+
+
+def test_v3_plan_route_supports_rag_and_external_coding_mode(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    response = asyncio.run(
+        plan_agent(
+            AgentPlanRequest(
+                task="use docs knowledge to fix bug",
+                workdir=str(tmp_path),
+                rag_ids=["default", "course"],
+                v3_coding_execution_mode="external",
+            )
+        )
+    )
+
+    assert response.planning.rag_ids == ["default", "course"]
+    assert response.planning.coding_execution_mode == "external"
+    assert response.planning.graph.nodes[0].skill_name == "retrieve_docs"
 
 
 def test_v3_plan_route_accepts_goal_alias(tmp_path: Path) -> None:

@@ -131,6 +131,10 @@ class AgentRunRequest(BaseModel):
     include_events: bool = Field(default=True, description="v3 是否在响应中附带本地事件记录。")
     plan_only: bool = Field(default=False, description="v3 是否只返回 planning/inspection，不执行 graph。")
     graph: TaskGraph | None = Field(default=None, description="v3 可选显式 graph。")
+    v3_coding_execution_mode: Literal["internal", "external"] = Field(
+        default="internal",
+        description="v3 coding skill 的执行后端；internal 走内置 coder，external 走外部 CLI coder。",
+    )
     v2_enabled_agents: list[
         Literal["orchestrator", "planner", "analyst", "coder", "external_coder", "tester", "reviewer"]
     ] | None = Field(
@@ -201,6 +205,16 @@ class AgentPlanRequest(BaseModel):
     )
     workdir: str | None = Field(default=None, description="可选 workspace root。")
     project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+    rag_id: str | None = Field(default=None, description="可选知识库标识；v3 检索节点会使用它。")
+    rag_ids: list[str] | None = Field(default=None, description="可选知识库标识列表；v3 检索节点支持多库并查。")
+    v3_coding_execution_mode: Literal["internal", "external"] = Field(
+        default="internal",
+        description="v3 coding skill 的执行后端。",
+    )
+    v3_external_coding: V2ExternalCodingRequest | None = Field(
+        default=None,
+        description="v3 external coding 配置；仅在 v3_coding_execution_mode=external 时生效。",
+    )
 
     @model_validator(mode="after")
     def _normalize_goal_alias(self) -> "AgentPlanRequest":
@@ -239,6 +253,16 @@ class AgentInspectGraphRequest(BaseModel):
     graph: TaskGraph | None = Field(default=None, description="可选显式 graph。")
     workdir: str | None = Field(default=None, description="可选 workspace root。")
     project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+    rag_id: str | None = Field(default=None, description="可选知识库标识；v3 检索节点会使用它。")
+    rag_ids: list[str] | None = Field(default=None, description="可选知识库标识列表；v3 检索节点支持多库并查。")
+    v3_coding_execution_mode: Literal["internal", "external"] = Field(
+        default="internal",
+        description="v3 coding skill 的执行后端。",
+    )
+    v3_external_coding: V2ExternalCodingRequest | None = Field(
+        default=None,
+        description="v3 external coding 配置；仅在 v3_coding_execution_mode=external 时生效。",
+    )
 
     @model_validator(mode="after")
     def _normalize_goal_alias(self) -> "AgentInspectGraphRequest":
@@ -274,6 +298,14 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                     goal=request.task,
                     graph=request.graph,
                     workdir=resolved_workdir,
+                    rag_id=request.rag_id,
+                    rag_ids=request.rag_ids,
+                    coding_execution_mode=request.v3_coding_execution_mode,
+                    external_coding=(
+                        request.v2_external_coding.model_dump()
+                        if request.v3_coding_execution_mode == "external" and request.v2_external_coding is not None
+                        else None
+                    ),
                     plan_only=request.plan_only,
                     include_events=request.include_events,
                     include_trace=request.include_trace,
@@ -488,6 +520,14 @@ async def plan_agent(request: AgentPlanRequest) -> AgentPlanResponse:
             skill_executor=SkillExecutor(
                 build_default_skill_registry(workspace_root=resolved_workdir)
             ),
+            rag_id=request.rag_id,
+            rag_ids=request.rag_ids,
+            coding_execution_mode=request.v3_coding_execution_mode,
+            external_coding=(
+                request.v3_external_coding.model_dump()
+                if request.v3_coding_execution_mode == "external" and request.v3_external_coding is not None
+                else None
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -503,6 +543,14 @@ async def inspect_agent_graph(request: AgentInspectGraphRequest) -> AgentInspect
             goal=request.task,
             graph=request.graph,
             workdir=resolved_workdir,
+            rag_id=request.rag_id,
+            rag_ids=request.rag_ids,
+            coding_execution_mode=request.v3_coding_execution_mode,
+            external_coding=(
+                request.v3_external_coding.model_dump()
+                if request.v3_coding_execution_mode == "external" and request.v3_external_coding is not None
+                else None
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
