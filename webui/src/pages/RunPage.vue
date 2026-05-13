@@ -2,8 +2,8 @@
   <section class="panel">
     <h2>新建运行任务</h2>
     <p class="muted">
-      选择版本后提交任务：<code>v2</code> 会跳转执行页并轮询回放；<code>v1</code> 会在当前页直接展示结果。
-      <RouterLink to="/history">查看历史运行</RouterLink>
+      选择版本后提交任务：<code>v2</code> 会跳转执行页并轮询回放；<code>v1</code> 与 <code>v3</code>
+      会在当前页直接展示结果。<RouterLink to="/history">查看历史运行</RouterLink>
     </p>
 
     <div>
@@ -23,6 +23,7 @@
         <select v-model="form.version">
           <option value="v1">v1（单 Agent）</option>
           <option value="v2">v2（多 Agent）</option>
+          <option value="v3">v3（Graph + Skill + Trigger）</option>
         </select>
       </div>
       <div>
@@ -44,7 +45,9 @@
           {{
             form.version === "v2"
               ? "v2：用于限制多 Agent 委派与重规划步数，避免运行过长。"
-              : "v1：用于限制单 Agent 主循环步数，建议先从 3~8 步开始。"
+              : form.version === "v3"
+                ? "v3：当前 MVP 主要由 graph 与 trigger 收敛，max_steps 主要保留给统一接口兼容。"
+                : "v1：用于限制单 Agent 主循环步数，建议先从 3~8 步开始。"
           }}
         </p>
       </div>
@@ -61,6 +64,42 @@
       <label>System Prompt（v1）</label>
       <textarea v-model="form.system_prompt" />
     </div>
+
+    <div v-else-if="form.version === 'v3'" class="v2-agent-config">
+      <div class="v2-agent-config-head">
+        <div>
+          <label>V3 运行模式</label>
+          <p class="muted">v3 会围绕 planning、graph inspection、execution report 和本地 event/trigger 输出结构化结果。</p>
+        </div>
+      </div>
+      <div class="review-rule-grid" style="margin-top: 12px">
+        <label class="review-rule-option">
+          <input type="checkbox" v-model="form.plan_only" />
+          <span>
+            <strong>只生成计划</strong>
+            <small>只返回 planning 和 graph inspection，不执行 graph。</small>
+          </span>
+        </label>
+        <label class="review-rule-option">
+          <input type="checkbox" v-model="form.include_events" />
+          <span>
+            <strong>返回事件列表</strong>
+            <small>把本次 graph / trigger 的本地事件一起带回前端。</small>
+          </span>
+        </label>
+        <label class="review-rule-option">
+          <input type="checkbox" v-model="form.include_trace" />
+          <span>
+            <strong>返回简版 Trace</strong>
+            <small>在响应中附带已格式化前的原始 trace 事件，便于调试。</small>
+          </span>
+        </label>
+      </div>
+      <p class="muted" style="margin: 10px 0 0">
+        当前页面主要覆盖 v3 MVP：<code>Skill + TaskGraph + ExecutionKernel + Basic Event/Trigger</code>。
+      </p>
+    </div>
+
     <div v-else class="v2-agent-config">
       <label class="v2-rag-toggle">
         <input type="checkbox" v-model="form.v2_use_rag" />
@@ -222,7 +261,7 @@
 
     <div class="row" style="margin-top: 14px">
       <button class="btn-primary" :disabled="loading" @click="submitRun">
-        {{ loading ? "运行中..." : "开始运行" }}
+        {{ loading ? "运行中..." : form.version === "v3" && form.plan_only ? "生成计划" : "开始运行" }}
       </button>
       <span v-if="error" class="error">{{ error }}</span>
     </div>
@@ -235,11 +274,77 @@
     </p>
     <pre>{{ v1Result.answer }}</pre>
   </section>
+
+  <template v-if="v3Result">
+    <section class="panel">
+      <h3>V3 运行结果</h3>
+      <p class="muted">
+        version: <code>{{ v3Result.version }}</code>
+        <span v-if="v3Result.run_id"> · run_id: <code>{{ v3Result.run_id }}</code></span>
+        <span v-if="v3Result.session_id"> · session_id: <code>{{ v3Result.session_id }}</code></span>
+        <span v-if="v3Result.status"> · status: <code>{{ v3Result.status }}</code></span>
+      </p>
+      <table>
+        <tbody>
+          <tr><th>plan_only</th><td>{{ v3Result.report ? "false" : "true" }}</td></tr>
+          <tr><th>step_count</th><td>{{ v3Result.step_count ?? 0 }}</td></tr>
+          <tr><th>planning.template</th><td>{{ v3Result.planning?.template_name || "—" }}</td></tr>
+          <tr><th>planning.recovery_strategy</th><td>{{ v3Result.planning?.recovery_strategy || "—" }}</td></tr>
+          <tr><th>inspection.layers</th><td>{{ formatExecutionLayers(v3Result.inspection?.execution_layers) }}</td></tr>
+          <tr><th>events</th><td>{{ Array.isArray(v3Result.events) ? v3Result.events.length : 0 }}</td></tr>
+          <tr><th>trace</th><td>{{ Array.isArray(v3Result.trace) ? v3Result.trace.length : 0 }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section v-if="v3Result.planning" class="panel">
+      <h3>Planning</h3>
+      <p class="muted">
+        {{ v3Result.planning.template_reason || "Planner 已返回结构化 graph 计划。" }}
+      </p>
+      <table>
+        <tbody>
+          <tr><th>goal_kind</th><td>{{ v3Result.planning.goal_kind || "—" }}</td></tr>
+          <tr><th>repo_profile</th><td>{{ v3Result.planning.repo_profile || "—" }}</td></tr>
+          <tr><th>template_name</th><td>{{ v3Result.planning.template_name || "—" }}</td></tr>
+          <tr><th>recovery_strategy</th><td>{{ v3Result.planning.recovery_strategy || "—" }}</td></tr>
+        </tbody>
+      </table>
+      <JsonBlock :data="v3Result.planning" />
+    </section>
+
+    <section v-if="v3Result.inspection" class="panel">
+      <h3>Graph Inspection</h3>
+      <p class="muted">execution_layers 会帮助前端直观看到这次 graph 的层级结构。</p>
+      <JsonBlock :data="v3Result.inspection" />
+    </section>
+
+    <section v-if="v3Result.report" class="panel">
+      <h3>Execution Report</h3>
+      <p class="muted">
+        graph_id: <code>{{ v3Result.report.graph_id }}</code>
+        · execution_nodes: <code>{{ v3Result.report.execution_nodes?.length || 0 }}</code>
+        · trigger_diagnostics: <code>{{ v3Result.report.trigger_diagnostics?.length || 0 }}</code>
+      </p>
+      <JsonBlock :data="v3Result.report" />
+    </section>
+
+    <section v-if="Array.isArray(v3Result.events) && v3Result.events.length" class="panel">
+      <h3>Events</h3>
+      <JsonBlock :data="v3Result.events" />
+    </section>
+
+    <section v-if="Array.isArray(v3Result.trace) && v3Result.trace.length" class="panel">
+      <h3>Trace</h3>
+      <JsonBlock :data="v3Result.trace" />
+    </section>
+  </template>
 </template>
 
 <script setup>
 import { onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
+import JsonBlock from "../components/JsonBlock.vue";
 import { listRagCollections, runAgent } from "../api";
 import { loadReviewStrategy } from "../reviewerConfig";
 
@@ -247,6 +352,7 @@ const router = useRouter();
 const loading = ref(false);
 const error = ref("");
 const v1Result = ref(null);
+const v3Result = ref(null);
 const ragCollections = ref([{ rag_id: "default", collection_name: "codeagent_docs" }]);
 const selectedRagIds = ref([]);
 const defaultV2Agents = ["planner", "analyst", "coder", "external_coder", "tester", "reviewer"];
@@ -265,6 +371,8 @@ const form = reactive({
   max_steps: 8,
   run_timeout_seconds: 180,
   include_trace: false,
+  include_events: true,
+  plan_only: false,
   system_prompt: "You are a helpful assistant.",
   v2_enabled_agents: ["planner", "analyst", "coder", "tester", "reviewer"],
   v2_coding_executor: "internal",
@@ -343,9 +451,17 @@ function syncExternalCodingAgentSelection() {
   form.v2_enabled_agents = defaultV2Agents.filter((id) => selected.has(id));
 }
 
+function formatExecutionLayers(layers) {
+  if (!Array.isArray(layers) || !layers.length) {
+    return "—";
+  }
+  return layers.map((layer) => `[${layer.join(", ")}]`).join(" -> ");
+}
+
 async function submitRun() {
   error.value = "";
   v1Result.value = null;
+  v3Result.value = null;
   loading.value = true;
   try {
     const payload = {
@@ -361,6 +477,9 @@ async function submitRun() {
     };
     if (form.version === "v1") {
       payload.system_prompt = form.system_prompt;
+    } else if (form.version === "v3") {
+      payload.include_events = Boolean(form.include_events);
+      payload.plan_only = Boolean(form.plan_only);
     } else {
       syncExternalCodingAgentSelection();
       if (form.v2_coding_executor === "external" && !form.v2_external_coding.enabled) {
@@ -397,6 +516,10 @@ async function submitRun() {
         params: { runId: result.run_id },
         query: { sessionId: result.session_id || "" },
       });
+      return;
+    }
+    if (form.version === "v3") {
+      v3Result.value = result;
       return;
     }
     v1Result.value = result;

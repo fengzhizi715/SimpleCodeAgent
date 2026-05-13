@@ -62,7 +62,7 @@ export async function validateLLMSettings() {
 }
 
 export async function runAgent(input) {
-  return requestJson("/agent/run", {
+  return requestJson("/run", {
     method: "POST",
     body: JSON.stringify(input),
   });

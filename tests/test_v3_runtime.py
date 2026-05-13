@@ -9,14 +9,15 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
-from app.api.routes.v3 import (
-    V3InspectGraphRequest,
-    V3PlanRequest,
-    V3RunRequest,
-    inspect_v3_graph_route,
-    plan_v3_route,
-    run_v3_route,
+from app.api.routes.agent import (
+    AgentInspectGraphRequest,
+    AgentPlanRequest,
+    AgentRunRequest,
+    inspect_agent_graph,
+    plan_agent,
+    run_agent,
 )
 from app.db.sqlite import SQLiteDB
 from app.trace.repository import SQLiteTraceRepository
@@ -1131,20 +1132,19 @@ def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) ->
     assert len(result["trace"]) >= 4
 
 
-def test_run_v3_route_supports_plan_only(tmp_path: Path) -> None:
+def test_unified_run_agent_supports_v3_plan_only(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(
         "def test_ok():\n    assert True\n",
         encoding="utf-8",
     )
 
-    response = asyncio.run(
-        run_v3_route(
-            V3RunRequest(
-                goal="run tests",
-                workdir=str(tmp_path),
-                plan_only=True,
-            )
+    response = run_agent(
+        AgentRunRequest(
+            version="v3",
+            task="run tests",
+            workdir=str(tmp_path),
+            plan_only=True,
         )
     )
 
@@ -1163,9 +1163,9 @@ def test_v3_plan_route_returns_structured_planning_result(tmp_path: Path) -> Non
     )
 
     response = asyncio.run(
-        plan_v3_route(
-            V3PlanRequest(
-                goal="修复一个 bug 并运行测试",
+        plan_agent(
+            AgentPlanRequest(
+                task="修复一个 bug 并运行测试",
                 workdir=str(tmp_path),
             )
         )
@@ -1176,6 +1176,26 @@ def test_v3_plan_route_returns_structured_planning_result(tmp_path: Path) -> Non
     assert response.planning.graph.nodes[-1].skill_name == "test_runner"
 
 
+def test_v3_plan_route_accepts_goal_alias(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    response = asyncio.run(
+        plan_agent(
+            AgentPlanRequest(
+                goal="run tests",
+                workdir=str(tmp_path),
+            )
+        )
+    )
+
+    assert response.planning.goal_kind == "testing"
+    assert response.planning.recovery_strategy == RecoveryStrategy.FIX_AND_RETEST
+
+
 def test_v3_inspect_graph_route_returns_execution_layers(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(
@@ -1184,9 +1204,9 @@ def test_v3_inspect_graph_route_returns_execution_layers(tmp_path: Path) -> None
     )
 
     response = asyncio.run(
-        inspect_v3_graph_route(
-            V3InspectGraphRequest(
-                goal="run tests",
+        inspect_agent_graph(
+            AgentInspectGraphRequest(
+                task="run tests",
                 workdir=str(tmp_path),
             )
         )
@@ -1198,15 +1218,30 @@ def test_v3_inspect_graph_route_returns_execution_layers(tmp_path: Path) -> None
     assert response.planning.recovery_strategy == RecoveryStrategy.FIX_AND_RETEST
 
 
-def test_v3_inspect_graph_route_requires_goal_or_graph() -> None:
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            inspect_v3_graph_route(
-                V3InspectGraphRequest()
+def test_v3_inspect_graph_route_accepts_goal_alias(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(
+        "def test_ok():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    response = asyncio.run(
+        inspect_agent_graph(
+            AgentInspectGraphRequest(
+                goal="run tests",
+                workdir=str(tmp_path),
             )
         )
+    )
 
-    assert exc_info.value.status_code == 400
+    assert response.inspection.is_valid is True
+    assert response.planning is not None
+    assert response.planning.goal_kind == "testing"
+
+
+def test_v3_inspect_graph_route_requires_goal_or_graph() -> None:
+    with pytest.raises(ValidationError):
+        AgentInspectGraphRequest()
 
 
 def test_run_v3_uses_planning_skill_recovery_template_without_manual_trigger_rules(tmp_path: Path) -> None:

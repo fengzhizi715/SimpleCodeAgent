@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.deps import (
     get_agent_loop,
@@ -26,10 +27,16 @@ from app.core.logger import get_logger, log_context
 from app.core.session import derive_project_session_id
 from app.llm.client import LLMProviderError
 from app.v1.tools.registry import ToolRegistry
+from app.v3.contracts.execution_contracts import ExecutionReport
+from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph
+from app.v3.contracts.planning_contracts import PlanningResult
+from app.v3.runner import inspect_v3_graph, plan_v3_graph, run_v3
+from app.v3.runtime.skill_executor import SkillExecutor
+from app.v3 import build_default_skill_registry
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/agent", tags=["agent"])
+router = APIRouter(tags=["agent"])
 
 
 class V2ReviewStrategyRequest(BaseModel):
@@ -97,8 +104,8 @@ class AgentRunRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    task: str = Field(min_length=1, description="要执行的任务描述。")
-    version: Literal["v1", "v2"] = Field(default="v1", description="选择 Agent 版本。")
+    task: str | None = Field(default=None, description="要执行的任务描述。v3 下会作为 goal 使用。")
+    version: Literal["v1", "v2", "v3"] = Field(default="v1", description="选择 Agent 版本。")
     session_id: str | None = Field(default=None, description="可选会话 ID。")
     workdir: str | None = Field(
         default=None,
@@ -121,6 +128,9 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=3, ge=1, le=20, description="最大执行步数。")
     run_timeout_seconds: int = Field(default=120, ge=1, le=1800, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
+    include_events: bool = Field(default=True, description="v3 是否在响应中附带本地事件记录。")
+    plan_only: bool = Field(default=False, description="v3 是否只返回 planning/inspection，不执行 graph。")
+    graph: TaskGraph | None = Field(default=None, description="v3 可选显式 graph。")
     v2_enabled_agents: list[
         Literal["orchestrator", "planner", "analyst", "coder", "external_coder", "tester", "reviewer"]
     ] | None = Field(
@@ -145,6 +155,14 @@ class AgentRunRequest(BaseModel):
         description="V2 外部编码执行器配置（Codex/Cursor CLI）。",
     )
 
+    @model_validator(mode="after")
+    def _validate_task_requirements(self) -> "AgentRunRequest":
+        if self.version in {"v1", "v2"} and not str(self.task or "").strip():
+            raise ValueError("v1/v2 请求必须提供 task。")
+        if self.version == "v3" and not (str(self.task or "").strip() or self.graph is not None):
+            raise ValueError("v3 请求必须提供 task(goal) 或 graph。")
+        return self
+
 
 class AgentRunResponse(BaseModel):
     """Agent 运行响应。"""
@@ -152,7 +170,7 @@ class AgentRunResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     answer: str
-    version: Literal["v1", "v2"]
+    version: Literal["v1", "v2", "v3"]
     run_id: str
     session_id: str
     reasoning_mode: Literal["default", "low", "medium", "high"] = "default"
@@ -161,13 +179,133 @@ class AgentRunResponse(BaseModel):
     usage: RunUsage | None = None
     metrics: RunMetrics | None = None
     trace: list[dict[str, object]] = Field(default_factory=list)
+    report: ExecutionReport | None = None
+    planning: PlanningResult | None = None
+    inspection: GraphInspection | None = None
+    events: list[dict[str, object]] = Field(default_factory=list)
 
 
-@router.post("/run", response_model=AgentRunResponse, status_code=status.HTTP_200_OK)
-def run_agent(request: AgentRunRequest) -> AgentRunResponse:
+class AgentPlanRequest(BaseModel):
+    """统一 planning 请求；当前由 v3 提供结构化 graph planning。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v3"] = Field(default="v3", description="当前仅支持 v3 planning。")
+    task: str | None = Field(
+        default=None,
+        description="与 /run 的 task 同义；在 v3 中作为 planning goal 使用。",
+    )
+    goal: str | None = Field(
+        default=None,
+        description="兼容字段，等价于 task；优先推荐使用 task。",
+    )
+    workdir: str | None = Field(default=None, description="可选 workspace root。")
+    project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+
+    @model_validator(mode="after")
+    def _normalize_goal_alias(self) -> "AgentPlanRequest":
+        resolved_task = str(self.task or self.goal or "").strip()
+        if not resolved_task:
+            raise ValueError("planning 请求必须提供 task（或兼容字段 goal）。")
+        self.task = resolved_task
+        if self.goal is not None:
+            self.goal = str(self.goal).strip() or None
+        return self
+
+
+class AgentPlanResponse(BaseModel):
+    """统一 planning 响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v3"] = "v3"
+    planning: PlanningResult
+
+
+class AgentInspectGraphRequest(BaseModel):
+    """统一 graph inspection 请求；当前由 v3 提供 DAG inspection。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v3"] = Field(default="v3", description="当前仅支持 v3 graph inspection。")
+    task: str | None = Field(
+        default=None,
+        description="与 /run 的 task 同义；在 v3 中作为 planning goal 使用，可用于先生成 graph 再检查。",
+    )
+    goal: str | None = Field(
+        default=None,
+        description="兼容字段，等价于 task；优先推荐使用 task。",
+    )
+    graph: TaskGraph | None = Field(default=None, description="可选显式 graph。")
+    workdir: str | None = Field(default=None, description="可选 workspace root。")
+    project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+
+    @model_validator(mode="after")
+    def _normalize_goal_alias(self) -> "AgentInspectGraphRequest":
+        resolved_task = str(self.task or self.goal or "").strip() or None
+        if resolved_task is None and self.graph is None:
+            raise ValueError("graph inspection 请求必须提供 task（或兼容字段 goal）或 graph。")
+        self.task = resolved_task
+        if self.goal is not None:
+            self.goal = str(self.goal).strip() or None
+        return self
+
+
+class AgentInspectGraphResponse(BaseModel):
+    """统一 graph inspection 响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["v3"] = "v3"
+    inspection: GraphInspection
+    planning: PlanningResult | None = None
+
+
+def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
     """执行一次 Agent 任务。"""
-    if request.version not in {"v1", "v2"}:
+    if request.version not in {"v1", "v2", "v3"}:
         raise HTTPException(status_code=400, detail=f"不支持的 Agent 版本：{request.version}")
+    if request.version == "v3":
+        session_id = request.session_id or str(uuid4())
+        resolved_workdir = request.workdir or request.project_root or settings.workdir or None
+        try:
+            result = asyncio.run(
+                run_v3(
+                    goal=request.task,
+                    graph=request.graph,
+                    workdir=resolved_workdir,
+                    plan_only=request.plan_only,
+                    include_events=request.include_events,
+                    include_trace=request.include_trace,
+                )
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        report = result.get("report")
+        planning = result.get("planning")
+        inspection = result.get("inspection")
+        run_id = (
+            report.run_id
+            if report is not None
+            else (planning.graph.run_id if planning is not None else "")
+        )
+        status_value = report.status.value if report is not None else ("planned" if planning is not None else None)
+        step_count = len(report.execution_nodes) if report is not None else (len(planning.graph.nodes) if planning is not None else 0)
+        answer = report.model_dump_json(indent=2) if report is not None else "plan_only=true"
+        return AgentRunResponse(
+            answer=answer,
+            version="v3",
+            run_id=run_id,
+            session_id=session_id,
+            reasoning_mode=request.reasoning_mode,
+            status=status_value,
+            step_count=step_count,
+            trace=result.get("trace", []),
+            report=report,
+            planning=planning,
+            inspection=inspection,
+            events=result.get("events", []),
+        )
     if request.version == "v1":
         rag_id = str(request.rag_id or "").strip()
         rag_ids = [str(item).strip() for item in (request.rag_ids or []) if str(item).strip()]
@@ -325,3 +463,50 @@ def run_agent(request: AgentRunRequest) -> AgentRunResponse:
             metrics=result.metrics,
             trace=trace,
         )
+
+
+@router.post("/run", response_model=AgentRunResponse, status_code=status.HTTP_200_OK)
+def run_agent(request: AgentRunRequest) -> AgentRunResponse:
+    """统一执行一次 Agent 任务。"""
+    return _run_agent_impl(request)
+
+
+@router.post("/agent/run", response_model=AgentRunResponse, status_code=status.HTTP_200_OK, include_in_schema=False)
+def run_agent_legacy(request: AgentRunRequest) -> AgentRunResponse:
+    """兼容旧的 /agent/run 路径。"""
+    return _run_agent_impl(request)
+
+
+@router.post("/plan", response_model=AgentPlanResponse, status_code=status.HTTP_200_OK)
+async def plan_agent(request: AgentPlanRequest) -> AgentPlanResponse:
+    """生成结构化计划；当前由 v3 planning 提供。"""
+    resolved_workdir = request.workdir or request.project_root or "."
+    try:
+        planning = await plan_v3_graph(
+            goal=request.task,
+            workdir=resolved_workdir,
+            skill_executor=SkillExecutor(
+                build_default_skill_registry(workspace_root=resolved_workdir)
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AgentPlanResponse(planning=planning)
+
+
+@router.post("/inspect-graph", response_model=AgentInspectGraphResponse, status_code=status.HTTP_200_OK)
+async def inspect_agent_graph(request: AgentInspectGraphRequest) -> AgentInspectGraphResponse:
+    """检查 graph 结构；当前由 v3 graph inspection 提供。"""
+    resolved_workdir = request.workdir or request.project_root
+    try:
+        inspection, planning = await inspect_v3_graph(
+            goal=request.task,
+            graph=request.graph,
+            workdir=resolved_workdir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AgentInspectGraphResponse(
+        inspection=inspection,
+        planning=planning,
+    )

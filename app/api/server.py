@@ -6,7 +6,6 @@ from fastapi import FastAPI
 
 from app.api.routes.agent import router as agent_router
 from app.api.routes.debug import router as debug_router
-from app.api.routes.v3 import router as v3_router
 from app.core.config import settings
 from app.core.logger import configure_logging, get_logger
 
@@ -29,7 +28,6 @@ def create_app() -> FastAPI:
     )
     app.include_router(agent_router)
     app.include_router(debug_router)
-    app.include_router(v3_router)
     return app
 
 
