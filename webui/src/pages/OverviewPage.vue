@@ -81,18 +81,18 @@
         </template>
       </div>
       <div class="overview-card">
-        <h3>当前智能体</h3>
+        <h3>当前能力目录</h3>
         <p v-if="agentsLoading" class="muted">加载中…</p>
         <template v-else>
           <p class="overview-stat">
-            <span class="overview-stat-label">已注册智能体</span>
+            <span class="overview-stat-label">已注册 v2 agents</span>
             <span class="overview-stat-value">{{ agentsTotal !== null ? `${agentsTotal} 个` : "—" }}</span>
           </p>
           <div v-if="agentNames.length" class="overview-agent-chips">
             <span v-for="name in agentNames" :key="name" class="overview-agent-chip">{{ name }}</span>
           </div>
           <p v-else class="muted overview-meta">
-            暂未获取到智能体列表。
+            暂未获取到能力目录。
           </p>
           <p class="muted overview-hint">
             <RouterLink to="/agents">查看全部</RouterLink>
@@ -162,7 +162,11 @@ async function loadOverview() {
 
   try {
     const data = await listAgents();
-    const agents = Array.isArray(data.agents) ? data.agents : [];
+    const agents = Array.isArray(data.v2_agents)
+      ? data.v2_agents
+      : Array.isArray(data.agents)
+        ? data.agents
+        : [];
     agentsTotal.value = typeof data.total === "number" ? data.total : agents.length;
     agentNames.value = agents.map((item) => item.agent_id).filter(Boolean);
   } catch {

@@ -18,7 +18,7 @@
           Token Dashboard
         </RouterLink>
         <RouterLink to="/agents" class="side-nav-link" active-class="is-active">
-          智能体列表
+          能力目录
         </RouterLink>
         <RouterLink to="/rag" class="side-nav-link" active-class="is-active">
           RAG

@@ -32,6 +32,7 @@ from app.v1.rag.config_store import RagConfigStore, RagIndexConfig
 from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
 from app.v1.rag.vector_store import ChromaVectorStore
+from app.v3 import build_default_skill_registry
 
 router = APIRouter(tags=["debug"])
 
@@ -198,6 +199,20 @@ class AgentCatalogItem(BaseModel):
     availability: str = "enabled"
 
 
+class SkillCatalogItem(BaseModel):
+    """当前可用 v3 skill 条目。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_name: str
+    description: str
+    skill_type: str
+    capabilities: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    typical_use: str = ""
+    template_names: list[str] = Field(default_factory=list)
+
+
 class AgentCatalogResponse(BaseModel):
     """智能体目录响应。"""
 
@@ -205,6 +220,10 @@ class AgentCatalogResponse(BaseModel):
 
     total: int = 0
     agents: list[AgentCatalogItem] = Field(default_factory=list)
+    v2_agents: list[AgentCatalogItem] = Field(default_factory=list)
+    v2_total: int = 0
+    v3_skills: list[SkillCatalogItem] = Field(default_factory=list)
+    v3_total: int = 0
 
 
 class UsageSummaryResponse(BaseModel):
@@ -513,7 +532,7 @@ def list_runs(
 
 @router.get("/debug/agents", response_model=AgentCatalogResponse, status_code=status.HTTP_200_OK)
 def list_agents() -> AgentCatalogResponse:
-    """列出当前运行时注册的智能体。"""
+    """列出当前运行时注册的 v2 agents 与 v3 skills。"""
     specs = get_v2_runtime().registry.list_specs()
     agents = [
         AgentCatalogItem(
@@ -525,7 +544,82 @@ def list_agents() -> AgentCatalogResponse:
         )
         for spec in specs
     ]
-    return AgentCatalogResponse(total=len(agents), agents=agents)
+    skill_registry = build_default_skill_registry(workspace_root=BASE_DIR)
+    skill_catalog_hints: dict[str, dict[str, object]] = {
+        "planning": {
+            "typical_use": "根据任务目标、仓库特征和 RAG 配置，生成适合当前场景的 graph 模板与恢复策略。",
+            "template_names": [
+                "analysis_only",
+                "analysis_with_context",
+                "testing_branch_verify",
+                "coding_focus_then_full_suite",
+                "default",
+            ],
+        },
+        "retrieve_docs": {
+            "typical_use": "在分析或改码前补充外部文档、知识库或多 RAG 检索上下文。",
+            "template_names": [
+                "analysis_with_context",
+                "default",
+            ],
+        },
+        "analyze_repo": {
+            "typical_use": "抽取仓库画像、候选测试命令和测试目标，为后续 coding / testing 节点提供上下文。",
+            "template_names": [
+                "analysis_only",
+                "analysis_with_context",
+                "testing_branch_verify",
+                "coding_focus_then_full_suite",
+                "default",
+            ],
+        },
+        "coding": {
+            "typical_use": "执行真实改码动作，可切换 internal / external 后端，并承接 test_failed 之后的 fix-only 恢复。",
+            "template_names": [
+                "default",
+                "coding_focus_then_full_suite",
+                "template_fix_after_test_failed",
+            ],
+        },
+        "test_runner": {
+            "typical_use": "执行 focused test 或 full-suite verification，既能作为主链节点，也能作为恢复后的验证节点。",
+            "template_names": [
+                "default",
+                "testing_branch_verify",
+                "coding_focus_then_full_suite",
+            ],
+        },
+        "tdd": {
+            "typical_use": "承接 test_failed 后的 fix -> re-test 恢复链，适合需要验证收敛而不是只修一次的场景。",
+            "template_names": [
+                "template_fix_and_retest_after_test_failed",
+            ],
+        },
+    }
+    skills = [
+        SkillCatalogItem(
+            skill_name=skill.spec.name,
+            description=skill.spec.description,
+            skill_type=skill.spec.skill_type.value,
+            capabilities=list(skill.spec.capabilities),
+            enabled=skill.spec.enabled,
+            typical_use=str(skill_catalog_hints.get(skill.spec.name, {}).get("typical_use", "")),
+            template_names=[
+                str(item)
+                for item in skill_catalog_hints.get(skill.spec.name, {}).get("template_names", [])
+                if str(item).strip()
+            ],
+        )
+        for skill in skill_registry.list()
+    ]
+    return AgentCatalogResponse(
+        total=len(agents),
+        agents=agents,
+        v2_agents=agents,
+        v2_total=len(agents),
+        v3_skills=skills,
+        v3_total=len(skills),
+    )
 
 
 @router.get("/debug/usage/summary", response_model=UsageSummaryResponse, status_code=status.HTTP_200_OK)

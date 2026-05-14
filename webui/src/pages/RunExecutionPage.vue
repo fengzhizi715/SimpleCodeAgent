@@ -48,35 +48,86 @@
       <p class="muted" style="margin-top: 10px">{{ v3Planning.template_reason || "—" }}</p>
     </section>
 
-    <section class="panel" v-if="v3ExecutionNodes.length">
+    <section class="panel" v-if="v3GraphLayerSections.length || v3TriggerExecutionNodes.length">
       <h3>Execution Nodes</h3>
-      <div class="planning-node-list">
-        <article
-          v-for="(node, index) in v3ExecutionNodes"
-          :key="node.node_id || index"
-          class="planning-node-card"
+      <div v-if="v3GraphLayerSections.length" class="v3-layer-list">
+        <section
+          v-for="layer in v3GraphLayerSections"
+          :key="layer.id"
+          class="v3-layer-section"
         >
-          <div class="planning-node-top">
-            <div class="planning-node-title">
-              <span class="planning-node-index">#{{ index + 1 }}</span>
-              <strong>{{ node.node_id }}</strong>
+          <div class="v3-layer-head">
+            <div>
+              <h4>{{ layer.label }}</h4>
+              <p class="muted">{{ layer.description }}</p>
             </div>
-            <span class="agent-version" :class="node.kind === 'trigger' ? 'agent-version--v3' : 'agent-version--v2'">
-              {{ node.skill_name }}
-            </span>
+            <span class="badge">{{ layer.nodes.length }} nodes</span>
           </div>
-          <p class="planning-node-deps muted">
-            status: <strong>{{ node.status || "unknown" }}</strong>
-            <span v-if="node.kind === 'trigger'"> · kind: trigger</span>
-            <span v-if="node.source_event_type"> · event: {{ node.source_event_type }}</span>
-          </p>
-          <p class="planning-node-deps muted">
-            dependencies:
-            <span v-if="Array.isArray(node.dependencies) && node.dependencies.length">{{ node.dependencies.join(", ") }}</span>
-            <span v-else>—</span>
-          </p>
-          <pre class="flow-detail-pre">{{ node.summary || "暂无摘要。" }}</pre>
-        </article>
+          <div class="planning-node-list v3-layer-grid">
+            <article
+              v-for="node in layer.nodes"
+              :key="node.node_id"
+              class="planning-node-card"
+            >
+              <div class="planning-node-top">
+                <div class="planning-node-title">
+                  <span class="planning-node-index">#{{ executionNodeIndexMap[node.node_id] }}</span>
+                  <strong>{{ node.node_id }}</strong>
+                </div>
+                <span class="agent-version agent-version--v2">
+                  {{ node.skill_name }}
+                </span>
+              </div>
+              <p class="planning-node-deps muted">
+                status: <strong>{{ node.status || "unknown" }}</strong>
+              </p>
+              <p class="planning-node-deps muted">
+                dependencies:
+                <span v-if="Array.isArray(node.dependencies) && node.dependencies.length">{{ node.dependencies.join(", ") }}</span>
+                <span v-else>—</span>
+              </p>
+              <pre class="flow-detail-pre">{{ node.summary || "暂无摘要。" }}</pre>
+            </article>
+          </div>
+        </section>
+      </div>
+
+      <div v-if="v3TriggerExecutionNodes.length" class="v3-trigger-section">
+        <div class="v3-layer-head">
+          <div>
+            <h4>Trigger Follow-ups</h4>
+            <p class="muted">事件触发后的补偿动作、修复动作和再验证动作会集中显示在这里。</p>
+          </div>
+          <span class="badge">{{ v3TriggerExecutionNodes.length }} nodes</span>
+        </div>
+        <div class="planning-node-list v3-layer-grid">
+          <article
+            v-for="node in v3TriggerExecutionNodes"
+            :key="node.node_id"
+            class="planning-node-card"
+          >
+            <div class="planning-node-top">
+              <div class="planning-node-title">
+                <span class="planning-node-index">#{{ executionNodeIndexMap[node.node_id] }}</span>
+                <strong>{{ node.node_id }}</strong>
+              </div>
+              <span class="agent-version agent-version--v3">
+                {{ node.skill_name }}
+              </span>
+            </div>
+            <p class="planning-node-deps muted">
+              status: <strong>{{ node.status || "unknown" }}</strong>
+              <span> · kind: trigger</span>
+              <span v-if="node.source_event_type"> · event: {{ node.source_event_type }}</span>
+            </p>
+            <p class="planning-node-deps muted">
+              parent:
+              <span v-if="node.parent_node_id">{{ node.parent_node_id }}</span>
+              <span v-else>—</span>
+            </p>
+            <pre class="flow-detail-pre">{{ node.summary || "暂无摘要。" }}</pre>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -436,6 +487,66 @@ const selectedDelegationId = ref("");
 const nodeEls = ref(new Map());
 const copyHint = ref("复制摘要");
 const isV3Detail = computed(() => detailVersion.value === "v3");
+const v3GraphExecutionNodes = computed(() => {
+  return v3ExecutionNodes.value.filter((node) => String(node?.kind || "graph") !== "trigger");
+});
+const v3TriggerExecutionNodes = computed(() => {
+  return v3ExecutionNodes.value.filter((node) => String(node?.kind || "") === "trigger");
+});
+const executionNodeIndexMap = computed(() => {
+  return v3ExecutionNodes.value.reduce((acc, node, index) => {
+    if (node?.node_id) {
+      acc[node.node_id] = index + 1;
+    }
+    return acc;
+  }, {});
+});
+const v3GraphLayerSections = computed(() => {
+  const graphNodes = v3GraphExecutionNodes.value;
+  if (!graphNodes.length) {
+    return [];
+  }
+  const layers = Array.isArray(v3Planning.value?.execution_layers)
+    ? v3Planning.value.execution_layers
+    : [];
+  const nodesById = new Map(
+    graphNodes
+      .filter((node) => typeof node?.node_id === "string" && node.node_id)
+      .map((node) => [node.node_id, node])
+  );
+  const usedNodeIds = new Set();
+  const sections = layers
+    .map((layer, index) => {
+      const nodeIds = Array.isArray(layer) ? layer : [];
+      const nodes = nodeIds
+        .map((nodeId) => nodesById.get(nodeId))
+        .filter(Boolean);
+      nodes.forEach((node) => usedNodeIds.add(node.node_id));
+      if (!nodes.length) {
+        return null;
+      }
+      return {
+        id: `layer-${index + 1}`,
+        label: `Layer ${index + 1}`,
+        description: nodeIds.join(" -> "),
+        nodes,
+      };
+    })
+    .filter(Boolean);
+
+  const unlayeredNodes = graphNodes.filter((node) => !usedNodeIds.has(node.node_id));
+  if (unlayeredNodes.length) {
+    sections.push({
+      id: "layer-unassigned",
+      label: layers.length ? "Unassigned Graph Nodes" : "Graph Nodes",
+      description: layers.length
+        ? "这些节点没有被 planning.execution_layers 收录，单独列出便于排查。"
+        : "当前 planning 没有 execution_layers，按图节点顺序展示。",
+      nodes: unlayeredNodes,
+    });
+  }
+  return sections;
+});
 
 const tabs = computed(() => [
   {
@@ -857,6 +968,44 @@ onBeforeUnmount(() => {
     radial-gradient(circle at 0 0, rgba(79, 70, 229, 0.08), transparent 34%),
     radial-gradient(circle at 100% 6%, rgba(13, 148, 136, 0.08), transparent 30%),
     var(--bg-elevated, #fff);
+}
+
+.v3-layer-list {
+  display: grid;
+  gap: 16px;
+}
+
+.v3-layer-section,
+.v3-trigger-section {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.72);
+  padding: 14px;
+}
+
+.v3-layer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.v3-layer-head h4 {
+  margin: 0 0 4px;
+  font-size: 0.98rem;
+}
+
+.v3-layer-head p {
+  margin: 0;
+}
+
+.v3-layer-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.v3-trigger-section {
+  margin-top: 16px;
 }
 
 .memory-panel-head {
