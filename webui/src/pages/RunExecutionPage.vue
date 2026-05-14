@@ -10,7 +10,7 @@
     <p class="muted" style="margin-top: 8px">
       {{
         isV3Detail
-          ? "当前展示 v3 的 graph execution 详情视图。"
+          ? "当前展示 v3 面向 graph runtime 的图执行节点能力详情视图。"
           : `轮询状态：${polling ? "开启" : "关闭"}`
       }}
     </p>

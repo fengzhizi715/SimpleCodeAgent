@@ -9,6 +9,7 @@ import RagPage from "./pages/RagPage.vue";
 import RagCreatePage from "./pages/RagCreatePage.vue";
 import RagDetailPage from "./pages/RagDetailPage.vue";
 import AgentsPage from "./pages/AgentsPage.vue";
+import SkillsPage from "./pages/SkillsPage.vue";
 
 const routes = [
   { path: "/", redirect: "/overview" },
@@ -16,7 +17,8 @@ const routes = [
   { path: "/dashboard", name: "dashboard", component: DashboardPage, meta: { title: "Token Dashboard" } },
   { path: "/run", name: "run", component: RunPage, meta: { title: "运行任务" } },
   { path: "/history", name: "history", component: HistoryPage, meta: { title: "运行历史" } },
-  { path: "/agents", name: "agents", component: AgentsPage, meta: { title: "能力目录" } },
+  { path: "/agents", name: "agents", component: AgentsPage, meta: { title: "智能体列表" } },
+  { path: "/skills", name: "skills", component: SkillsPage, meta: { title: "Skills 列表" } },
   { path: "/rag", name: "rag", component: RagPage, meta: { title: "RAG 文档库" } },
   {
     path: "/rag/new",

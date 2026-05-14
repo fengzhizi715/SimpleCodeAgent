@@ -81,21 +81,42 @@
         </template>
       </div>
       <div class="overview-card">
-        <h3>当前能力目录</h3>
+        <h3>V2 Agents</h3>
+        <p class="muted overview-meta">面向中心化多智能体编排的协作角色目录。</p>
         <p v-if="agentsLoading" class="muted">加载中…</p>
         <template v-else>
           <p class="overview-stat">
-            <span class="overview-stat-label">已注册 v2 agents</span>
+            <span class="overview-stat-label">已注册 agents</span>
             <span class="overview-stat-value">{{ agentsTotal !== null ? `${agentsTotal} 个` : "—" }}</span>
           </p>
           <div v-if="agentNames.length" class="overview-agent-chips">
             <span v-for="name in agentNames" :key="name" class="overview-agent-chip">{{ name }}</span>
           </div>
           <p v-else class="muted overview-meta">
-            暂未获取到能力目录。
+            暂未获取到 v2 agent 目录。
           </p>
           <p class="muted overview-hint">
             <RouterLink to="/agents">查看全部</RouterLink>
+          </p>
+        </template>
+      </div>
+      <div class="overview-card">
+        <h3>V3 Skills</h3>
+        <p class="muted overview-meta">面向 graph runtime 的图执行节点能力目录。</p>
+        <p v-if="agentsLoading" class="muted">加载中…</p>
+        <template v-else>
+          <p class="overview-stat">
+            <span class="overview-stat-label">已注册 skills</span>
+            <span class="overview-stat-value">{{ skillsTotal !== null ? `${skillsTotal} 个` : "—" }}</span>
+          </p>
+          <div v-if="skillNames.length" class="overview-agent-chips">
+            <span v-for="name in skillNames" :key="name" class="overview-agent-chip">{{ name }}</span>
+          </div>
+          <p v-else class="muted overview-meta">
+            暂未获取到 v3 skill 目录。
+          </p>
+          <p class="muted overview-hint">
+            <RouterLink to="/skills">查看全部</RouterLink>
           </p>
         </template>
       </div>
@@ -116,6 +137,8 @@ const historyTotal = ref(null);
 const agentsLoading = ref(true);
 const agentsTotal = ref(null);
 const agentNames = ref([]);
+const skillsTotal = ref(null);
+const skillNames = ref([]);
 const lastUpdatedAt = ref(null);
 const savingLLM = ref(false);
 const validatingLLM = ref(false);
@@ -167,11 +190,16 @@ async function loadOverview() {
       : Array.isArray(data.agents)
         ? data.agents
         : [];
+    const skills = Array.isArray(data.v3_skills) ? data.v3_skills : [];
     agentsTotal.value = typeof data.total === "number" ? data.total : agents.length;
     agentNames.value = agents.map((item) => item.agent_id).filter(Boolean);
+    skillsTotal.value = typeof data.v3_total === "number" ? data.v3_total : skills.length;
+    skillNames.value = skills.map((item) => item.skill_name).filter(Boolean);
   } catch {
     agentsTotal.value = null;
     agentNames.value = [];
+    skillsTotal.value = null;
+    skillNames.value = [];
   } finally {
     agentsLoading.value = false;
   }

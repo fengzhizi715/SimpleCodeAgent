@@ -2,7 +2,8 @@
   <section class="panel">
     <h2>新建运行任务</h2>
     <p class="muted">
-      选择版本后提交任务：<code>v2</code> 与 <code>v3</code> 会跳转执行详情页；<code>v1</code> 会在当前页直接展示结果。
+      <code>v2</code> 面向中心化多智能体编排的协作角色运行；<code>v3</code> 面向 graph runtime 的图执行节点能力运行。
+      提交后 <code>v2</code> 与 <code>v3</code> 会跳转执行详情页；<code>v1</code> 会在当前页直接展示结果。
       <code>v3</code> 的 <code>plan_only</code> 仍会在当前页直接展示结构化结果。<RouterLink to="/history">查看历史运行</RouterLink>
     </p>
 
@@ -22,8 +23,8 @@
         <label>版本</label>
         <select v-model="form.version">
           <option value="v1">v1（单 Agent）</option>
-          <option value="v2">v2（多 Agent）</option>
-          <option value="v3">v3（Graph + Skill + Trigger）</option>
+          <option value="v2">v2（协作角色 / 多 Agent）</option>
+          <option value="v3">v3（图执行节点 / Graph Runtime）</option>
         </select>
       </div>
       <div>
@@ -44,9 +45,9 @@
         <p class="muted" style="margin: 6px 0 0">
           {{
             form.version === "v2"
-              ? "v2：用于限制多 Agent 委派与重规划步数，避免运行过长。"
+              ? "v2：用于限制中心化多智能体委派与重规划步数，避免协作链过长。"
               : form.version === "v3"
-                ? "v3：当前 MVP 主要由 graph 与 trigger 收敛，max_steps 主要保留给统一接口兼容。"
+                ? "v3：当前主要由 graph、execution kernel 与 basic trigger 收敛，max_steps 主要保留给统一接口兼容。"
                 : "v1：用于限制单 Agent 主循环步数，建议先从 3~8 步开始。"
           }}
         </p>
@@ -69,7 +70,7 @@
       <div class="v2-agent-config-head">
         <div>
           <label>V3 运行模式</label>
-          <p class="muted">v3 会围绕 planning、graph inspection、execution report 和本地 event/trigger 输出结构化结果。</p>
+          <p class="muted">v3 会围绕 planning、graph inspection、execution report 和本地 event/trigger，输出面向图执行节点能力的结构化结果。</p>
         </div>
       </div>
       <div class="review-rule-grid" style="margin-top: 12px">
@@ -155,7 +156,7 @@
           </label>
         </div>
         <p class="muted" style="margin: 6px 0 0">
-          在 v3 里这不是“另一个 Agent”，而是同一个 <code>coding skill</code> 的不同执行后端。
+          在 v3 里这不是“另一个 Agent”，而是同一个图执行节点能力 <code>coding skill</code> 的不同执行后端。
         </p>
       </div>
       <div v-if="form.v3_coding_executor === 'external'" class="reviewer-config-card" style="margin-top: 10px">
@@ -189,7 +190,7 @@
         </div>
       </div>
       <p class="muted" style="margin: 10px 0 0">
-        当前页面主要覆盖 v3 MVP：<code>Skill + TaskGraph + ExecutionKernel + Basic Event/Trigger</code>。
+        当前页面主要覆盖 v3 MVP：<code>Skill + TaskGraph + ExecutionKernel + Basic Event/Trigger</code>，也就是一套更偏图执行节点能力的运行内核。
       </p>
     </div>
 
@@ -226,7 +227,7 @@
       <div class="v2-agent-config-head">
         <div>
           <label>V2 Agent 配置</label>
-          <p class="muted">Orchestrator / Planner 始终启用；其余 Agent 可按本次运行选择。</p>
+          <p class="muted">v2 以中心化多智能体协作角色为主轴；Orchestrator / Planner 始终启用，其余 Agent 可按本次运行选择。</p>
         </div>
         <button type="button" class="btn-secondary btn-sm" @click="resetV2Agents">恢复默认</button>
       </div>
