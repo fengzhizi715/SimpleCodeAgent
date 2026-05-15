@@ -16,3 +16,12 @@ class SkillExecutor:
         """Execute a named skill."""
         skill = self.registry.get(skill_name)
         return await skill.execute(skill_input)
+
+    @staticmethod
+    def create_error_output(*, error: str, summary: str) -> SkillOutput:
+        """Create a SkillOutput representing a failed execution."""
+        return SkillOutput(
+            success=False,
+            summary=summary,
+            error=error,
+        )

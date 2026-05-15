@@ -119,6 +119,7 @@ class PlanningSkill(Skill):
                     "event_type": EventType.TEST_FAILED.value,
                     "target_skill_name": "tdd",
                     "enabled": True,
+                    "recovery_on_success": True,
                     "input_mapping": {
                         "goal": fix_goal,
                         "workspace_root": workspace_root,
@@ -140,6 +141,7 @@ class PlanningSkill(Skill):
                 "event_type": EventType.TEST_FAILED.value,
                 "target_skill_name": "coding",
                 "enabled": True,
+                "recovery_on_success": True,
                 "input_mapping": {
                     "goal": fix_goal,
                     "workspace_root": workspace_root,

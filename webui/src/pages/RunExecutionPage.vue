@@ -32,7 +32,21 @@
       </table>
     </section>
 
-    <section class="panel" v-if="v3Planning">
+    <nav class="run-tabs" aria-label="V3 detail tabs">
+      <button
+        v-for="tab in v3Tabs"
+        :key="tab.id"
+        type="button"
+        class="run-tab"
+        :class="{ 'is-active': v3ActiveTab === tab.id }"
+        @click="v3ActiveTab = tab.id"
+      >
+        <span>{{ tab.label }}</span>
+        <small v-if="tab.hint">{{ tab.hint }}</small>
+      </button>
+    </nav>
+
+    <section class="panel" v-if="v3ActiveTab === 'graph' && v3Planning">
       <h3>Planning Summary</h3>
       <table>
         <tbody>
@@ -48,7 +62,7 @@
       <p class="muted" style="margin-top: 10px">{{ v3Planning.template_reason || "—" }}</p>
     </section>
 
-    <section class="panel" v-if="v3GraphLayerSections.length || v3TriggerExecutionNodes.length">
+    <section class="panel" v-if="v3ActiveTab === 'graph' && (v3GraphLayerSections.length || v3GraphExecutionNodes.length)">
       <h3>Execution Nodes</h3>
       <div v-if="v3GraphLayerSections.length" class="v3-layer-list">
         <section
@@ -91,11 +105,18 @@
           </div>
         </section>
       </div>
+    </section>
 
-      <div v-if="v3TriggerExecutionNodes.length" class="v3-trigger-section">
+    <section class="panel" v-if="v3ActiveTab === 'graph' && v3Report">
+      <h3>Execution Report</h3>
+      <JsonBlock :data="v3Report" />
+    </section>
+
+    <section class="panel" v-if="v3ActiveTab === 'trigger' && v3TriggerExecutionNodes.length">
+      <h3>Trigger Follow-ups</h3>
+      <div class="v3-trigger-section">
         <div class="v3-layer-head">
           <div>
-            <h4>Trigger Follow-ups</h4>
             <p class="muted">事件触发后的补偿动作、修复动作和再验证动作会集中显示在这里。</p>
           </div>
           <span class="badge">{{ v3TriggerExecutionNodes.length }} nodes</span>
@@ -131,7 +152,7 @@
       </div>
     </section>
 
-    <section class="panel" v-if="v3TriggerDiagnostics.length">
+    <section class="panel" v-if="v3ActiveTab === 'trigger' && v3TriggerDiagnostics.length">
       <h3>Trigger Diagnostics</h3>
       <table>
         <thead>
@@ -162,12 +183,31 @@
       </table>
     </section>
 
-    <section class="panel" v-if="v3Report">
-      <h3>Execution Report</h3>
-      <JsonBlock :data="v3Report" />
+    <section class="panel" v-if="v3ActiveTab === 'events'">
+      <h3>Events</h3>
+      <p class="muted">当前展示的是共享 trace timeline 中和本次 v3 运行相关的事件流。</p>
+      <table v-if="v3EventRows.length">
+        <thead>
+          <tr>
+            <th>type</th>
+            <th>source</th>
+            <th>created_at</th>
+            <th>summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(item, index) in v3EventRows" :key="`${item.event_id || item.trace_id || index}`">
+            <td>{{ item.event_type || item.name || "—" }}</td>
+            <td>{{ item.source || item.step_type || "—" }}</td>
+            <td>{{ item.created_at || item.ts || "—" }}</td>
+            <td>{{ summarizeV3Event(item) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="muted">当前 run 没有可单独展示的事件流。</p>
     </section>
 
-    <section class="panel" v-if="trace.length">
+    <section class="panel" v-if="v3ActiveTab === 'trace' && trace.length">
       <h3>Trace Snapshot</h3>
       <JsonBlock :data="trace" />
     </section>
@@ -469,6 +509,7 @@ const route = useRoute();
 const error = ref("");
 const polling = ref(true);
 const activeTab = ref("execution");
+const v3ActiveTab = ref("graph");
 const detailVersion = ref(String(route.query.version || "").trim().toLowerCase());
 const replay = reactive({
   run: null,
@@ -547,6 +588,33 @@ const v3GraphLayerSections = computed(() => {
   }
   return sections;
 });
+const v3EventRows = computed(() => {
+  return Array.isArray(trace.value) ? trace.value : [];
+});
+const v3Tabs = computed(() => [
+  {
+    id: "graph",
+    label: "Graph",
+    hint: v3GraphExecutionNodes.value.length ? `${v3GraphExecutionNodes.value.length} nodes` : "",
+  },
+  {
+    id: "trigger",
+    label: "Trigger",
+    hint: v3TriggerExecutionNodes.value.length || v3TriggerDiagnostics.value.length
+      ? `${v3TriggerExecutionNodes.value.length}/${v3TriggerDiagnostics.value.length}`
+      : "",
+  },
+  {
+    id: "events",
+    label: "Events",
+    hint: v3EventRows.value.length ? `${v3EventRows.value.length} items` : "",
+  },
+  {
+    id: "trace",
+    label: "Trace",
+    hint: trace.value.length ? `${trace.value.length} events` : "",
+  },
+]);
 
 const tabs = computed(() => [
   {
@@ -789,6 +857,28 @@ function goTrace() {
     params: { runId: props.runId },
     query: { version: detailVersion.value || undefined },
   });
+}
+
+function summarizeV3Event(item) {
+  const payload = item?.payload;
+  if (payload && typeof payload === "object") {
+    if (typeof payload.summary === "string" && payload.summary.trim()) {
+      return payload.summary.trim();
+    }
+    if (typeof payload.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+    if (typeof payload.node_id === "string" && payload.node_id) {
+      return `node=${payload.node_id}`;
+    }
+    if (typeof payload.skill_name === "string" && payload.skill_name) {
+      return `skill=${payload.skill_name}`;
+    }
+  }
+  if (typeof item?.summary === "string" && item.summary.trim()) {
+    return item.summary.trim();
+  }
+  return "—";
 }
 
 function selectDelegation(id) {

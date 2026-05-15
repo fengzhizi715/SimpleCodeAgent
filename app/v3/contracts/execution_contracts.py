@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.v3.contracts.agent_message_contracts import AgentMessage
+
 
 class ExecutionStatus(str, Enum):
     """High-level graph execution status."""
@@ -34,6 +36,7 @@ class ExecutionNode(BaseModel):
     source_event_id: str | None = None
     trigger_rule_id: str | None = None
     parent_node_id: str | None = None
+    recovery_on_success: bool = False
     summary: str = ""
     output_data: dict[str, Any] = Field(default_factory=dict)
 
@@ -56,6 +59,7 @@ class TriggerDiagnostic(BaseModel):
     suppress_repeats: bool | None = None
     source_event_id: str | None = None
     parent_node_id: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionReport(BaseModel):
@@ -74,3 +78,4 @@ class ExecutionReport(BaseModel):
     shared_state: dict[str, Any] = Field(default_factory=dict)
     execution_nodes: list[ExecutionNode] = Field(default_factory=list)
     trigger_diagnostics: list[TriggerDiagnostic] = Field(default_factory=list)
+    agent_messages: list[AgentMessage] = Field(default_factory=list)

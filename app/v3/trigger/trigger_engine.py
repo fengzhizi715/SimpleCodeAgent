@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from app.v3.contracts.agent_message_contracts import AgentMessage, AgentMessageType
 from app.v3.contracts.execution_contracts import ExecutionNode, TriggerDiagnostic
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.skill_contracts import SkillInput
@@ -13,6 +14,8 @@ from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.trigger.trigger_registry import TriggerRegistry
+
+_TRIGGER_DEPTH_KEY = "__trigger_depth__"
 
 
 class TriggerEngine:
@@ -27,6 +30,9 @@ class TriggerEngine:
         event_store: EventStore | None = None,
         execution_nodes: list[ExecutionNode] | None = None,
         diagnostics: list[TriggerDiagnostic] | None = None,
+        messages: list[AgentMessage] | None = None,
+        max_triggers_per_run: int = 20,
+        max_trigger_depth: int = 5,
     ) -> None:
         self.trigger_registry = trigger_registry
         self.skill_executor = skill_executor
@@ -34,14 +40,43 @@ class TriggerEngine:
         self.event_store = event_store
         self.execution_nodes = execution_nodes
         self.diagnostics = diagnostics
+        self.messages = messages
         self._fired_rule_runs: set[tuple[str, str]] = set()
         self._dedupe_keys_seen: set[tuple[str, str]] = set()
         self._cooldown_windows: dict[tuple[str, str], float] = {}
+        self._total_fired_count: dict[str, int] = {}
+        self._max_triggers_per_run = max_triggers_per_run
+        self._max_trigger_depth = max_trigger_depth
 
     async def handle_event(self, event: V3Event) -> None:
         """Handle one published event."""
+        run_id = event.run_id
+        current_depth = int(event.payload.get(_TRIGGER_DEPTH_KEY, 0))
+
+        if current_depth >= self._max_trigger_depth:
+            self._record_diagnostic_for_event(
+                event=event,
+                status="skipped",
+                skip_reason="max_depth_exceeded",
+                metadata={"depth": current_depth, "max_depth": self._max_trigger_depth},
+            )
+            return
+
+        total_count = self._total_fired_count.get(run_id, 0)
+        if total_count >= self._max_triggers_per_run:
+            self._record_diagnostic_for_event(
+                event=event,
+                status="skipped",
+                skip_reason="max_triggers_per_run_exceeded",
+                metadata={"total_count": total_count, "max_triggers": self._max_triggers_per_run},
+            )
+            return
+
         rules = self.trigger_registry.match(event.event_type)
         for rule in rules:
+            if self._total_fired_count.get(run_id, 0) >= self._max_triggers_per_run:
+                break
+
             skip_metadata = self._get_skip_metadata(rule, event)
             if skip_metadata is not None:
                 self._record_diagnostic(
@@ -65,6 +100,20 @@ class TriggerEngine:
                 continue
             payload = self._build_payload(rule.input_mapping, event)
             governance_metadata = self._build_governance_metadata(rule, event)
+            request_message = self._record_message(
+                AgentMessage(
+                    run_id=event.run_id,
+                    from_actor=f"trigger:{rule.rule_id}",
+                    to_actor=rule.target_skill_name,
+                    message_type=AgentMessageType.REQUEST,
+                    node_id=str(event.payload.get("node_id") or "") or None,
+                    payload={
+                        "source_event_type": event.event_type,
+                        "input_payload": payload,
+                        "trigger_governance": governance_metadata,
+                    },
+                )
+            )
             await self._publish(
                 V3Event(
                     run_id=event.run_id,
@@ -86,6 +135,7 @@ class TriggerEngine:
                     context={"source_event": event.model_dump(mode="json")},
                 ),
             )
+            self._total_fired_count[event.run_id] = self._total_fired_count.get(event.run_id, 0) + 1
             self._mark_fired(rule, event)
             self._record_diagnostic(
                 rule=rule,
@@ -99,6 +149,22 @@ class TriggerEngine:
                 rule_id=rule.rule_id,
                 target_skill_name=rule.target_skill_name,
                 output=output,
+            )
+            self._record_message(
+                AgentMessage(
+                    run_id=event.run_id,
+                    from_actor=rule.target_skill_name,
+                    to_actor=f"trigger:{rule.rule_id}",
+                    message_type=AgentMessageType.RESPONSE,
+                    node_id=str(event.payload.get("node_id") or "") or None,
+                    correlation_id=request_message.message_id if request_message is not None else None,
+                    payload={
+                        "success": output.success,
+                        "summary": output.summary,
+                        "error": output.error,
+                        "data": output.data,
+                    },
+                )
             )
             await self._publish(
                 V3Event(
@@ -117,6 +183,12 @@ class TriggerEngine:
                     },
                 )
             )
+
+    def _record_message(self, message: AgentMessage) -> AgentMessage | None:
+        if self.messages is None:
+            return None
+        self.messages.append(message)
+        return message
 
     def _build_payload(self, input_mapping: dict[str, Any], event: V3Event) -> dict[str, Any]:
         if not input_mapping:
@@ -245,6 +317,7 @@ class TriggerEngine:
                 source_event_id=event.event_id,
                 trigger_rule_id=rule_id,
                 parent_node_id=str(event.payload.get("node_id") or "") or None,
+                recovery_on_success=rule.recovery_on_success,
                 summary=output.summary,
                 output_data=output_data,
             )
@@ -275,11 +348,39 @@ class TriggerEngine:
                 suppress_repeats=bool(metadata["suppress_repeats"]) if metadata.get("suppress_repeats") is not None else None,
                 source_event_id=event.event_id,
                 parent_node_id=str(event.payload.get("node_id") or "") or None,
+                details=dict(metadata),
             )
         )
 
     async def _publish(self, event: V3Event) -> None:
+        payload = dict(event.payload)
+        payload[_TRIGGER_DEPTH_KEY] = int(payload.get(_TRIGGER_DEPTH_KEY, 0)) + 1
+        event = event.model_copy(update={"payload": payload})
         if self.event_store is not None:
             self.event_store.append(event)
         if self.event_bus is not None:
             await self.event_bus.publish(event)
+
+    def _record_diagnostic_for_event(
+        self,
+        *,
+        event: V3Event,
+        status: str,
+        skip_reason: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Record a diagnostic when a trigger is skipped due to governance limits."""
+        if self.diagnostics is None:
+            return
+        self.diagnostics.append(
+            TriggerDiagnostic(
+                trigger_rule_id="__governance__",
+                source_event_type=event.event_type,
+                target_skill_name="__none__",
+                status=status,
+                skip_reason=skip_reason,
+                source_event_id=event.event_id,
+                parent_node_id=str(event.payload.get("node_id") or "") or None,
+                details=dict(metadata or {}),
+            )
+        )

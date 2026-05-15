@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.v3.contracts.agent_message_contracts import AgentMessage
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.execution_contracts import ExecutionNode, TriggerDiagnostic
 from app.v3.contracts.graph_contracts import TaskGraph
@@ -37,9 +38,22 @@ class ExecutionKernel:
         initial_shared_state: dict[str, Any] | None = None,
         trigger_execution_nodes: list[ExecutionNode] | None = None,
         trigger_diagnostics: list[TriggerDiagnostic] | None = None,
+        agent_messages: list[AgentMessage] | None = None,
+        skip_validation: bool = False,
     ) -> ExecutionContext:
-        """Run a validated graph."""
-        self.validator.validate(graph)
+        """Run a validated graph.
+
+        Args:
+            graph: The task graph to execute.
+            initial_shared_state: Optional initial shared state dictionary.
+            trigger_execution_nodes: Mutable list for trigger-generated execution nodes.
+            trigger_diagnostics: Mutable list for trigger diagnostic records.
+            agent_messages: Mutable list for agent request/response messages.
+            skip_validation: When ``True``, skip graph validation. Use only if
+                the caller has already validated the graph.
+        """
+        if not skip_validation:
+            self.validator.validate(graph)
         context = ExecutionContext(
             run_id=graph.run_id,
             graph_id=graph.graph_id,
@@ -49,6 +63,8 @@ class ExecutionKernel:
             context.trigger_execution_nodes = trigger_execution_nodes
         if trigger_diagnostics is not None:
             context.trigger_diagnostics = trigger_diagnostics
+        if agent_messages is not None:
+            context.agent_messages = agent_messages
 
         await self._publish(
             V3Event(

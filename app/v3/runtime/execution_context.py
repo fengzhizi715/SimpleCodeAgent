@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.v3.contracts.agent_message_contracts import AgentMessage
 from app.v3.contracts.execution_contracts import (
     ExecutionNode,
     ExecutionReport,
@@ -26,6 +27,57 @@ class ExecutionContext(BaseModel):
     node_outputs: dict[str, Any] = Field(default_factory=dict)
     trigger_execution_nodes: list[ExecutionNode] = Field(default_factory=list)
     trigger_diagnostics: list[TriggerDiagnostic] = Field(default_factory=list)
+    agent_messages: list[AgentMessage] = Field(default_factory=list)
+
+    def get_output(self, node_id: str, *, default: Any = None) -> Any:
+        """Get the output of a completed node by id."""
+        return self.node_outputs.get(node_id, default)
+
+    def set_output(self, node_id: str, data: dict[str, Any]) -> None:
+        """Store a node's output into both node_outputs and shared_state."""
+        self.node_outputs[node_id] = data
+        self.shared_state[node_id] = data
+
+    def resolve_input_mapping(
+        self,
+        input_mapping: dict[str, Any],
+        *,
+        default_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve an input_mapping dict against shared_state.
+
+        Supports references like ``"node:node_id.output_key"`` or
+        ``"shared:key"``.  Unmatched keys are returned as-is.
+        """
+        resolved: dict[str, Any] = {}
+        for key, ref in input_mapping.items():
+            if not isinstance(ref, str):
+                resolved[key] = ref
+                continue
+
+            if ref.startswith("node:"):
+                parts = ref.removeprefix("node:").split(".", 1)
+                src_node_id = parts[0]
+                node_data = self.node_outputs.get(src_node_id)
+                if isinstance(node_data, dict) and len(parts) == 2:
+                    resolved[key] = node_data.get(parts[1])
+                elif len(parts) == 1:
+                    resolved[key] = node_data
+                else:
+                    resolved[key] = None
+                continue
+
+            if ref.startswith("shared:"):
+                shared_key = ref.removeprefix("shared:")
+                resolved[key] = self.shared_state.get(shared_key)
+                continue
+
+            resolved[key] = ref
+
+        if default_payload and not input_mapping:
+            resolved.update(default_payload)
+
+        return resolved
 
     def to_report(self, graph: TaskGraph) -> ExecutionReport:
         """Create a serializable execution report."""
@@ -67,6 +119,7 @@ class ExecutionContext(BaseModel):
             shared_state=self.shared_state,
             execution_nodes=graph_execution_nodes + list(self.trigger_execution_nodes),
             trigger_diagnostics=list(self.trigger_diagnostics),
+            agent_messages=list(self.agent_messages),
         )
 
     def _collect_recovered_node_ids(self, failed_node_ids: list[str]) -> list[str]:
@@ -78,6 +131,7 @@ class ExecutionContext(BaseModel):
                 execution_node.kind == "trigger"
                 and execution_node.parent_node_id == node_id
                 and execution_node.status == "done"
+                and execution_node.recovery_on_success
                 for execution_node in self.trigger_execution_nodes
             )
             if matched:

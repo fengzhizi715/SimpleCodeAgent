@@ -18,6 +18,7 @@ class EventType(str, Enum):
     SKILL_STARTED = "skill_started"
     SKILL_FINISHED = "skill_finished"
     SKILL_FAILED = "skill_failed"
+    SKILL_SKIPPED = "skill_skipped"
     TRIGGER_SKIPPED = "trigger_skipped"
     TEST_FAILED = "test_failed"
     CODE_UPDATED = "code_updated"

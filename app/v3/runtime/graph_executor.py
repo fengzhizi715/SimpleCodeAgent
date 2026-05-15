@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from app.v3.contracts.agent_message_contracts import AgentMessage, AgentMessageType
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNodeStatus
 from app.v3.contracts.skill_contracts import SkillInput
@@ -33,15 +34,33 @@ class GraphExecutor:
         runtime = TaskGraphRuntime(graph)
         completed: set[str] = set()
         failed: set[str] = set()
+        skipped_recorded: set[str] = set()
 
         while len(completed) + len(failed) < len(graph.nodes):
             ready_nodes = runtime.get_ready_nodes(completed, failed)
+            await self._record_newly_skipped_nodes(
+                graph=graph,
+                context=context,
+                failed=failed,
+                skipped_recorded=skipped_recorded,
+            )
             if not ready_nodes:
                 break
 
             context_snapshot = dict(context.shared_state)
+            request_message_ids: dict[str, str] = {}
             for node in ready_nodes:
                 node.status = TaskNodeStatus.RUNNING
+                request_message = AgentMessage(
+                    run_id=context.run_id,
+                    from_actor="graph_executor",
+                    to_actor=node.skill_name,
+                    message_type=AgentMessageType.REQUEST,
+                    node_id=node.node_id,
+                    payload={"input_payload": node.input_payload},
+                )
+                context.agent_messages.append(request_message)
+                request_message_ids[node.node_id] = request_message.message_id
                 await self._publish(
                     V3Event(
                         run_id=context.run_id,
@@ -51,9 +70,9 @@ class GraphExecutor:
                     )
                 )
 
-            outputs = await asyncio.gather(
-                *[
-                    self.skill_executor.execute(
+            async def _execute_node(node):
+                try:
+                    output = await self.skill_executor.execute(
                         node.skill_name,
                         SkillInput(
                             run_id=context.run_id,
@@ -64,16 +83,38 @@ class GraphExecutor:
                             },
                         ),
                     )
-                    for node in ready_nodes
-                ]
-            )
+                    return node, output, None
+                except BaseException as exc:  # pragma: no cover - defensive guard
+                    return node, None, exc
 
-            for node, output in zip(ready_nodes, outputs, strict=True):
+            tasks = [asyncio.create_task(_execute_node(node)) for node in ready_nodes]
+
+            for finished_task in asyncio.as_completed(tasks):
+                node, output, exc = await finished_task
+                if exc is not None:
+                    output = self.skill_executor.create_error_output(
+                        error=str(exc),
+                        summary=f"Node {node.node_id} raised unexpected exception: {exc!r}",
+                    )
                 if output.success:
                     node.status = TaskNodeStatus.DONE
                     completed.add(node.node_id)
-                    context.node_outputs[node.node_id] = output.data
-                    context.shared_state[node.node_id] = output.data
+                    context.set_output(node.node_id, output.data)
+                    context.agent_messages.append(
+                        AgentMessage(
+                            run_id=context.run_id,
+                            from_actor=node.skill_name,
+                            to_actor="graph_executor",
+                            message_type=AgentMessageType.RESPONSE,
+                            node_id=node.node_id,
+                            correlation_id=request_message_ids.get(node.node_id),
+                            payload={
+                                "success": True,
+                                "summary": output.summary,
+                                "data": output.data,
+                            },
+                        )
+                    )
                     await self._publish(
                         V3Event(
                             run_id=context.run_id,
@@ -102,6 +143,22 @@ class GraphExecutor:
                     "error": output.error,
                     "summary": output.summary,
                 }
+                context.agent_messages.append(
+                    AgentMessage(
+                        run_id=context.run_id,
+                        from_actor=node.skill_name,
+                        to_actor="graph_executor",
+                        message_type=AgentMessageType.RESPONSE,
+                        node_id=node.node_id,
+                        correlation_id=request_message_ids.get(node.node_id),
+                        payload={
+                            "success": False,
+                            "summary": output.summary,
+                            "error": output.error,
+                            "data": output.data,
+                        },
+                    )
+                )
                 await self._publish(
                     V3Event(
                         run_id=context.run_id,
@@ -126,6 +183,51 @@ class GraphExecutor:
                     await self._publish(domain_event)
 
         return context
+
+    async def _record_newly_skipped_nodes(
+        self,
+        *,
+        graph: TaskGraph,
+        context: ExecutionContext,
+        failed: set[str],
+        skipped_recorded: set[str],
+    ) -> None:
+        for node in graph.nodes:
+            if node.status != TaskNodeStatus.SKIPPED or node.node_id in skipped_recorded:
+                continue
+            failed_dependencies = [dep for dep in node.dependencies if dep in failed]
+            payload = {
+                "summary": "Skipped because one or more dependencies failed",
+                "skip_reason": "dependency_failed",
+                "failed_dependencies": failed_dependencies,
+            }
+            context.node_outputs[node.node_id] = payload
+            context.agent_messages.append(
+                AgentMessage(
+                    run_id=context.run_id,
+                    from_actor="graph_executor",
+                    to_actor=node.skill_name,
+                    message_type=AgentMessageType.RESPONSE,
+                    node_id=node.node_id,
+                    payload={
+                        "success": False,
+                        "skipped": True,
+                        **payload,
+                    },
+                )
+            )
+            skipped_recorded.add(node.node_id)
+            await self._publish(
+                V3Event(
+                    run_id=context.run_id,
+                    event_type=EventType.SKILL_SKIPPED.value,
+                    source=node.skill_name,
+                    payload={
+                        "node_id": node.node_id,
+                        **payload,
+                    },
+                )
+            )
 
     async def _publish(self, event: V3Event) -> None:
         if self.event_store is not None:

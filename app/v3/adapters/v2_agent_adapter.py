@@ -8,7 +8,7 @@ from typing import Any
 
 from app.contracts.agent import AgentTask, SharedWorkspace, TestReport
 from app.core.config import get_effective_llm_base_url, get_effective_llm_model, settings
-from app.llm.client import OpenAICompatibleProvider
+from app.llm.client import LLMProvider, OpenAICompatibleProvider
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.db.sqlite import SQLiteDB
@@ -29,40 +29,56 @@ class V2AgentAdapter:
         return await self.v2_agent_runner(payload)
 
     @classmethod
-    def for_coder(cls, workspace_root: str | Path | None = None) -> "V2AgentAdapter":
-        """Build an adapter around the V2 coder agent."""
+    def for_coder(
+        cls,
+        workspace_root: str | Path | None = None,
+        *,
+        provider: LLMProvider | None = None,
+    ) -> "V2AgentAdapter":
+        """Build an adapter around the V2 coder agent.
+
+        Args:
+            workspace_root: Base directory for file operations.
+            provider: Optional LLM provider. When omitted, one is built from
+                global ``settings``.
+        """
 
         async def _run(payload: dict[str, Any]) -> dict[str, Any]:
             run_id = str(payload.get("run_id") or "").strip()
             if not run_id:
                 raise ValueError("Missing run_id for V2 coder adapter.")
 
-            resolved_model = get_effective_llm_model()
-            if not resolved_model:
-                raise ValueError("Missing model for V2 coder adapter. Configure LLM_MODEL first.")
-            if not (settings.llm_api_key or settings.llm_service_token):
-                raise ValueError(
-                    "Missing auth credentials for V2 coder adapter. Configure LLM_API_KEY or LLM_SERVICE_TOKEN first."
+            effective_provider = provider
+            if effective_provider is None:
+                resolved_model = get_effective_llm_model()
+                if not resolved_model:
+                    raise ValueError("Missing model for V2 coder adapter. Configure LLM_MODEL first.")
+                if not (settings.llm_api_key or settings.llm_service_token):
+                    raise ValueError(
+                        "Missing auth credentials for V2 coder adapter. Configure LLM_API_KEY or LLM_SERVICE_TOKEN first."
+                    )
+                effective_provider = OpenAICompatibleProvider(
+                    base_url=get_effective_llm_base_url(),
+                    api_key=settings.llm_api_key,
+                    service_token=settings.llm_service_token,
+                    auth_mode=settings.llm_auth_mode,
+                    reasoning_param_style=settings.llm_reasoning_param_style,
+                    model=resolved_model,
+                    timeout=settings.llm_timeout,
                 )
+                resolved_model_for_context = effective_provider.model
+            else:
+                resolved_model_for_context = getattr(effective_provider, "model", "injected-provider")
 
             resolved_workspace_root = Path(
                 payload.get("workspace_root") or workspace_root or settings.workdir or "."
             ).expanduser().resolve()
-            provider = OpenAICompatibleProvider(
-                base_url=get_effective_llm_base_url(),
-                api_key=settings.llm_api_key,
-                service_token=settings.llm_service_token,
-                auth_mode=settings.llm_auth_mode,
-                reasoning_param_style=settings.llm_reasoning_param_style,
-                model=resolved_model,
-                timeout=settings.llm_timeout,
-            )
             tool_registry = ToolRegistry(workspace_root=resolved_workspace_root)
             tool_registry.register_default_tools()
             trace_repository = SQLiteTraceRepository(SQLiteDB())
             context = AgentContext(
-                provider=provider,
-                model=resolved_model,
+                provider=effective_provider,
+                model=resolved_model_for_context,
                 reasoning_mode="default",
                 tool_registry=tool_registry,
                 trace_repository=trace_repository,

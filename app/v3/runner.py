@@ -11,6 +11,7 @@ from app.contracts.trace import TraceEvent
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v3 import build_default_skill_registry
+from app.v3.contracts.agent_message_contracts import AgentMessage
 from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport, TriggerDiagnostic
 from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph
 from app.v3.contracts.planning_contracts import PlanningResult
@@ -45,6 +46,8 @@ async def run_v3(
     registry: SkillRegistry | None = None,
     trigger_rules: list[TriggerRule] | None = None,
     plan_only: bool = False,
+    max_triggers_per_run: int = 20,
+    max_trigger_depth: int = 5,
 ) -> dict[str, Any]:
     """Run a V3 goal or graph and return serializable output."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
@@ -53,12 +56,13 @@ async def run_v3(
     trace_events = attach_trace_collector(event_bus)
     trigger_execution_nodes: list[ExecutionNode] = []
     trigger_diagnostics: list[TriggerDiagnostic] = []
+    agent_messages: list[AgentMessage] = []
     skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
     skill_executor = SkillExecutor(skill_registry)
     graph_executor = GraphExecutor(skill_executor, event_bus=event_bus, event_store=event_store)
     kernel = ExecutionKernel(
         graph_executor=graph_executor,
-        validator=GraphValidator(),
+        validator=GraphValidator(skill_registry=skill_registry),
         event_bus=event_bus,
         event_store=event_store,
     )
@@ -85,9 +89,9 @@ async def run_v3(
     if resolved_graph is None:
         raise ValueError("未能解析可执行的 graph。")
     if planning_result is not None:
-        inspection = build_graph_inspection(planning_result.graph)
+        inspection = build_graph_inspection(planning_result.graph, skill_registry=skill_registry)
     elif graph is not None:
-        inspection = build_graph_inspection(graph)
+        inspection = build_graph_inspection(graph, skill_registry=skill_registry)
 
     if plan_only:
         return {
@@ -104,8 +108,11 @@ async def run_v3(
         event_store=event_store,
         execution_nodes=trigger_execution_nodes,
         diagnostics=trigger_diagnostics,
+        messages=agent_messages,
         trigger_rules=effective_trigger_rules,
         skill_executor=skill_executor,
+        max_triggers_per_run=max_triggers_per_run,
+        max_trigger_depth=max_trigger_depth,
     )
 
     context = await kernel.run_graph(
@@ -123,6 +130,7 @@ async def run_v3(
         },
         trigger_execution_nodes=trigger_execution_nodes,
         trigger_diagnostics=trigger_diagnostics,
+        agent_messages=agent_messages,
     )
     report = context.to_report(resolved_graph)
     _persist_v3_trace(run_id=report.run_id, trace_events=trace_events)
@@ -205,7 +213,7 @@ async def inspect_v3_graph(
         )
         resolved_graph = planning_result.graph
 
-    inspection = build_graph_inspection(resolved_graph)
+    inspection = build_graph_inspection(resolved_graph, skill_registry=skill_registry)
     return inspection, planning_result
 
 
@@ -275,9 +283,13 @@ def format_v3_result(
     return "\n".join(lines)
 
 
-def build_graph_inspection(graph: TaskGraph) -> GraphInspection:
+def build_graph_inspection(
+    graph: TaskGraph,
+    *,
+    skill_registry: SkillRegistry | None = None,
+) -> GraphInspection:
     """Build a validated inspection summary for a graph."""
-    GraphValidator().validate(graph)
+    GraphValidator(skill_registry=skill_registry).validate(graph)
     node_ids = [node.node_id for node in graph.nodes]
     dependency_map = {node.node_id: list(node.dependencies) for node in graph.nodes}
     dependents_map: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
@@ -370,8 +382,11 @@ def _attach_trigger_engine(
     event_store: EventStore,
     execution_nodes: list[ExecutionNode],
     diagnostics: list[TriggerDiagnostic],
+    messages: list[AgentMessage],
     trigger_rules: list[TriggerRule],
     skill_executor: SkillExecutor,
+    max_triggers_per_run: int = 20,
+    max_trigger_depth: int = 5,
 ) -> None:
     """Attach a trigger engine to the event bus for configured rules."""
     if not trigger_rules:
@@ -386,6 +401,9 @@ def _attach_trigger_engine(
         event_store=event_store,
         execution_nodes=execution_nodes,
         diagnostics=diagnostics,
+        messages=messages,
+        max_triggers_per_run=max_triggers_per_run,
+        max_trigger_depth=max_trigger_depth,
     )
     for event_type in {rule.event_type for rule in trigger_rules if rule.enabled}:
         event_bus.subscribe(event_type, trigger_engine.handle_event)

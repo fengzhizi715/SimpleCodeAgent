@@ -22,6 +22,7 @@ from app.api.routes.agent import (
 from app.db.sqlite import SQLiteDB
 from app.trace.repository import SQLiteTraceRepository
 from app.trace.viewer import load_and_format_timeline
+from app.v3.contracts.agent_message_contracts import AgentMessageType
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNode
 from app.v3.contracts.planning_contracts import PlanningResult, RecoveryStrategy
@@ -272,6 +273,34 @@ def test_v3_kernel_executes_ready_nodes_in_parallel() -> None:
     assert elapsed < 0.35
 
 
+def test_v3_parallel_agent_messages_follow_real_completion_order() -> None:
+    registry = SkillRegistry()
+    registry.register(EchoSkill("root"))
+    registry.register(SleepSkill("slow", 0.2))
+    registry.register(SleepSkill("fast", 0.05))
+    kernel = ExecutionKernel(
+        graph_executor=GraphExecutor(skill_executor=SkillExecutor(registry)),
+        validator=GraphValidator(),
+    )
+    graph = TaskGraph(
+        graph_id="graph-parallel-order",
+        run_id="run-parallel-order",
+        nodes=[
+            TaskNode(node_id="root", skill_name="root"),
+            TaskNode(node_id="slow", skill_name="slow", dependencies=["root"]),
+            TaskNode(node_id="fast", skill_name="fast", dependencies=["root"]),
+        ],
+    )
+
+    context = asyncio.run(kernel.run_graph(graph))
+    response_messages = [
+        message for message in context.agent_messages
+        if message.message_type == AgentMessageType.RESPONSE and message.node_id in {"slow", "fast"}
+    ]
+
+    assert [message.node_id for message in response_messages] == ["fast", "slow"]
+
+
 def test_graph_validator_rejects_cycles() -> None:
     graph = TaskGraph(
         graph_id="graph-cycle",
@@ -285,6 +314,57 @@ def test_graph_validator_rejects_cycles() -> None:
 
     with pytest.raises(ValueError, match="cycle"):
         GraphValidator().validate(graph)
+
+
+def test_v3_failed_dependency_marks_node_skipped_with_reason_and_event() -> None:
+    class FailingSkill(Skill):
+        def __init__(self) -> None:
+            super().__init__(
+                SkillSpec(
+                    name="failing",
+                    description="always fails",
+                    skill_type=SkillType.COMPOSITE,
+                    capabilities=["fail"],
+                )
+            )
+
+        async def execute(self, skill_input: SkillInput) -> SkillOutput:
+            return SkillOutput(success=False, summary="boom", error="boom")
+
+    registry = SkillRegistry()
+    registry.register(FailingSkill())
+    registry.register(EchoSkill("downstream"))
+    event_store = EventStore()
+    kernel = ExecutionKernel(
+        graph_executor=GraphExecutor(
+            skill_executor=SkillExecutor(registry),
+            event_store=event_store,
+        ),
+        validator=GraphValidator(),
+        event_store=event_store,
+    )
+    graph = TaskGraph(
+        graph_id="graph-skip",
+        run_id="run-skip",
+        nodes=[
+            TaskNode(node_id="root", skill_name="failing"),
+            TaskNode(node_id="downstream", skill_name="downstream", dependencies=["root"]),
+        ],
+    )
+
+    context = asyncio.run(kernel.run_graph(graph))
+    report = context.to_report(graph)
+
+    assert report.status.value == "failed"
+    assert report.skipped_node_ids == ["downstream"]
+    assert report.node_outputs["downstream"]["skip_reason"] == "dependency_failed"
+    assert report.node_outputs["downstream"]["failed_dependencies"] == ["root"]
+    assert any(event.event_type == EventType.SKILL_SKIPPED.value for event in event_store.list())
+    skipped_messages = [
+        message for message in report.agent_messages
+        if message.node_id == "downstream" and message.payload.get("skipped") is True
+    ]
+    assert len(skipped_messages) == 1
 
 
 def test_trigger_engine_maps_event_payload_into_skill_input() -> None:
@@ -320,6 +400,74 @@ def test_trigger_engine_maps_event_payload_into_skill_input() -> None:
     assert len(recording_skill.inputs) == 1
     assert recording_skill.inputs[0].payload["changed_files"] == ["app/v3/runtime/graph_executor.py"]
     assert recording_skill.inputs[0].payload["kind"] == "code_updated"
+
+
+def test_v3_runtime_records_request_response_agent_messages_for_graph_and_trigger() -> None:
+    registry = SkillRegistry()
+    registry.register(EchoSkill("coding"))
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    event_bus = EventBus()
+    event_store = EventStore()
+    trigger_execution_nodes = []
+    trigger_diagnostics = []
+    agent_messages = []
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="record_after_code_update",
+            event_type="code_updated",
+            target_skill_name="recording",
+        )
+    )
+    trigger_engine = TriggerEngine(
+        trigger_registry,
+        SkillExecutor(registry),
+        event_bus=event_bus,
+        event_store=event_store,
+        execution_nodes=trigger_execution_nodes,
+        diagnostics=trigger_diagnostics,
+        messages=agent_messages,
+    )
+    event_bus.subscribe(EventType.CODE_UPDATED.value, trigger_engine.handle_event)
+    kernel = ExecutionKernel(
+        graph_executor=GraphExecutor(
+            skill_executor=SkillExecutor(registry),
+            event_bus=event_bus,
+            event_store=event_store,
+        ),
+        validator=GraphValidator(),
+        event_bus=event_bus,
+        event_store=event_store,
+    )
+    graph = TaskGraph(
+        graph_id="graph-messages",
+        run_id="run-messages",
+        nodes=[TaskNode(node_id="code", skill_name="coding")],
+    )
+
+    context = asyncio.run(
+        kernel.run_graph(
+            graph,
+            trigger_execution_nodes=trigger_execution_nodes,
+            trigger_diagnostics=trigger_diagnostics,
+            agent_messages=agent_messages,
+        )
+    )
+    report = context.to_report(graph)
+
+    assert [message.message_type for message in report.agent_messages] == [
+        AgentMessageType.REQUEST,
+        AgentMessageType.RESPONSE,
+        AgentMessageType.REQUEST,
+        AgentMessageType.RESPONSE,
+    ]
+    assert report.agent_messages[0].from_actor == "graph_executor"
+    assert report.agent_messages[0].to_actor == "coding"
+    assert report.agent_messages[1].correlation_id == report.agent_messages[0].message_id
+    assert report.agent_messages[2].from_actor == "trigger:record_after_code_update"
+    assert report.agent_messages[2].to_actor == "recording"
+    assert report.agent_messages[3].correlation_id == report.agent_messages[2].message_id
 
 
 def test_trigger_engine_applies_rule_priority_order() -> None:
@@ -726,6 +874,7 @@ def test_planning_skill_generates_repo_aware_graph(tmp_path: Path) -> None:
     assert len(trigger_rules) == 1
     assert trigger_rules[0].event_type == EventType.TEST_FAILED.value
     assert trigger_rules[0].target_skill_name == "tdd"
+    assert trigger_rules[0].recovery_on_success is True
     assert trigger_rules[0].input_mapping["resume_from_failure"] is True
 
 
@@ -788,6 +937,7 @@ def test_planning_skill_can_choose_fix_only_recovery_template(tmp_path: Path) ->
     trigger_rules = planning_result.trigger_rules
     assert len(trigger_rules) == 1
     assert trigger_rules[0].target_skill_name == "coding"
+    assert trigger_rules[0].recovery_on_success is True
     assert planning_result.recovery_strategy == RecoveryStrategy.FIX_ONLY
     assert "resume_from_failure" not in trigger_rules[0].input_mapping
 
@@ -1467,8 +1617,9 @@ def test_run_v3_uses_planning_skill_recovery_template_without_manual_trigger_rul
         )
     )
 
-    assert result["report"].status.value == "completed"
-    assert result["report"].recovered_node_ids == ["test_runner"]
+    assert result["report"].status.value == "partial_completed"
+    assert result["report"].recovered_node_ids == []
+    assert result["report"].failed_node_ids == ["test_runner"]
     trigger_nodes = [node for node in result["report"].execution_nodes if node.kind == "trigger"]
     assert len(trigger_nodes) == 1
     assert trigger_nodes[0].skill_name == "recording"
@@ -1506,21 +1657,21 @@ def test_run_v3_connects_trigger_engine_to_event_bus(tmp_path: Path) -> None:
         )
     )
 
-    assert result["report"].status.value == "completed"
+    assert result["report"].status.value == "partial_completed"
     assert any(event["event_type"] == EventType.TEST_FAILED.value for event in result["events"])
     assert any(
         event["event_type"] == EventType.SKILL_STARTED.value and event["source"] == "recording"
         for event in result["events"]
     )
-    assert result["report"].failed_node_ids == []
-    assert result["report"].recovered_node_ids == ["test_runner"]
+    assert result["report"].failed_node_ids == ["test_runner"]
+    assert result["report"].recovered_node_ids == []
     trigger_nodes = [node for node in result["report"].execution_nodes if node.kind == "trigger"]
     assert len(trigger_nodes) == 1
     assert trigger_nodes[0].skill_name == "recording"
     assert trigger_nodes[0].source_event_type == EventType.TEST_FAILED.value
     assert trigger_nodes[0].parent_node_id == "test_runner"
     graph_test_node = next(node for node in result["report"].execution_nodes if node.node_id == "test_runner")
-    assert graph_test_node.status == "recovered"
+    assert graph_test_node.status == "failed"
     assert len(recording_skill.inputs) == 1
     assert recording_skill.inputs[0].payload["command"] == "pytest -q"
     assert recording_skill.inputs[0].payload["failure_type"] is not None

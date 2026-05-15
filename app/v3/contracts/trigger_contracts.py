@@ -16,6 +16,7 @@ class TriggerRule(BaseModel):
     event_type: str
     target_skill_name: str
     enabled: bool = True
+    recovery_on_success: bool = False
     priority: int = 100
     once_per_run: bool = False
     suppress_repeats: bool = False
