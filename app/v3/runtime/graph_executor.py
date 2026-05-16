@@ -66,6 +66,12 @@ class GraphExecutor:
                         run_id=context.run_id,
                         event_type=EventType.SKILL_STARTED.value,
                         source=node.skill_name,
+                        correlation_id=request_message.message_id,
+                        execution_chain_id=self._build_execution_chain_id(
+                            run_id=context.run_id,
+                            node_id=node.node_id,
+                            skill_name=node.skill_name,
+                        ),
                         payload={"node_id": node.node_id, "input_payload": node.input_payload},
                     )
                 )
@@ -120,6 +126,12 @@ class GraphExecutor:
                             run_id=context.run_id,
                             event_type=EventType.SKILL_FINISHED.value,
                             source=node.skill_name,
+                            correlation_id=request_message_ids.get(node.node_id),
+                            execution_chain_id=self._build_execution_chain_id(
+                                run_id=context.run_id,
+                                node_id=node.node_id,
+                                skill_name=node.skill_name,
+                            ),
                             payload={
                                 "node_id": node.node_id,
                                 "summary": output.summary,
@@ -164,6 +176,12 @@ class GraphExecutor:
                         run_id=context.run_id,
                         event_type=EventType.SKILL_FAILED.value,
                         source=node.skill_name,
+                        correlation_id=request_message_ids.get(node.node_id),
+                        execution_chain_id=self._build_execution_chain_id(
+                            run_id=context.run_id,
+                            node_id=node.node_id,
+                            skill_name=node.skill_name,
+                        ),
                         payload={
                             "node_id": node.node_id,
                             "summary": output.summary,
@@ -222,6 +240,11 @@ class GraphExecutor:
                     run_id=context.run_id,
                     event_type=EventType.SKILL_SKIPPED.value,
                     source=node.skill_name,
+                    execution_chain_id=self._build_execution_chain_id(
+                        run_id=context.run_id,
+                        node_id=node.node_id,
+                        skill_name=node.skill_name,
+                    ),
                     payload={
                         "node_id": node.node_id,
                         **payload,
@@ -249,6 +272,11 @@ class GraphExecutor:
             run_id=run_id,
             event_type=EventType.CODE_UPDATED.value,
             source=skill_name,
+            execution_chain_id=self._build_execution_chain_id(
+                run_id=run_id,
+                node_id=node_id,
+                skill_name=skill_name,
+            ),
             payload={
                 "node_id": node_id,
                 "changed_files": output.get("changed_files", []),
@@ -272,6 +300,11 @@ class GraphExecutor:
             run_id=run_id,
             event_type=EventType.TEST_FAILED.value,
             source=skill_name,
+            execution_chain_id=self._build_execution_chain_id(
+                run_id=run_id,
+                node_id=node_id,
+                skill_name=skill_name,
+            ),
             payload={
                 "node_id": node_id,
                 "error": error,
@@ -280,3 +313,7 @@ class GraphExecutor:
                 "executed_command": data.get("executed_command"),
             },
         )
+
+    @staticmethod
+    def _build_execution_chain_id(*, run_id: str, node_id: str, skill_name: str) -> str:
+        return f"{run_id}:{node_id}:{skill_name}"

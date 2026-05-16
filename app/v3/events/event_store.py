@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from app.v3.contracts.event_contracts import V3Event
+from app.v3.events.event_history import EventChainTrace, build_event_chain_trace
 
 FlushCallback = Callable[[list[V3Event]], Awaitable[None] | None]
 
@@ -38,6 +39,33 @@ class EventStore:
     def list_by_run_id(self, run_id: str) -> list[V3Event]:
         """Return all events for a run."""
         return [event for event in self._events if event.run_id == run_id]
+
+    def get(self, event_id: str) -> V3Event | None:
+        """Return one event by id."""
+        for event in self._events:
+            if event.event_id == event_id:
+                return event
+        return None
+
+    def list_by_parent_event_id(self, parent_event_id: str) -> list[V3Event]:
+        """Return direct child events for a parent event id."""
+        return [event for event in self._events if event.parent_event_id == parent_event_id]
+
+    def list_by_execution_chain_id(self, execution_chain_id: str) -> list[V3Event]:
+        """Return events associated with one execution chain."""
+        return [event for event in self._events if event.execution_chain_id == execution_chain_id]
+
+    def get_chain_trace(self, execution_chain_id: str) -> EventChainTrace | None:
+        """Return a structured trace for one execution chain."""
+        return build_event_chain_trace(self._events, execution_chain_id=execution_chain_id)
+
+    def get_chain_trace_for_event(self, event_id: str) -> EventChainTrace | None:
+        """Resolve an event to its execution chain and return that chain trace."""
+        event = self.get(event_id)
+        if event is None:
+            return None
+        chain_id = event.execution_chain_id or event.event_id
+        return build_event_chain_trace(self._events, execution_chain_id=chain_id, root_event_id=event_id)
 
     async def flush(self) -> None:
         """Flush pending events to the persistence callback."""

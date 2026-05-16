@@ -9,7 +9,7 @@ from app.v3.contracts.agent_message_contracts import AgentMessage, AgentMessageT
 from app.v3.contracts.execution_contracts import ExecutionNode, TriggerDiagnostic
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.skill_contracts import SkillInput
-from app.v3.contracts.trigger_contracts import TriggerRule
+from app.v3.contracts.trigger_contracts import ConditionOperator, ConditionSpec, TriggerRule
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.runtime.skill_executor import SkillExecutor
@@ -45,13 +45,14 @@ class TriggerEngine:
         self._dedupe_keys_seen: set[tuple[str, str]] = set()
         self._cooldown_windows: dict[tuple[str, str], float] = {}
         self._total_fired_count: dict[str, int] = {}
+        self._rule_fired_count: dict[tuple[str, str], int] = {}
         self._max_triggers_per_run = max_triggers_per_run
         self._max_trigger_depth = max_trigger_depth
 
     async def handle_event(self, event: V3Event) -> None:
         """Handle one published event."""
         run_id = event.run_id
-        current_depth = int(event.payload.get(_TRIGGER_DEPTH_KEY, 0))
+        current_depth = self._get_trigger_depth(event)
 
         if current_depth >= self._max_trigger_depth:
             self._record_diagnostic_for_event(
@@ -119,6 +120,11 @@ class TriggerEngine:
                     run_id=event.run_id,
                     event_type=EventType.SKILL_STARTED.value,
                     source=rule.target_skill_name,
+                    correlation_id=request_message.message_id if request_message is not None else event.correlation_id,
+                    parent_event_id=event.event_id,
+                    trigger_rule_id=rule.rule_id,
+                    execution_chain_id=self._resolve_execution_chain_id(event),
+                    trigger_depth=current_depth,
                     payload={
                         "trigger_rule_id": rule.rule_id,
                         "source_event_type": event.event_type,
@@ -173,6 +179,11 @@ class TriggerEngine:
                         EventType.SKILL_FINISHED.value if output.success else EventType.SKILL_FAILED.value
                     ),
                     source=rule.target_skill_name,
+                    correlation_id=request_message.message_id if request_message is not None else event.correlation_id,
+                    parent_event_id=event.event_id,
+                    trigger_rule_id=rule.rule_id,
+                    execution_chain_id=self._resolve_execution_chain_id(event),
+                    trigger_depth=current_depth,
                     payload={
                         "trigger_rule_id": rule.rule_id,
                         "source_event_type": event.event_type,
@@ -210,9 +221,20 @@ class TriggerEngine:
         return resolved
 
     def _get_skip_metadata(self, rule: TriggerRule, event: V3Event) -> dict[str, object] | None:
+        if not self._conditions_match(rule.conditions, event):
+            metadata = self._build_governance_metadata(rule, event)
+            metadata["skip_reason"] = "conditions_not_met"
+            return metadata
         if rule.once_per_run and (event.run_id, rule.rule_id) in self._fired_rule_runs:
             metadata = self._build_governance_metadata(rule, event)
             metadata["skip_reason"] = "once_per_run"
+            return metadata
+        current_rule_count = self._rule_fired_count.get((event.run_id, rule.rule_id), 0)
+        if rule.max_trigger_count_per_run is not None and current_rule_count >= rule.max_trigger_count_per_run:
+            metadata = self._build_governance_metadata(rule, event)
+            metadata["skip_reason"] = "max_trigger_count_per_run"
+            metadata["rule_count"] = current_rule_count
+            metadata["max_trigger_count_per_run"] = rule.max_trigger_count_per_run
             return metadata
         if self._is_in_cooldown(rule, event):
             metadata = self._build_governance_metadata(rule, event)
@@ -232,12 +254,54 @@ class TriggerEngine:
     def _mark_fired(self, rule: TriggerRule, event: V3Event) -> None:
         if rule.once_per_run:
             self._fired_rule_runs.add((event.run_id, rule.rule_id))
+        self._rule_fired_count[(event.run_id, rule.rule_id)] = self._rule_fired_count.get(
+            (event.run_id, rule.rule_id),
+            0,
+        ) + 1
         self._mark_cooldown(rule, event)
         if rule.suppress_repeats:
             dedupe_key = self._build_dedupe_key(rule, event)
             if dedupe_key is None:
                 dedupe_key = f"source_event:{event.event_id}"
             self._dedupe_keys_seen.add((event.run_id, dedupe_key))
+
+    def _conditions_match(self, conditions: list[ConditionSpec], event: V3Event) -> bool:
+        for condition in conditions:
+            value = self._resolve_condition_field(condition.field, event)
+            if condition.op == ConditionOperator.EXISTS:
+                if value is None:
+                    return False
+                continue
+            if condition.op == ConditionOperator.EQ:
+                if value != condition.value:
+                    return False
+                continue
+            if condition.op == ConditionOperator.IN:
+                if not isinstance(condition.value, (list, tuple, set)):
+                    return False
+                if value not in condition.value:
+                    return False
+                continue
+            return False
+        return True
+
+    def _resolve_condition_field(self, field: str, event: V3Event) -> Any:
+        if field == "event.run_id":
+            return event.run_id
+        if field == "event.event_type":
+            return event.event_type
+        if field == "event.source":
+            return event.source
+        if field == "event.correlation_id":
+            return event.correlation_id
+        if field.startswith("event.payload."):
+            current: Any = event.payload
+            for part in field.removeprefix("event.payload.").split("."):
+                if not isinstance(current, dict):
+                    return None
+                current = current.get(part)
+            return current
+        return None
 
     def _build_dedupe_key(self, rule: TriggerRule, event: V3Event) -> str | None:
         template = rule.dedupe_key_template
@@ -287,11 +351,14 @@ class TriggerEngine:
     def _build_governance_metadata(self, rule: TriggerRule, event: V3Event) -> dict[str, object]:
         return {
             "priority": rule.priority,
+            "conditions": [condition.model_dump(mode="json") for condition in rule.conditions],
             "once_per_run": rule.once_per_run,
             "suppress_repeats": rule.suppress_repeats,
             "dedupe_key": self._build_dedupe_key(rule, event),
             "cooldown_key": self._build_cooldown_key(rule, event),
             "cooldown_seconds": rule.cooldown_seconds,
+            "rule_count": self._rule_fired_count.get((event.run_id, rule.rule_id), 0),
+            "max_trigger_count_per_run": rule.max_trigger_count_per_run,
         }
 
     def _record_execution_node(
@@ -354,12 +421,27 @@ class TriggerEngine:
 
     async def _publish(self, event: V3Event) -> None:
         payload = dict(event.payload)
-        payload[_TRIGGER_DEPTH_KEY] = int(payload.get(_TRIGGER_DEPTH_KEY, 0)) + 1
-        event = event.model_copy(update={"payload": payload})
+        next_depth = event.trigger_depth + 1
+        payload[_TRIGGER_DEPTH_KEY] = next_depth
+        event = event.model_copy(
+            update={
+                "payload": payload,
+                "trigger_depth": next_depth,
+                "execution_chain_id": event.execution_chain_id or event.parent_event_id or event.event_id,
+            }
+        )
         if self.event_store is not None:
             self.event_store.append(event)
         if self.event_bus is not None:
             await self.event_bus.publish(event)
+
+    @staticmethod
+    def _get_trigger_depth(event: V3Event) -> int:
+        return int(event.trigger_depth or event.payload.get(_TRIGGER_DEPTH_KEY, 0))
+
+    @staticmethod
+    def _resolve_execution_chain_id(event: V3Event) -> str:
+        return event.execution_chain_id or event.parent_event_id or event.event_id
 
     def _record_diagnostic_for_event(
         self,

@@ -34,4 +34,9 @@ class V3Event(BaseModel):
     event_type: str
     source: str
     payload: dict[str, Any] = Field(default_factory=dict)
+    correlation_id: str | None = None
+    parent_event_id: str | None = None
+    trigger_rule_id: str | None = None
+    execution_chain_id: str | None = None
+    trigger_depth: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -9,7 +10,14 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.routes.agent import AgentRunRequest, run_agent
-from app.api.routes.debug import get_root_trace_view, get_session_trace_view, get_trace_view
+from app.api.routes.debug import (
+    get_root_trace_view,
+    get_session_trace_view,
+    get_trace_view,
+    get_v3_event_chain,
+    get_v3_event_chain_view,
+    replay_v3_event_chain,
+)
 from app.api.routes.debug import (
     RagDeleteSourceRequest,
     RagUploadRequest,
@@ -527,6 +535,207 @@ def test_debug_session_trace_view_returns_404_for_missing_session(monkeypatch, t
 
     assert excinfo.value.status_code == 404
     assert "未找到 session_id=missing-session 的 trace" in str(excinfo.value.detail)
+
+
+def test_debug_v3_event_chain_returns_structured_response(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-v3-chain.sqlite3"))
+    root = TraceEvent(
+        run_id="run-v3-chain",
+        event_type="test_failed",
+        message="v3:test_failed",
+        payload={
+            "event_id": "evt-test-failed",
+            "run_id": "run-v3-chain",
+            "event_type": "test_failed",
+            "source": "test_runner",
+            "payload": {"node_id": "test_runner", "summary": "Tests failed: pytest -q"},
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 0,
+            "created_at": "2026-05-16T00:00:00+00:00",
+        },
+    )
+    child = TraceEvent(
+        run_id="run-v3-chain",
+        event_type="skill_started",
+        message="v3:skill_started",
+        payload={
+            "event_id": "evt-tdd-started",
+            "run_id": "run-v3-chain",
+            "event_type": "skill_started",
+            "source": "tdd",
+            "payload": {"trigger_rule_id": "template_fix_and_retest_after_test_failed"},
+            "parent_event_id": "evt-test-failed",
+            "trigger_rule_id": "template_fix_and_retest_after_test_failed",
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 1,
+            "created_at": "2026-05-16T00:00:01+00:00",
+        },
+    )
+    repository.save_event("run-v3-chain", root)
+    repository.save_event("run-v3-chain", child)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_v3_event_chain("run-v3-chain", execution_chain_id="chain-1")
+
+    assert response.run_id == "run-v3-chain"
+    assert response.execution_chain_id == "chain-1"
+    assert response.root_event_id == "evt-test-failed"
+    assert response.item_count == 2
+    assert response.items[0].event_type == "test_failed"
+    assert response.items[1].trigger_rule_id == "template_fix_and_retest_after_test_failed"
+
+
+def test_debug_v3_event_chain_view_returns_plain_text(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-v3-chain-view.sqlite3"))
+    root = TraceEvent(
+        run_id="run-v3-chain-view",
+        event_type="test_failed",
+        message="v3:test_failed",
+        payload={
+            "event_id": "evt-test-failed",
+            "run_id": "run-v3-chain-view",
+            "event_type": "test_failed",
+            "source": "test_runner",
+            "payload": {"node_id": "test_runner"},
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 0,
+            "created_at": "2026-05-16T00:00:00+00:00",
+        },
+    )
+    child = TraceEvent(
+        run_id="run-v3-chain-view",
+        event_type="skill_started",
+        message="v3:skill_started",
+        payload={
+            "event_id": "evt-tdd-started",
+            "run_id": "run-v3-chain-view",
+            "event_type": "skill_started",
+            "source": "tdd",
+            "payload": {},
+            "parent_event_id": "evt-test-failed",
+            "trigger_rule_id": "template_fix_and_retest_after_test_failed",
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 1,
+            "created_at": "2026-05-16T00:00:01+00:00",
+        },
+    )
+    repository.save_event("run-v3-chain-view", root)
+    repository.save_event("run-v3-chain-view", child)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    response = get_v3_event_chain_view("run-v3-chain-view", event_id="evt-test-failed")
+    text = response.body.decode("utf-8")
+
+    assert response.media_type == "text/plain"
+    assert "Event Chain: chain-1" in text
+    assert "test_failed | source=test_runner" in text
+    assert "skill_started | source=tdd" in text
+
+
+def test_debug_v3_event_chain_rejects_invalid_query_shape(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-v3-chain-bad.sqlite3"))
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_v3_event_chain("run-v3-chain-bad", execution_chain_id="chain-1", event_id="evt-1")
+
+    assert excinfo.value.status_code == 400
+    assert "必须且只能提供 execution_chain_id 或 event_id" in str(excinfo.value.detail)
+
+
+def test_debug_v3_event_chain_returns_404_for_missing_v3_events(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-v3-chain-missing.sqlite3"))
+    event = TraceEvent(
+        run_id="run-non-v3",
+        event_type="run_finished",
+        message="done",
+        payload={"status": "completed"},
+    )
+    repository.save_event("run-non-v3", event)
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_v3_event_chain("run-non-v3", execution_chain_id="chain-1")
+
+    assert excinfo.value.status_code == 404
+    assert "未找到 run_id=run-non-v3 的 v3 events" in str(excinfo.value.detail)
+
+
+def test_debug_v3_event_chain_replay_returns_result(monkeypatch, tmp_path: Path) -> None:
+    repository = SQLiteTraceRepository(SQLiteDB(tmp_path / "trace-v3-chain-replay.sqlite3"))
+    root = TraceEvent(
+        run_id="run-v3-replay",
+        event_type="test_failed",
+        message="v3:test_failed",
+        payload={
+            "event_id": "evt-test-failed",
+            "run_id": "run-v3-replay",
+            "event_type": "test_failed",
+            "source": "test_runner",
+            "payload": {"node_id": "test_runner"},
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 0,
+            "created_at": "2026-05-16T00:00:00+00:00",
+        },
+    )
+    child = TraceEvent(
+        run_id="run-v3-replay",
+        event_type="skill_started",
+        message="v3:skill_started",
+        payload={
+            "event_id": "evt-tdd-started",
+            "run_id": "run-v3-replay",
+            "event_type": "skill_started",
+            "source": "recording",
+            "payload": {"input_payload": {"goal": "retry", "workspace_root": str(tmp_path)}},
+            "parent_event_id": "evt-test-failed",
+            "trigger_rule_id": "rule-1",
+            "execution_chain_id": "chain-1",
+            "trigger_depth": 1,
+            "created_at": "2026-05-16T00:00:01+00:00",
+        },
+    )
+    repository.save_event("run-v3-replay", root)
+    repository.save_event("run-v3-replay", child)
+
+    class FakeDB:
+        def fetchone(self, query: str, params: tuple[object, ...]):
+            _ = query, params
+            return {"workdir": str(tmp_path)}
+
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: repository)
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+
+    class FakeRecordingSkill:
+        spec = type("Spec", (), {"name": "recording", "enabled": True})()
+
+        def __init__(self) -> None:
+            self.inputs = []
+
+        async def execute(self, skill_input):
+            self.inputs.append(skill_input)
+            from app.v3.contracts.skill_contracts import SkillOutput
+
+            return SkillOutput(success=True, summary="replayed", data={"ok": True})
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self.skill = FakeRecordingSkill()
+
+        def get(self, name: str):
+            if name != "recording":
+                raise ValueError(name)
+            return self.skill
+
+    fake_registry = FakeRegistry()
+    monkeypatch.setattr("app.api.routes.debug.build_default_skill_registry", lambda workspace_root=None: fake_registry)
+
+    response = asyncio.run(replay_v3_event_chain("run-v3-replay", event_id="evt-test-failed"))
+
+    assert response.success is True
+    assert response.metadata["target_skill_name"] == "recording"
+    assert response.summary == "replayed"
+    assert any(event["event_type"] == "skill_finished" for event in response.events)
 
 
 def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:

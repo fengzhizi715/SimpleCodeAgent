@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.api.deps import get_provider, get_trace_repository, get_v2_runtime
 from app.contracts.message import ChatMessage
@@ -33,6 +33,10 @@ from app.v1.rag.ingest import DocsIngestor
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normalize_v2_rag_tokens
 from app.v1.rag.vector_store import ChromaVectorStore
 from app.v3 import build_default_skill_registry
+from app.v3.contracts.event_contracts import V3Event
+from app.v3.contracts.replay_contracts import ReplayResult
+from app.v3.events.event_history import EventChainItem, EventChainTrace, build_event_chain_trace, format_event_chain_trace
+from app.v3.replay import replay_event_chain
 
 router = APIRouter(tags=["debug"])
 
@@ -43,6 +47,72 @@ def _normalize_debug_rag_id(rag_id: str | None) -> str:
         return strict_normalize_v2_rag_ids(rag_id=rag_id, rag_ids=None)[0]
     except RagIdValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+def _load_v3_events_for_run(run_id: str) -> list[V3Event]:
+    """Load V3 events from shared trace storage for one run."""
+    trace_events = get_trace_repository().query_timeline(run_id)
+    if not trace_events:
+        raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id} 的 trace。")
+
+    v3_events: list[V3Event] = []
+    for trace_event in trace_events:
+        payload = trace_event.payload
+        if not isinstance(payload, dict):
+            continue
+        try:
+            v3_events.append(V3Event.model_validate(payload))
+        except ValidationError:
+            continue
+
+    if not v3_events:
+        raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id} 的 v3 events。")
+    return v3_events
+
+
+def _resolve_v3_event_chain(
+    *,
+    run_id: str,
+    execution_chain_id: str | None,
+    event_id: str | None,
+) -> EventChainTrace:
+    """Resolve one V3 event chain by chain id or event id."""
+    execution_chain_id = execution_chain_id.strip() if isinstance(execution_chain_id, str) else None
+    event_id = event_id.strip() if isinstance(event_id, str) else None
+    if bool(execution_chain_id) == bool(event_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="必须且只能提供 execution_chain_id 或 event_id 其中一个。",
+        )
+
+    v3_events = _load_v3_events_for_run(run_id)
+    if event_id is not None:
+        event = next((item for item in v3_events if item.event_id == event_id), None)
+        if event is None:
+            raise HTTPException(status_code=404, detail=f"未找到 event_id={event_id} 的 v3 event。")
+        chain = build_event_chain_trace(
+            v3_events,
+            execution_chain_id=event.execution_chain_id or event.event_id,
+            root_event_id=event_id,
+        )
+    else:
+        chain = build_event_chain_trace(v3_events, execution_chain_id=str(execution_chain_id))
+
+    if chain is None:
+        detail = f"未找到 execution_chain_id={execution_chain_id} 的 v3 event chain。"
+        if event_id is not None:
+            detail = f"未找到以 event_id={event_id} 为根的 v3 event chain。"
+        raise HTTPException(status_code=404, detail=detail)
+    return chain
+
+
+def _lookup_run_workdir(run_id: str) -> str | None:
+    """Load persisted workdir for one run when available."""
+    row = SQLiteDB().fetchone("SELECT workdir FROM runs WHERE run_id = ?", (run_id,))
+    if row is None:
+        return None
+    value = row["workdir"]
+    return str(value).strip() if value is not None and str(value).strip() else None
 
 
 class HealthResponse(BaseModel):
@@ -94,6 +164,51 @@ class RootTraceQueryResponse(BaseModel):
 
     root_run_id: str
     events: list[dict[str, object]] = Field(default_factory=list)
+
+
+class V3EventChainItemResponse(BaseModel):
+    """V3 事件链条目响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str
+    event_type: str
+    source: str
+    parent_event_id: str | None = None
+    trigger_rule_id: str | None = None
+    execution_chain_id: str
+    trigger_depth: int = 0
+    node_id: str | None = None
+    summary: str | None = None
+    error: str | None = None
+    created_at: str
+
+
+class V3EventChainTraceResponse(BaseModel):
+    """V3 事件链查询响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    execution_chain_id: str
+    root_event_id: str | None = None
+    root_event_type: str | None = None
+    item_count: int = 0
+    items: list[V3EventChainItemResponse] = Field(default_factory=list)
+
+
+class V3ReplayResponse(BaseModel):
+    """V3 simple replay response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    metadata: dict[str, object]
+    success: bool
+    summary: str
+    error: str | None = None
+    output: dict[str, object] = Field(default_factory=dict)
+    events: list[dict[str, object]] = Field(default_factory=list)
+    trace: list[dict[str, object]] = Field(default_factory=list)
 
 
 class RunReplayResponse(BaseModel):
@@ -503,6 +618,84 @@ def get_session_trace_view(session_id: str) -> PlainTextResponse:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PlainTextResponse(rendered)
+
+
+@router.get(
+    "/debug/v3/runs/{run_id}/event-chain",
+    response_model=V3EventChainTraceResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_v3_event_chain(
+    run_id: str,
+    execution_chain_id: str | None = Query(default=None, description="按 execution_chain_id 查询整条事件链。"),
+    event_id: str | None = Query(default=None, description="按 event_id 查询以该事件为根的子链。"),
+) -> V3EventChainTraceResponse:
+    """按 execution_chain_id 或 event_id 查询可读的 V3 事件链。"""
+    chain = _resolve_v3_event_chain(
+        run_id=run_id,
+        execution_chain_id=execution_chain_id,
+        event_id=event_id,
+    )
+    return V3EventChainTraceResponse(
+        run_id=chain.run_id,
+        execution_chain_id=chain.execution_chain_id,
+        root_event_id=chain.root_event_id,
+        root_event_type=chain.root_event_type,
+        item_count=len(chain.items),
+        items=[V3EventChainItemResponse.model_validate(item.model_dump(mode="json")) for item in chain.items],
+    )
+
+
+@router.get(
+    "/debug/v3/runs/{run_id}/event-chain/view",
+    response_class=PlainTextResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_v3_event_chain_view(
+    run_id: str,
+    execution_chain_id: str | None = Query(default=None, description="按 execution_chain_id 查询整条事件链。"),
+    event_id: str | None = Query(default=None, description="按 event_id 查询以该事件为根的子链。"),
+) -> PlainTextResponse:
+    """按 execution_chain_id 或 event_id 查询格式化后的 V3 事件链文本视图。"""
+    chain = _resolve_v3_event_chain(
+        run_id=run_id,
+        execution_chain_id=execution_chain_id,
+        event_id=event_id,
+    )
+    return PlainTextResponse(format_event_chain_trace(chain))
+
+
+@router.post(
+    "/debug/v3/runs/{run_id}/event-chain/replay",
+    response_model=V3ReplayResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def replay_v3_event_chain(
+    run_id: str,
+    event_id: str = Query(description="要作为 replay 入口的源事件 ID。"),
+) -> V3ReplayResponse:
+    """Replay a single V3 event chain entry by re-executing its first triggered skill."""
+    repository = get_trace_repository()
+    workdir = _lookup_run_workdir(run_id)
+    try:
+        result: ReplayResult = await replay_event_chain(
+            repository=repository,
+            run_id=run_id,
+            event_id=event_id,
+            workspace_root=workdir,
+            registry=build_default_skill_registry(workspace_root=workdir),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return V3ReplayResponse(
+        metadata=result.metadata.model_dump(mode="json"),
+        success=result.success,
+        summary=result.summary,
+        error=result.error,
+        output=result.output,
+        events=result.events,
+        trace=result.trace,
+    )
 
 
 @router.get("/debug/v2/runs", response_model=V2RunHistoryResponse, status_code=status.HTTP_200_OK)

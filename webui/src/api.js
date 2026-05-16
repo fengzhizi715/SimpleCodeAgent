@@ -80,6 +80,51 @@ export async function getRunTrace(runId) {
   return requestJson(`/debug/traces/${encodeURIComponent(runId)}`);
 }
 
+export async function getV3EventChain(runId, { executionChainId = "", eventId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (executionChainId) {
+    params.set("execution_chain_id", String(executionChainId));
+  }
+  if (eventId) {
+    params.set("event_id", String(eventId));
+  }
+  const query = params.toString();
+  return requestJson(`/debug/v3/runs/${encodeURIComponent(runId)}/event-chain${query ? `?${query}` : ""}`);
+}
+
+export async function getV3EventChainView(runId, { executionChainId = "", eventId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (executionChainId) {
+    params.set("execution_chain_id", String(executionChainId));
+  }
+  if (eventId) {
+    params.set("event_id", String(eventId));
+  }
+  const query = params.toString();
+  let response;
+  try {
+    response = await fetch(`/debug/v3/runs/${encodeURIComponent(runId)}/event-chain/view${query ? `?${query}` : ""}`);
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : String(err);
+    throw new Error(`无法连接后端（${raw}）。\n${BACKEND_HINT}`);
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(text || "请求失败");
+  }
+  return text;
+}
+
+export async function replayV3EventChain(runId, { eventId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (eventId) {
+    params.set("event_id", String(eventId));
+  }
+  return requestJson(`/debug/v3/runs/${encodeURIComponent(runId)}/event-chain/replay?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
 export async function listRuns({ limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),

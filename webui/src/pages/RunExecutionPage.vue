@@ -186,24 +186,130 @@
     <section class="panel" v-if="v3ActiveTab === 'events'">
       <h3>Events</h3>
       <p class="muted">当前展示的是共享 trace timeline 中和本次 v3 运行相关的事件流。</p>
-      <table v-if="v3EventRows.length">
-        <thead>
-          <tr>
-            <th>type</th>
-            <th>source</th>
-            <th>created_at</th>
-            <th>summary</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(item, index) in v3EventRows" :key="`${item.event_id || item.trace_id || index}`">
-            <td>{{ item.event_type || item.name || "—" }}</td>
-            <td>{{ item.source || item.step_type || "—" }}</td>
-            <td>{{ item.created_at || item.ts || "—" }}</td>
-            <td>{{ summarizeV3Event(item) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-if="v3EventRows.length" class="event-chain-layout">
+        <div class="event-chain-events">
+          <table>
+            <thead>
+              <tr>
+                <th>type</th>
+                <th>source</th>
+                <th>created_at</th>
+                <th>summary</th>
+                <th>action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(item, index) in v3EventRows"
+                :key="`${item.event_id || item.trace_id || index}`"
+                :class="{ 'is-selected-row': selectedChainEventId === item.event_id }"
+              >
+                <td>
+                  <div class="event-type-cell">
+                    <strong>{{ item.event_type || item.name || "—" }}</strong>
+                    <span v-if="item.event_type === 'test_failed'" class="event-type-badge">Recovery Entry</span>
+                  </div>
+                </td>
+                <td>{{ item.source || item.step_type || "—" }}</td>
+                <td>{{ item.created_at || item.ts || "—" }}</td>
+                <td>{{ summarizeV3Event(item) }}</td>
+                <td>
+                  <button
+                    v-if="canInspectEventChain(item)"
+                    class="btn-secondary btn-sm"
+                    :disabled="chainLoading && selectedChainEventId === item.event_id"
+                    @click="inspectEventChain(item)"
+                  >
+                    {{
+                      chainLoading && selectedChainEventId === item.event_id
+                        ? "加载中…"
+                        : item.event_type === "test_failed"
+                          ? "查看恢复链"
+                          : "查看链路"
+                    }}
+                  </button>
+                  <span v-else class="muted">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <aside class="event-chain-panel">
+          <div class="event-chain-panel-head">
+            <div>
+              <h4>Event Chain</h4>
+              <p class="muted">点击左侧 `test_failed` 或其它带 `event_id` 的事件，可查看它触发出的后续执行链。</p>
+            </div>
+            <div class="event-chain-panel-actions">
+              <span v-if="eventChain?.item_count" class="badge">{{ eventChain.item_count }} items</span>
+              <button
+                v-if="selectedChainEventId"
+                class="btn-secondary btn-sm"
+                :disabled="replayLoading"
+                @click="runEventChainReplay"
+              >
+                {{ replayLoading ? "重放中…" : "重放该链" }}
+              </button>
+            </div>
+          </div>
+          <p v-if="chainError" class="error">{{ chainError }}</p>
+          <div v-else-if="eventChain" class="event-chain-summary">
+            <div class="event-chain-meta">
+              <span><strong>root:</strong> {{ eventChain.root_event_type || "—" }}</span>
+              <span><strong>chain:</strong> {{ shortChainId(eventChain.execution_chain_id) }}</span>
+            </div>
+            <div class="event-chain-mini-list">
+              <button
+                v-for="item in eventChain.items"
+                :key="item.event_id"
+                type="button"
+                class="event-chain-mini-item"
+                :class="{ 'is-focus': chainFocusedEventId === item.event_id }"
+                @click="chainFocusedEventId = item.event_id"
+              >
+                <strong>{{ item.event_type }}</strong>
+                <span>{{ item.source }}</span>
+              </button>
+            </div>
+            <div v-if="chainFocusedItem" class="event-chain-focus-card">
+              <div class="event-chain-focus-head">
+                <strong>{{ chainFocusedItem.event_type }}</strong>
+                <span>{{ chainFocusedItem.source }}</span>
+              </div>
+              <p class="muted">
+                {{
+                  [
+                    chainFocusedItem.node_id ? `node=${chainFocusedItem.node_id}` : null,
+                    chainFocusedItem.trigger_rule_id ? `rule=${chainFocusedItem.trigger_rule_id}` : null,
+                    chainFocusedItem.error ? `error=${chainFocusedItem.error}` : null,
+                  ].filter(Boolean).join(" · ") || "无额外元数据"
+                }}
+              </p>
+            </div>
+            <div v-if="replayResult" class="event-chain-replay-card">
+              <div class="event-chain-focus-head">
+                <strong>Replay Result</strong>
+                <span :class="replayResult.success ? 'replay-ok' : 'replay-bad'">
+                  {{ replayResult.success ? "success" : "failed" }}
+                </span>
+              </div>
+              <p class="muted">{{ replayResult.summary || "—" }}</p>
+              <p v-if="replayResult.error" class="error" style="margin: 0">{{ replayResult.error }}</p>
+              <div class="event-chain-meta">
+                <span><strong>replay_run_id:</strong> {{ shortChainId(replayResult.metadata?.replay_run_id) }}</span>
+                <span><strong>skill:</strong> {{ replayResult.metadata?.target_skill_name || "—" }}</span>
+              </div>
+              <details>
+                <summary>查看 Replay Output / Events</summary>
+                <JsonBlock :data="replayResult" />
+              </details>
+            </div>
+            <pre class="event-chain-view">{{ eventChainView || "暂无可读视图。" }}</pre>
+          </div>
+          <p v-else class="muted">尚未选择事件。</p>
+        </aside>
+      </div>
       <p v-else class="muted">当前 run 没有可单独展示的事件流。</p>
     </section>
 
@@ -497,7 +603,7 @@ import {
   watch,
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { getRunDetail } from "../api";
+import { getRunDetail, getV3EventChain, getV3EventChainView, replayV3EventChain } from "../api";
 import JsonBlock from "../components/JsonBlock.vue";
 
 const props = defineProps({
@@ -524,6 +630,14 @@ const v3Report = ref(null);
 const v3Planning = ref(null);
 const v3TriggerDiagnostics = ref([]);
 const v3ExecutionNodes = ref([]);
+const eventChain = ref(null);
+const eventChainView = ref("");
+const chainLoading = ref(false);
+const chainError = ref("");
+const selectedChainEventId = ref("");
+const chainFocusedEventId = ref("");
+const replayLoading = ref(false);
+const replayResult = ref(null);
 const selectedDelegationId = ref("");
 const nodeEls = ref(new Map());
 const copyHint = ref("复制摘要");
@@ -590,6 +704,13 @@ const v3GraphLayerSections = computed(() => {
 });
 const v3EventRows = computed(() => {
   return Array.isArray(trace.value) ? trace.value : [];
+});
+const chainFocusedItem = computed(() => {
+  const items = Array.isArray(eventChain.value?.items) ? eventChain.value.items : [];
+  if (!items.length) {
+    return null;
+  }
+  return items.find((item) => item.event_id === chainFocusedEventId.value) || items[0];
 });
 const v3Tabs = computed(() => [
   {
@@ -809,6 +930,7 @@ async function fetchReplay() {
     v3Planning.value = data.planning || null;
     v3TriggerDiagnostics.value = Array.isArray(data.trigger_diagnostics) ? data.trigger_diagnostics : [];
     v3ExecutionNodes.value = Array.isArray(data.execution_nodes) ? data.execution_nodes : [];
+    resetEventChainPanel();
     if (detailVersion.value === "v3") {
       polling.value = false;
       stopPolling();
@@ -857,6 +979,70 @@ function goTrace() {
     params: { runId: props.runId },
     query: { version: detailVersion.value || undefined },
   });
+}
+
+function canInspectEventChain(item) {
+  return Boolean(item && item.event_id && (item.execution_chain_id || item.event_type === "test_failed"));
+}
+
+function shortChainId(value) {
+  if (!value || typeof value !== "string") return "—";
+  if (value.length <= 22) return value;
+  return `${value.slice(0, 14)}…${value.slice(-6)}`;
+}
+
+function resetEventChainPanel() {
+  eventChain.value = null;
+  eventChainView.value = "";
+  chainLoading.value = false;
+  chainError.value = "";
+  selectedChainEventId.value = "";
+  chainFocusedEventId.value = "";
+  replayLoading.value = false;
+  replayResult.value = null;
+}
+
+async function inspectEventChain(item) {
+  if (!canInspectEventChain(item)) {
+    return;
+  }
+  chainLoading.value = true;
+  chainError.value = "";
+  selectedChainEventId.value = item.event_id || "";
+  chainFocusedEventId.value = "";
+  try {
+    const [chainData, chainText] = await Promise.all([
+      getV3EventChain(props.runId, { eventId: item.event_id }),
+      getV3EventChainView(props.runId, { eventId: item.event_id }),
+    ]);
+    eventChain.value = chainData;
+    eventChainView.value = chainText;
+    chainFocusedEventId.value = Array.isArray(chainData.items) && chainData.items.length ? chainData.items[0].event_id : "";
+    replayResult.value = null;
+    v3ActiveTab.value = "events";
+  } catch (err) {
+    eventChain.value = null;
+    eventChainView.value = "";
+    chainError.value = err instanceof Error ? err.message : "读取事件链失败";
+  } finally {
+    chainLoading.value = false;
+  }
+}
+
+async function runEventChainReplay() {
+  if (!selectedChainEventId.value) {
+    return;
+  }
+  replayLoading.value = true;
+  chainError.value = "";
+  try {
+    replayResult.value = await replayV3EventChain(props.runId, { eventId: selectedChainEventId.value });
+  } catch (err) {
+    replayResult.value = null;
+    chainError.value = err instanceof Error ? err.message : "重放事件链失败";
+  } finally {
+    replayLoading.value = false;
+  }
 }
 
 function summarizeV3Event(item) {
@@ -1096,6 +1282,173 @@ onBeforeUnmount(() => {
 
 .v3-trigger-section {
   margin-top: 16px;
+}
+
+.event-chain-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.event-chain-events {
+  min-width: 0;
+}
+
+.event-chain-panel {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(79, 70, 229, 0.08), transparent 36%),
+    rgba(248, 250, 252, 0.88);
+  padding: 16px;
+  min-width: 0;
+  position: sticky;
+  top: 12px;
+}
+
+.event-chain-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.event-chain-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.event-chain-panel-head h4 {
+  margin: 0 0 4px;
+}
+
+.event-chain-panel-head p {
+  margin: 0;
+}
+
+.event-chain-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.event-chain-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  font-size: 0.83rem;
+  color: var(--text-secondary, #5c6370);
+}
+
+.event-chain-mini-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.event-chain-mini-item {
+  display: grid;
+  gap: 2px;
+  min-width: 120px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(79, 70, 229, 0.14);
+  background: rgba(255, 255, 255, 0.82);
+  text-align: left;
+}
+
+.event-chain-mini-item strong {
+  font-size: 0.78rem;
+}
+
+.event-chain-mini-item span {
+  font-size: 0.72rem;
+  color: var(--text-muted, #8b929e);
+}
+
+.event-chain-mini-item.is-focus {
+  border-color: rgba(79, 70, 229, 0.35);
+  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.12);
+  transform: translateY(-1px);
+}
+
+.event-chain-focus-card {
+  border: 1px solid rgba(15, 20, 25, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.76);
+  padding: 12px;
+}
+
+.event-chain-replay-card {
+  border: 1px solid rgba(15, 20, 25, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 12px;
+}
+
+.event-chain-replay-card details {
+  margin-top: 10px;
+}
+
+.replay-ok {
+  color: #047857;
+  font-weight: 700;
+}
+
+.replay-bad {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+.event-chain-focus-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.event-chain-view {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.event-type-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.event-type-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.is-selected-row {
+  outline: 2px solid rgba(79, 70, 229, 0.16);
+  outline-offset: -2px;
+  background: rgba(79, 70, 229, 0.04);
 }
 
 .memory-panel-head {
@@ -1420,10 +1773,14 @@ onBeforeUnmount(() => {
 
 /* 窄屏：竖向时间轴，少横滑 */
 @media (max-width: 640px) {
+  .event-chain-layout,
   .memory-panel-head,
   .memory-grid {
     grid-template-columns: 1fr;
     flex-direction: column;
+  }
+  .event-chain-panel {
+    position: static;
   }
   .memory-stats {
     justify-content: flex-start;

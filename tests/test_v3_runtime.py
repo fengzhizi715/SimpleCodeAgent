@@ -20,6 +20,7 @@ from app.api.routes.agent import (
     run_agent,
 )
 from app.db.sqlite import SQLiteDB
+from app.contracts.trace import TraceEvent
 from app.trace.repository import SQLiteTraceRepository
 from app.trace.viewer import load_and_format_timeline
 from app.v3.contracts.agent_message_contracts import AgentMessageType
@@ -27,14 +28,16 @@ from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNode
 from app.v3.contracts.planning_contracts import PlanningResult, RecoveryStrategy
 from app.v3.contracts.skill_contracts import SkillInput, SkillOutput, SkillSpec, SkillType
-from app.v3.contracts.trigger_contracts import TriggerRule
+from app.v3.contracts.trigger_contracts import ConditionOperator, ConditionSpec, TriggerRule
 from app.v3 import build_default_skill_registry
 from app.v3.events.event_bus import EventBus
+from app.v3.events.event_history import build_event_chain_trace, format_event_chain_trace
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_validator import GraphValidator
 from app.v3.runtime.execution_kernel import ExecutionKernel
 from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
+from app.v3.replay.replay_engine import replay_event_chain
 from app.v3.runner import run_v3
 from app.v3.skills.base import Skill
 from app.v3.skills.registry import SkillRegistry
@@ -402,6 +405,52 @@ def test_trigger_engine_maps_event_payload_into_skill_input() -> None:
     assert recording_skill.inputs[0].payload["kind"] == "code_updated"
 
 
+def test_trigger_engine_applies_structured_conditions() -> None:
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="assertion-only",
+            event_type="test_failed",
+            target_skill_name="recording",
+            conditions=[
+                ConditionSpec(field="event.source", op=ConditionOperator.EQ, value="test_runner"),
+                ConditionSpec(
+                    field="event.payload.failure_type",
+                    op=ConditionOperator.IN,
+                    value=["assertion_error", "type_error"],
+                ),
+            ],
+        )
+    )
+    engine = TriggerEngine(trigger_registry, SkillExecutor(registry))
+
+    asyncio.run(
+        engine.handle_event(
+            V3Event(
+                run_id="run-conditions",
+                event_type="test_failed",
+                source="test_runner",
+                payload={"node_id": "test_runner", "failure_type": "assertion_error"},
+            )
+        )
+    )
+    asyncio.run(
+        engine.handle_event(
+            V3Event(
+                run_id="run-conditions",
+                event_type="test_failed",
+                source="test_runner",
+                payload={"node_id": "test_runner", "failure_type": "syntax_error"},
+            )
+        )
+    )
+
+    assert len(recording_skill.inputs) == 1
+
+
 def test_v3_runtime_records_request_response_agent_messages_for_graph_and_trigger() -> None:
     registry = SkillRegistry()
     registry.register(EchoSkill("coding"))
@@ -580,6 +629,50 @@ def test_trigger_engine_can_limit_rule_to_once_per_run() -> None:
     )
 
     assert len(recording_skill.inputs) == 1
+
+
+def test_trigger_engine_can_limit_rule_trigger_count_per_run() -> None:
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+    diagnostics = []
+    trigger_registry = TriggerRegistry()
+    trigger_registry.register(
+        TriggerRule(
+            rule_id="max-count",
+            event_type="test_failed",
+            target_skill_name="recording",
+            max_trigger_count_per_run=1,
+        )
+    )
+    engine = TriggerEngine(trigger_registry, SkillExecutor(registry), diagnostics=diagnostics)
+
+    asyncio.run(
+        engine.handle_event(
+            V3Event(
+                run_id="run-max-count",
+                event_type="test_failed",
+                source="test_runner",
+                payload={"node_id": "test_runner_a"},
+            )
+        )
+    )
+    asyncio.run(
+        engine.handle_event(
+            V3Event(
+                run_id="run-max-count",
+                event_type="test_failed",
+                source="test_runner",
+                payload={"node_id": "test_runner_b"},
+            )
+        )
+    )
+
+    assert len(recording_skill.inputs) == 1
+    assert len(diagnostics) == 2
+    assert diagnostics[1].status == "skipped"
+    assert diagnostics[1].skip_reason == "max_trigger_count_per_run"
+    assert diagnostics[1].details["max_trigger_count_per_run"] == 1
 
 
 def test_trigger_engine_can_apply_cooldown_within_one_run(monkeypatch) -> None:
@@ -795,6 +888,95 @@ def test_trigger_engine_records_skipped_trigger_diagnostic(monkeypatch) -> None:
     assert diagnostics[1].status == "skipped"
     assert diagnostics[1].skip_reason == "cooldown"
     assert diagnostics[1].cooldown_key == "cooldown:test_runner"
+
+
+def test_event_store_supports_basic_history_queries() -> None:
+    root = V3Event(
+        run_id="run-history",
+        event_type=EventType.TEST_FAILED.value,
+        source="test_runner",
+        execution_chain_id="chain-1",
+        payload={"node_id": "test_runner"},
+    )
+    child = V3Event(
+        run_id="run-history",
+        event_type=EventType.SKILL_STARTED.value,
+        source="tdd",
+        parent_event_id=root.event_id,
+        execution_chain_id="chain-1",
+        payload={"trigger_rule_id": "rule-1"},
+    )
+    other = V3Event(
+        run_id="run-history",
+        event_type=EventType.CODE_UPDATED.value,
+        source="coding",
+        execution_chain_id="chain-2",
+        payload={"node_id": "coding"},
+    )
+    event_store = EventStore()
+
+    event_store.append(root)
+    event_store.append(child)
+    event_store.append(other)
+
+    assert event_store.get(root.event_id) == root
+    assert event_store.list_by_parent_event_id(root.event_id) == [child]
+    assert event_store.list_by_execution_chain_id("chain-1") == [root, child]
+    assert event_store.list_by_run_id("run-history") == [root, child, other]
+
+
+def test_event_store_can_build_and_format_chain_trace() -> None:
+    root = V3Event(
+        run_id="run-chain",
+        event_type=EventType.TEST_FAILED.value,
+        source="test_runner",
+        execution_chain_id="chain-1",
+        payload={"node_id": "test_runner", "summary": "Tests failed: pytest -q"},
+    )
+    child_started = V3Event(
+        run_id="run-chain",
+        event_type=EventType.SKILL_STARTED.value,
+        source="tdd",
+        parent_event_id=root.event_id,
+        trigger_rule_id="fix-and-retest",
+        execution_chain_id="chain-1",
+        payload={"node_id": "trigger:tdd"},
+    )
+    child_finished = V3Event(
+        run_id="run-chain",
+        event_type=EventType.SKILL_FINISHED.value,
+        source="tdd",
+        parent_event_id=root.event_id,
+        trigger_rule_id="fix-and-retest",
+        execution_chain_id="chain-1",
+        payload={"summary": "TDD recovery finished"},
+    )
+    event_store = EventStore()
+
+    event_store.append(root)
+    event_store.append(child_started)
+    event_store.append(child_finished)
+
+    chain = event_store.get_chain_trace("chain-1")
+    assert chain is not None
+    assert chain.root_event_id == root.event_id
+    assert [item.event_type for item in chain.items] == [
+        EventType.TEST_FAILED.value,
+        EventType.SKILL_STARTED.value,
+        EventType.SKILL_FINISHED.value,
+    ]
+
+    rendered = format_event_chain_trace(chain)
+    assert "Event Chain: chain-1" in rendered
+    assert "- test_failed | source=test_runner | node_id=test_runner | summary=Tests failed: pytest -q" in rendered
+    assert "rule_id=fix-and-retest" in rendered
+    assert "summary=TDD recovery finished" in rendered
+
+    from_event = event_store.get_chain_trace_for_event(child_started.event_id)
+    assert from_event is not None
+    assert from_event.execution_chain_id == "chain-1"
+    assert from_event.root_event_id == child_started.event_id
+    assert [item.event_type for item in from_event.items] == [EventType.SKILL_STARTED.value]
 
 
 def test_trigger_engine_allows_trigger_after_cooldown_window(monkeypatch) -> None:
@@ -1373,6 +1555,7 @@ def test_run_v3_recovery_flow_can_fix_code_and_retest_in_temp_workspace(tmp_path
     trigger_nodes = [node for node in result["report"].execution_nodes if node.kind == "trigger"]
     assert len(trigger_nodes) == 1
     assert trigger_nodes[0].skill_name == "tdd"
+    assert trigger_nodes[0].source_event_type == EventType.TEST_FAILED.value
     assert "Updated add() to use addition" in trigger_nodes[0].output_data["coding_result"]["patch_summary"]
     assert (tmp_path / "calc.py").read_text(encoding="utf-8").strip().endswith("return a + b")
     passed_retest = any(
@@ -1381,6 +1564,161 @@ def test_run_v3_recovery_flow_can_fix_code_and_retest_in_temp_workspace(tmp_path
         for event in result["events"]
     )
     assert passed_retest is True
+    test_failed_event = next(event for event in result["events"] if event["event_type"] == EventType.TEST_FAILED.value)
+    tdd_started_event = next(
+        event
+        for event in result["events"]
+        if event["event_type"] == EventType.SKILL_STARTED.value and event["source"] == "tdd"
+    )
+    assert tdd_started_event["parent_event_id"] == test_failed_event["event_id"]
+    assert tdd_started_event["trigger_rule_id"] == "template_fix_and_retest_after_test_failed"
+    assert tdd_started_event["execution_chain_id"] == test_failed_event["execution_chain_id"]
+
+
+
+def test_run_v3_recovery_flow_can_render_event_chain_trace(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "calc.py").write_text(
+        "def add(a: int, b: int) -> int:\n    return a - b\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_calc.py").write_text(
+        (
+            "import sys\n"
+            "from pathlib import Path\n\n"
+            "sys.path.insert(0, str(Path(__file__).resolve().parents[1]))\n"
+            "from calc import add\n\n\n"
+            "def test_add():\n"
+            "    assert add(2, 3) == 5\n"
+        ),
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+
+    class FileFixSkill(Skill):
+        def __init__(self) -> None:
+            super().__init__(
+                SkillSpec(
+                    name="coding",
+                    description="apply deterministic calc fix",
+                    skill_type=SkillType.COMPOSITE,
+                    capabilities=["code.modify"],
+                )
+            )
+
+        async def execute(self, skill_input: SkillInput) -> SkillOutput:
+            target = tmp_path / "calc.py"
+            target.write_text(
+                "def add(a: int, b: int) -> int:\n    return a + b\n",
+                encoding="utf-8",
+            )
+            return SkillOutput(
+                success=True,
+                summary="calc.py fixed",
+                data={
+                    "changed_files": ["calc.py"],
+                    "patch_summary": "Updated add() to use addition",
+                },
+            )
+
+    registry.register(FileFixSkill())
+
+    result = asyncio.run(
+        run_v3(
+            goal="run tests and recover",
+            workdir=str(tmp_path),
+            include_events=True,
+            include_trace=True,
+            registry=registry,
+        )
+    )
+
+    events = [V3Event.model_validate(event) for event in result["events"]]
+    test_failed_event = next(event for event in events if event.event_type == EventType.TEST_FAILED.value)
+    chain = build_event_chain_trace(
+        events,
+        execution_chain_id=test_failed_event.execution_chain_id or "",
+        root_event_id=test_failed_event.event_id,
+    )
+
+    assert chain is not None
+    assert chain.root_event_type == EventType.TEST_FAILED.value
+
+    rendered = format_event_chain_trace(chain)
+    assert f"Event Chain: {test_failed_event.execution_chain_id}" in rendered
+    assert "test_failed | source=test_runner" in rendered
+    assert "skill_started | source=tdd" in rendered
+    assert "rule_id=template_fix_and_retest_after_test_failed" in rendered
+
+
+def test_replay_event_chain_reexecutes_trigger_skill(tmp_path: Path) -> None:
+    trace_db = SQLiteDB(tmp_path / "trace-replay.sqlite3")
+    repository = SQLiteTraceRepository(trace_db)
+    root_time = V3Event(run_id="tmp", event_type="x", source="x").created_at
+    root_event = V3Event(
+        event_id="evt-test-failed",
+        run_id="run-original",
+        event_type=EventType.TEST_FAILED.value,
+        source="test_runner",
+        execution_chain_id="chain-1",
+        payload={"node_id": "test_runner", "failure_type": "assertion_error"},
+        created_at=root_time,
+    )
+    child_event = V3Event(
+        event_id="evt-tdd-started",
+        run_id="run-original",
+        event_type=EventType.SKILL_STARTED.value,
+        source="recording",
+        parent_event_id="evt-test-failed",
+        trigger_rule_id="rule-1",
+        execution_chain_id="chain-1",
+        payload={
+            "input_payload": {
+                "goal": "retry fix",
+                "workspace_root": str(tmp_path),
+            }
+        },
+        created_at=root_time,
+    )
+    repository.save_event(
+        "run-original",
+        TraceEvent(
+            run_id="run-original",
+            event_type=root_event.event_type,
+            message="v3:test_failed",
+            payload=root_event.model_dump(mode="json"),
+        ),
+    )
+    repository.save_event(
+        "run-original",
+        TraceEvent(
+            run_id="run-original",
+            event_type=child_event.event_type,
+            message="v3:skill_started",
+            payload=child_event.model_dump(mode="json"),
+        ),
+    )
+
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+
+    result = asyncio.run(
+        replay_event_chain(
+            repository=repository,
+            run_id="run-original",
+            event_id="evt-test-failed",
+            workspace_root=str(tmp_path),
+            registry=registry,
+        )
+    )
+
+    assert result.success is True
+    assert result.metadata.target_skill_name == "recording"
+    assert len(recording_skill.inputs) == 1
+    assert recording_skill.inputs[0].payload["goal"] == "retry fix"
+    assert recording_skill.inputs[0].context["source_event"]["event_id"] == "evt-test-failed"
+    assert any(event["event_type"] == EventType.SKILL_FINISHED.value for event in result.events)
 
 
 def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) -> None:
