@@ -27,6 +27,7 @@ from app.v3.contracts.agent_message_contracts import AgentMessageType
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNode
 from app.v3.contracts.planning_contracts import PlanningResult, RecoveryStrategy
+from app.v3.contracts.replay_contracts import ReplayMode
 from app.v3.contracts.skill_contracts import SkillInput, SkillOutput, SkillSpec, SkillType
 from app.v3.contracts.trigger_contracts import ConditionOperator, ConditionSpec, TriggerRule
 from app.v3 import build_default_skill_registry
@@ -34,10 +35,12 @@ from app.v3.events.event_bus import EventBus
 from app.v3.events.event_history import build_event_chain_trace, format_event_chain_trace
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_validator import GraphValidator
+from app.v3.governance.execution_budget import ExecutionBudgetState
+from app.v3.runtime.expansion import DynamicExpansion
 from app.v3.runtime.execution_kernel import ExecutionKernel
 from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
-from app.v3.replay.replay_engine import replay_event_chain
+from app.v3.replay.replay_engine import replay_by_event, replay_event_chain
 from app.v3.runner import run_v3
 from app.v3.skills.base import Skill
 from app.v3.skills.registry import SkillRegistry
@@ -274,6 +277,70 @@ def test_v3_kernel_executes_ready_nodes_in_parallel() -> None:
 
     assert report.status.value == "completed"
     assert elapsed < 0.35
+
+
+def test_v3_graph_executor_emits_test_started_and_test_passed_events() -> None:
+    registry = SkillRegistry()
+
+    class PassingTestSkill(Skill):
+        def __init__(self) -> None:
+            super().__init__(
+                SkillSpec(
+                    name="test_runner",
+                    description="passing test runner",
+                    skill_type=SkillType.TOOL,
+                    capabilities=["test.run"],
+                )
+            )
+
+        async def execute(self, skill_input: SkillInput) -> SkillOutput:
+            return SkillOutput(
+                success=True,
+                summary="tests passed",
+                data={"executed_command": "pytest -q"},
+            )
+
+    registry.register(PassingTestSkill())
+    event_bus = EventBus()
+    event_store = EventStore()
+    trace_events = attach_trace_collector(event_bus)
+    kernel = ExecutionKernel(
+        graph_executor=GraphExecutor(
+            skill_executor=SkillExecutor(registry),
+            event_bus=event_bus,
+            event_store=event_store,
+        ),
+        validator=GraphValidator(),
+        event_bus=event_bus,
+        event_store=event_store,
+    )
+
+    graph = TaskGraph(
+        graph_id="graph-test-events",
+        run_id="run-test-events",
+        nodes=[TaskNode(node_id="test", skill_name="test_runner", input_payload={"command": "pytest -q"})],
+    )
+
+    context = asyncio.run(kernel.run_graph(graph))
+    report = context.to_report(graph)
+
+    assert report.status.value == "completed"
+    assert [event.event_type for event in event_store.list()] == [
+        EventType.GRAPH_STARTED.value,
+        EventType.SKILL_STARTED.value,
+        EventType.TEST_STARTED.value,
+        EventType.SKILL_FINISHED.value,
+        EventType.TEST_PASSED.value,
+        EventType.GRAPH_FINISHED.value,
+    ]
+    assert [event.event_type for event in trace_events] == [
+        EventType.GRAPH_STARTED.value,
+        EventType.SKILL_STARTED.value,
+        EventType.TEST_STARTED.value,
+        EventType.SKILL_FINISHED.value,
+        EventType.TEST_PASSED.value,
+        EventType.GRAPH_FINISHED.value,
+    ]
 
 
 def test_v3_parallel_agent_messages_follow_real_completion_order() -> None:
@@ -692,7 +759,7 @@ def test_trigger_engine_can_apply_cooldown_within_one_run(monkeypatch) -> None:
     engine = TriggerEngine(trigger_registry, SkillExecutor(registry))
 
     current_time = {"value": 100.0}
-    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+    monkeypatch.setattr("app.v3.governance.cooldown_manager.time.monotonic", lambda: current_time["value"])
 
     asyncio.run(
         engine.handle_event(
@@ -744,7 +811,7 @@ def test_trigger_engine_records_governance_metadata_on_trigger_execution(monkeyp
         event_store=event_store,
         execution_nodes=execution_nodes,
     )
-    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: 500.0)
+    monkeypatch.setattr("app.v3.governance.cooldown_manager.time.monotonic", lambda: 500.0)
 
     asyncio.run(
         engine.handle_event(
@@ -781,7 +848,7 @@ def test_trigger_engine_publishes_trigger_skipped_event_for_cooldown(monkeypatch
     engine = TriggerEngine(trigger_registry, SkillExecutor(registry), event_store=event_store)
 
     current_time = {"value": 700.0}
-    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+    monkeypatch.setattr("app.v3.governance.cooldown_manager.time.monotonic", lambda: current_time["value"])
 
     first = V3Event(
         run_id="run-cooldown-skip",
@@ -864,7 +931,7 @@ def test_trigger_engine_records_skipped_trigger_diagnostic(monkeypatch) -> None:
     )
 
     current_time = {"value": 900.0}
-    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+    monkeypatch.setattr("app.v3.governance.cooldown_manager.time.monotonic", lambda: current_time["value"])
 
     first = V3Event(
         run_id="run-diagnostics",
@@ -996,7 +1063,7 @@ def test_trigger_engine_allows_trigger_after_cooldown_window(monkeypatch) -> Non
     engine = TriggerEngine(trigger_registry, SkillExecutor(registry))
 
     current_time = {"value": 200.0}
-    monkeypatch.setattr("app.v3.trigger.trigger_engine.time.monotonic", lambda: current_time["value"])
+    monkeypatch.setattr("app.v3.governance.cooldown_manager.time.monotonic", lambda: current_time["value"])
 
     asyncio.run(
         engine.handle_event(
@@ -1178,6 +1245,25 @@ def test_test_runner_skill_executes_pytest_via_v1_adapter(tmp_path: Path) -> Non
 
     assert output.success is True
     assert output.data["executed_command"] == "pytest -q tests/test_sample.py"
+
+
+def test_default_skill_registry_exposes_event_semantics_metadata() -> None:
+    registry = build_default_skill_registry()
+    test_runner = registry.get("test_runner").spec
+    coding = registry.get("coding").spec
+    tdd = registry.get("tdd").spec
+
+    assert test_runner.emits_events == [
+        EventType.TEST_STARTED.value,
+        EventType.TEST_PASSED.value,
+        EventType.TEST_FAILED.value,
+    ]
+    assert test_runner.retryable is True
+    assert test_runner.timeout_seconds == 60
+    assert coding.emits_events == [EventType.CODE_UPDATED.value]
+    assert coding.retryable is True
+    assert tdd.consumes_events == [EventType.TEST_FAILED.value]
+    assert EventType.TEST_PASSED.value in tdd.emits_events
 
 
 def test_coding_skill_uses_v2_agent_adapter_when_available() -> None:
@@ -1721,6 +1807,158 @@ def test_replay_event_chain_reexecutes_trigger_skill(tmp_path: Path) -> None:
     assert any(event["event_type"] == EventType.SKILL_FINISHED.value for event in result.events)
 
 
+def test_replay_by_event_in_event_mode_reexecutes_historical_trigger_chain(tmp_path: Path) -> None:
+    trace_db = SQLiteDB(tmp_path / "trace-event-replay.sqlite3")
+    repository = SQLiteTraceRepository(trace_db)
+    root_time = V3Event(run_id="tmp", event_type="x", source="x").created_at
+    root_event = V3Event(
+        event_id="evt-root",
+        run_id="run-original",
+        event_type=EventType.TEST_FAILED.value,
+        source="test_runner",
+        execution_chain_id="chain-1",
+        payload={"node_id": "test_runner", "failure_type": "assertion_error"},
+        created_at=root_time,
+    )
+    child_event = V3Event(
+        event_id="evt-child",
+        run_id="run-original",
+        event_type=EventType.SKILL_STARTED.value,
+        source="recording",
+        parent_event_id="evt-root",
+        trigger_rule_id="rule-1",
+        execution_chain_id="chain-1",
+        payload={"input_payload": {"goal": "retry fix"}},
+        created_at=root_time,
+    )
+    repository.save_event(
+        "run-original",
+        TraceEvent(
+            run_id="run-original",
+            event_type=root_event.event_type,
+            message="v3:test_failed",
+            payload=root_event.model_dump(mode="json"),
+        ),
+    )
+    repository.save_event(
+        "run-original",
+        TraceEvent(
+            run_id="run-original",
+            event_type=child_event.event_type,
+            message="v3:skill_started",
+            payload=child_event.model_dump(mode="json"),
+        ),
+    )
+
+    registry = SkillRegistry()
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+
+    result = asyncio.run(
+        replay_by_event(
+            repository=repository,
+            run_id="run-original",
+            event_id="evt-root",
+            workspace_root=str(tmp_path),
+            registry=registry,
+            mode=ReplayMode.EVENT_REPLAY,
+        )
+    )
+
+    assert result.success is True
+    assert len(recording_skill.inputs) == 1
+    assert recording_skill.inputs[0].payload["goal"] == "retry fix"
+    assert any(event["event_type"] == EventType.SKILL_FINISHED.value for event in result.events)
+
+
+def test_graph_executor_marks_remaining_nodes_skipped_when_step_budget_exhausted() -> None:
+    registry = SkillRegistry()
+    registry.register(EchoSkill("a"))
+    registry.register(EchoSkill("b"))
+    budget = ExecutionBudgetState(run_id="run-budget", max_steps=1, max_events=20, max_trigger_count=5)
+    kernel = ExecutionKernel(
+        graph_executor=GraphExecutor(skill_executor=SkillExecutor(registry), budget=budget),
+        validator=GraphValidator(),
+        budget=budget,
+    )
+    graph = TaskGraph(
+        graph_id="graph-budget",
+        run_id="run-budget",
+        nodes=[
+            TaskNode(node_id="a", skill_name="a"),
+            TaskNode(node_id="b", skill_name="b", dependencies=["a"]),
+        ],
+    )
+
+    context = asyncio.run(kernel.run_graph(graph))
+    report = context.to_report(graph)
+
+    assert report.completed_node_ids == ["a"]
+    assert report.skipped_node_ids == ["b"]
+    assert report.status.value == "partial_completed"
+
+
+def test_dynamic_expansion_preserves_run_id_in_expanded_graph() -> None:
+    graph = TaskGraph(
+        graph_id="graph-expand",
+        run_id="run-expand",
+        nodes=[TaskNode(node_id="root", skill_name="recording")],
+    )
+    expansion = DynamicExpansion(run_id="run-expand", original_graph=graph)
+    expanded_graph = expansion.get_expanded_graph()
+
+    assert expanded_graph.run_id == "run-expand"
+
+
+def test_run_v3_can_enable_controlled_autonomy_follow_up() -> None:
+    registry = SkillRegistry()
+
+    class CodingSkillForAutonomy(Skill):
+        def __init__(self) -> None:
+            super().__init__(
+                SkillSpec(
+                    name="coding",
+                    description="emit code update",
+                    skill_type=SkillType.COMPOSITE,
+                    capabilities=["code.modify"],
+                )
+            )
+
+        async def execute(self, skill_input: SkillInput) -> SkillOutput:
+            return SkillOutput(
+                success=True,
+                summary="code updated",
+                data={"changed_files": ["app/example.py"], "patch_summary": "patched"},
+            )
+
+    recording_test_runner = RecordingSkill()
+    recording_test_runner.spec.name = "test_runner"
+    registry.register(CodingSkillForAutonomy())
+    registry.register(recording_test_runner)
+
+    graph = TaskGraph(
+        graph_id="graph-autonomy",
+        run_id="run-autonomy",
+        nodes=[TaskNode(node_id="coding", skill_name="coding")],
+    )
+
+    result = asyncio.run(
+        run_v3(
+            graph=graph,
+            registry=registry,
+            autonomy_enabled=True,
+            include_events=True,
+            include_trace=False,
+        )
+    )
+
+    assert result["autonomy"] is not None
+    assert len(result["autonomy"]["requests"]) == 1
+    assert len(recording_test_runner.inputs) == 1
+    assert result["autonomy"]["decisions"][0]["approved"] is True
+    assert any(node["node_id"].startswith("autonomy:") for node in result["report"].model_dump()["execution_nodes"])
+
+
 def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) -> None:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(
@@ -2013,6 +2251,42 @@ def test_run_v3_connects_trigger_engine_to_event_bus(tmp_path: Path) -> None:
     assert len(recording_skill.inputs) == 1
     assert recording_skill.inputs[0].payload["command"] == "pytest -q"
     assert recording_skill.inputs[0].payload["failure_type"] is not None
+
+
+def test_run_v3_applies_trigger_rule_enabled_overrides(tmp_path: Path) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_fail.py").write_text(
+        "def test_fail():\n    assert False\n",
+        encoding="utf-8",
+    )
+    registry = build_default_skill_registry(workspace_root=tmp_path)
+    recording_skill = RecordingSkill()
+    registry.register(recording_skill)
+
+    result = asyncio.run(
+        run_v3(
+            goal="run tests",
+            workdir=str(tmp_path),
+            include_events=True,
+            include_trace=True,
+            registry=registry,
+            trigger_rules=[
+                TriggerRule(
+                    rule_id="trigger-test-failed",
+                    event_type=EventType.TEST_FAILED.value,
+                    target_skill_name="recording",
+                )
+            ],
+            trigger_rule_enabled_overrides={"trigger-test-failed": False},
+        )
+    )
+
+    assert recording_skill.inputs == []
+    assert result["report"].failed_node_ids == ["test_runner"]
+    assert result["report"].recovered_node_ids == []
+    assert result["report"].trigger_diagnostics == []
+    trigger_nodes = [node for node in result["report"].execution_nodes if node.kind == "trigger"]
+    assert trigger_nodes == []
 
 
 def test_v3_trace_can_be_persisted_and_viewed_through_shared_trace_layer(tmp_path: Path, monkeypatch) -> None:

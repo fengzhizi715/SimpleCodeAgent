@@ -26,6 +26,13 @@ class SkillSpec(BaseModel):
     skill_type: SkillType
     capabilities: list[str] = Field(default_factory=list)
     enabled: bool = True
+    consumes_events: list[str] = Field(default_factory=list)
+    emits_events: list[str] = Field(default_factory=list)
+    retryable: bool = False
+    cooldown_seconds: float | None = None
+    timeout_seconds: int | None = None
+    typical_use: str = ""
+    template_names: list[str] = Field(default_factory=list)
 
 
 class SkillInput(BaseModel):

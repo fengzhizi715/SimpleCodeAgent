@@ -19,6 +19,8 @@ from app.v1.planner.simple_planner import SimplePlanner
 from app.v1.runtime.loop import AgentLoop
 from app.v2.factory import build_orchestrator_runtime
 from app.v2.runtime import OrchestratorRuntime
+from app.api.trigger_state_store import TriggerRuleStateStore
+from app.api.trigger_hit_counter import TriggerHitCounter
 
 logger = get_logger(__name__)
 
@@ -91,3 +93,15 @@ def get_provider(
         model=resolved_model,
         timeout=settings.llm_timeout,
     )
+
+
+@lru_cache(maxsize=1)
+def get_trigger_rule_state_store() -> TriggerRuleStateStore:
+    """返回共享的 Trigger Rule 状态存储。"""
+    return TriggerRuleStateStore()
+
+
+@lru_cache(maxsize=1)
+def get_trigger_hit_counter() -> TriggerHitCounter:
+    """返回共享的 Trigger Hit 计数器。"""
+    return TriggerHitCounter()

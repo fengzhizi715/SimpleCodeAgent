@@ -18,6 +18,8 @@ from app.api.deps import (
     get_summary_memory,
     get_trace_repository,
     get_v2_runtime,
+    get_trigger_hit_counter,
+    get_trigger_rule_state_store,
 )
 from app.contracts.run import RunMetrics, RunUsage
 from app.core.config import settings
@@ -292,6 +294,8 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
     if request.version == "v3":
         session_id = request.session_id or str(uuid4())
         resolved_workdir = request.workdir or request.project_root or settings.workdir or None
+        hit_counter = get_trigger_hit_counter()
+        trigger_rule_state_store = get_trigger_rule_state_store()
         try:
             result = asyncio.run(
                 run_v3(
@@ -311,6 +315,8 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                     plan_only=request.plan_only,
                     include_events=request.include_events,
                     include_trace=request.include_trace,
+                    hit_callback=hit_counter.increment,
+                    trigger_rule_enabled_overrides=trigger_rule_state_store.get_all(),
                 )
             )
         except ValueError as exc:

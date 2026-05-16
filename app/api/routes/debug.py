@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.api.deps import get_provider, get_trace_repository, get_v2_runtime
+from app.api.deps import get_provider, get_trace_repository, get_v2_runtime, get_trigger_rule_state_store, get_trigger_hit_counter
 from app.contracts.message import ChatMessage
 from app.contracts.run import RunRequest
 from app.core.config import (
@@ -211,6 +211,63 @@ class V3ReplayResponse(BaseModel):
     trace: list[dict[str, object]] = Field(default_factory=list)
 
 
+class TriggerRuleStateItem(BaseModel):
+    """Trigger rule state entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str
+    enabled: bool
+
+
+class TriggerRuleStateListResponse(BaseModel):
+    """List of trigger rule states."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[TriggerRuleStateItem] = Field(default_factory=list)
+
+
+class TriggerRuleToggleRequest(BaseModel):
+    """Toggle trigger rule enabled state request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+
+
+class TriggerRuleToggleResponse(BaseModel):
+    """Toggle trigger rule enabled state response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str
+    enabled: bool
+
+
+class TriggerHitCountItem(BaseModel):
+    """Trigger rule hit count entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str | None = None
+    rule_id: str
+    executed_count: int = 0
+    skipped_count: int = 0
+
+
+class TriggerHitCountResponse(BaseModel):
+    """Trigger hit count response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str | None = None
+    rule_id: str | None = None
+    items: list[TriggerHitCountItem] = Field(default_factory=list)
+    total_executed: int = 0
+    total_skipped: int = 0
+
+
 class RunReplayResponse(BaseModel):
     """V2 单次运行回放响应。"""
 
@@ -326,6 +383,11 @@ class SkillCatalogItem(BaseModel):
     enabled: bool = True
     typical_use: str = ""
     template_names: list[str] = Field(default_factory=list)
+    consumes_events: list[str] = Field(default_factory=list)
+    emits_events: list[str] = Field(default_factory=list)
+    retryable: bool = False
+    cooldown_seconds: float | None = None
+    timeout_seconds: int | None = None
 
 
 class AgentCatalogResponse(BaseModel):
@@ -698,6 +760,120 @@ async def replay_v3_event_chain(
     )
 
 
+@router.get(
+    "/debug/v3/trigger-rules",
+    response_model=TriggerRuleStateListResponse,
+    status_code=status.HTTP_200_OK,
+)
+def list_trigger_rule_states() -> TriggerRuleStateListResponse:
+    """列出当前被覆盖启停状态的 trigger rule。"""
+    store = get_trigger_rule_state_store()
+    return TriggerRuleStateListResponse(
+        rules=[TriggerRuleStateItem(rule_id=rule_id, enabled=enabled) for rule_id, enabled in store.get_all().items()],
+    )
+
+
+@router.patch(
+    "/debug/v3/trigger-rules/{rule_id}",
+    response_model=TriggerRuleToggleResponse,
+    status_code=status.HTTP_200_OK,
+)
+def toggle_trigger_rule(rule_id: str, request: TriggerRuleToggleRequest) -> TriggerRuleToggleResponse:
+    """切换或设置指定 trigger rule 的启用状态。"""
+    store = get_trigger_rule_state_store()
+    store.set_enabled(rule_id, request.enabled)
+    return TriggerRuleToggleResponse(rule_id=rule_id, enabled=request.enabled)
+
+
+@router.post(
+    "/debug/v3/trigger-rules/{rule_id}/toggle",
+    response_model=TriggerRuleToggleResponse,
+    status_code=status.HTTP_200_OK,
+)
+def toggle_trigger_rule_flip(rule_id: str) -> TriggerRuleToggleResponse:
+    """翻转指定 trigger rule 的启用状态。"""
+    store = get_trigger_rule_state_store()
+    new_state = store.toggle(rule_id)
+    return TriggerRuleToggleResponse(rule_id=rule_id, enabled=new_state)
+
+
+@router.delete(
+    "/debug/v3/trigger-rules/{rule_id}",
+    response_model=TriggerRuleToggleResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reset_trigger_rule(rule_id: str) -> TriggerRuleToggleResponse:
+    """重置指定 trigger rule 为默认启用状态。"""
+    store = get_trigger_rule_state_store()
+    store.reset(rule_id)
+    return TriggerRuleToggleResponse(rule_id=rule_id, enabled=True)
+
+
+@router.get(
+    "/debug/v3/trigger-rules/hit-counts",
+    response_model=TriggerHitCountResponse,
+    status_code=status.HTTP_200_OK,
+)
+def get_trigger_hit_counts(
+    run_id: str | None = None,
+    rule_id: str | None = None,
+) -> TriggerHitCountResponse:
+    """查询 trigger rule 命中统计。"""
+    counter = get_trigger_hit_counter()
+    if run_id is not None:
+        items = counter.get_by_run(run_id)
+        return TriggerHitCountResponse(
+            run_id=run_id,
+            items=[
+                TriggerHitCountItem(
+                    run_id=run_id,
+                    rule_id=item["rule_id"],
+                    executed_count=item["executed_count"],
+                    skipped_count=item["skipped_count"],
+                )
+                for item in items
+                if str(item["rule_id"]) != "__governance__"
+            ],
+        )
+    if rule_id is not None:
+        items = counter.get_by_rule(rule_id)
+        total = counter.get_total(rule_id)
+        return TriggerHitCountResponse(
+            rule_id=rule_id,
+            items=[
+                TriggerHitCountItem(
+                    run_id=str(item["run_id"]),
+                    rule_id=rule_id,
+                    executed_count=item["executed_count"],
+                    skipped_count=item["skipped_count"],
+                )
+                for item in items
+            ],
+            total_executed=total["executed"],
+            total_skipped=total["skipped"],
+        )
+    return TriggerHitCountResponse()
+
+
+@router.post(
+    "/debug/v3/trigger-rules/hit-counts/reset",
+    response_model=TriggerHitCountResponse,
+    status_code=status.HTTP_200_OK,
+)
+def reset_trigger_hit_counts(
+    run_id: str | None = None,
+    rule_id: str | None = None,
+) -> TriggerHitCountResponse:
+    """重置 trigger hit 计数。"""
+    counter = get_trigger_hit_counter()
+    counter.reset(run_id=run_id, rule_id=rule_id)
+    return TriggerHitCountResponse(
+        run_id=run_id,
+        rule_id=rule_id,
+        items=[],
+    )
+
+
 @router.get("/debug/v2/runs", response_model=V2RunHistoryResponse, status_code=status.HTTP_200_OK)
 def list_v2_runs(
     limit: int = Query(default=50, ge=1, le=200, description="返回条数上限。"),
@@ -738,57 +914,6 @@ def list_agents() -> AgentCatalogResponse:
         for spec in specs
     ]
     skill_registry = build_default_skill_registry(workspace_root=BASE_DIR)
-    skill_catalog_hints: dict[str, dict[str, object]] = {
-        "planning": {
-            "typical_use": "根据任务目标、仓库特征和 RAG 配置，生成适合当前场景的 graph 模板与恢复策略。",
-            "template_names": [
-                "analysis_only",
-                "analysis_with_context",
-                "testing_branch_verify",
-                "coding_focus_then_full_suite",
-                "default",
-            ],
-        },
-        "retrieve_docs": {
-            "typical_use": "在分析或改码前补充外部文档、知识库或多 RAG 检索上下文。",
-            "template_names": [
-                "analysis_with_context",
-                "default",
-            ],
-        },
-        "analyze_repo": {
-            "typical_use": "抽取仓库画像、候选测试命令和测试目标，为后续 coding / testing 节点提供上下文。",
-            "template_names": [
-                "analysis_only",
-                "analysis_with_context",
-                "testing_branch_verify",
-                "coding_focus_then_full_suite",
-                "default",
-            ],
-        },
-        "coding": {
-            "typical_use": "执行真实改码动作，可切换 internal / external 后端，并承接 test_failed 之后的 fix-only 恢复。",
-            "template_names": [
-                "default",
-                "coding_focus_then_full_suite",
-                "template_fix_after_test_failed",
-            ],
-        },
-        "test_runner": {
-            "typical_use": "执行 focused test 或 full-suite verification，既能作为主链节点，也能作为恢复后的验证节点。",
-            "template_names": [
-                "default",
-                "testing_branch_verify",
-                "coding_focus_then_full_suite",
-            ],
-        },
-        "tdd": {
-            "typical_use": "承接 test_failed 后的 fix -> re-test 恢复链，适合需要验证收敛而不是只修一次的场景。",
-            "template_names": [
-                "template_fix_and_retest_after_test_failed",
-            ],
-        },
-    }
     skills = [
         SkillCatalogItem(
             skill_name=skill.spec.name,
@@ -796,12 +921,13 @@ def list_agents() -> AgentCatalogResponse:
             skill_type=skill.spec.skill_type.value,
             capabilities=list(skill.spec.capabilities),
             enabled=skill.spec.enabled,
-            typical_use=str(skill_catalog_hints.get(skill.spec.name, {}).get("typical_use", "")),
-            template_names=[
-                str(item)
-                for item in skill_catalog_hints.get(skill.spec.name, {}).get("template_names", [])
-                if str(item).strip()
-            ],
+            typical_use=skill.spec.typical_use,
+            template_names=list(skill.spec.template_names),
+            consumes_events=list(skill.spec.consumes_events),
+            emits_events=list(skill.spec.emits_events),
+            retryable=bool(skill.spec.retryable),
+            cooldown_seconds=skill.spec.cooldown_seconds,
+            timeout_seconds=skill.spec.timeout_seconds,
         )
         for skill in skill_registry.list()
     ]

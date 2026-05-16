@@ -51,6 +51,19 @@
           <p v-if="skill.capabilities?.length" class="muted">{{ skill.capabilities.join(" / ") }}</p>
           <p v-else class="muted">—</p>
         </div>
+        <div class="agent-caps">
+          <strong>事件语义</strong>
+          <p class="muted">
+            {{
+              [
+                skill.consumes_events?.length ? `consumes: ${skill.consumes_events.join(", ")}` : null,
+                skill.emits_events?.length ? `emits: ${skill.emits_events.join(", ")}` : null,
+                skill.retryable ? "retryable" : null,
+                skill.timeout_seconds != null ? `timeout=${skill.timeout_seconds}s` : null,
+              ].filter(Boolean).join(" · ") || "—"
+            }}
+          </p>
+        </div>
       </article>
     </div>
 

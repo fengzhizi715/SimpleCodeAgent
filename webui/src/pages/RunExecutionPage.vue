@@ -112,18 +112,74 @@
       <JsonBlock :data="v3Report" />
     </section>
 
-    <section class="panel" v-if="v3ActiveTab === 'trigger' && v3TriggerExecutionNodes.length">
+    <section class="panel" v-if="v3ActiveTab === 'trigger' && v3TriggerRules.length">
+      <h3>Trigger Rules</h3>
+      <div v-if="v3TriggerRules.length" class="v3-trigger-rules-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>rule</th>
+              <th>target</th>
+              <th>enabled</th>
+              <th>hit count</th>
+              <th>conditions / governance</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rule in v3TriggerRules" :key="rule.rule_id">
+              <td>{{ rule.rule_id }}</td>
+              <td>{{ rule.target_skill_name || "—" }}</td>
+              <td>
+                <span class="badge" :class="isTriggerRuleEnabled(rule.rule_id) ? 'badge-enabled' : 'badge-disabled'">
+                  {{ isTriggerRuleEnabled(rule.rule_id) ? "enabled" : "disabled" }}
+                </span>
+              </td>
+              <td>
+                {{
+                  [
+                    `${triggerRuleStats[rule.rule_id]?.executed || 0} executed`,
+                    `${triggerRuleStats[rule.rule_id]?.skipped || 0} skipped`,
+                  ].join(" / ")
+                }}
+              </td>
+              <td>
+                {{
+                  [
+                    Array.isArray(rule.conditions) && rule.conditions.length ? `conditions=${rule.conditions.length}` : null,
+                    rule.cooldown_seconds != null ? `cooldown=${rule.cooldown_seconds}s` : null,
+                    rule.max_trigger_count_per_run != null ? `max_count=${rule.max_trigger_count_per_run}` : null,
+                  ].filter(Boolean).join(" · ") || "—"
+                }}
+              </td>
+              <td>
+                <button class="btn-secondary btn-sm" @click="toggleTriggerRule(rule.rule_id)">
+                  {{ isTriggerRuleEnabled(rule.rule_id) ? "临时禁用" : "重新启用" }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted" style="margin-top: 10px">
+          当前页中的启停仅影响本页展示与调试视图，不会回写历史运行记录。
+        </p>
+      </div>
+
+      <h3 style="margin-top: 18px">Trigger Follow-ups</h3>
+    </section>
+
+    <section class="panel" v-if="v3ActiveTab === 'trigger' && filteredTriggerExecutionNodes.length">
       <h3>Trigger Follow-ups</h3>
       <div class="v3-trigger-section">
         <div class="v3-layer-head">
           <div>
             <p class="muted">事件触发后的补偿动作、修复动作和再验证动作会集中显示在这里。</p>
           </div>
-          <span class="badge">{{ v3TriggerExecutionNodes.length }} nodes</span>
+          <span class="badge">{{ filteredTriggerExecutionNodes.length }} nodes</span>
         </div>
         <div class="planning-node-list v3-layer-grid">
           <article
-            v-for="node in v3TriggerExecutionNodes"
+            v-for="node in filteredTriggerExecutionNodes"
             :key="node.node_id"
             class="planning-node-card"
           >
@@ -152,7 +208,7 @@
       </div>
     </section>
 
-    <section class="panel" v-if="v3ActiveTab === 'trigger' && v3TriggerDiagnostics.length">
+    <section class="panel" v-if="v3ActiveTab === 'trigger' && filteredTriggerDiagnostics.length">
       <h3>Trigger Diagnostics</h3>
       <table>
         <thead>
@@ -164,7 +220,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="item in v3TriggerDiagnostics" :key="`${item.trigger_rule_id}-${item.source_event_id || item.parent_node_id || ''}`">
+          <tr v-for="item in filteredTriggerDiagnostics" :key="`${item.trigger_rule_id}-${item.source_event_id || item.parent_node_id || ''}`">
             <td>{{ item.trigger_rule_id }}</td>
             <td>{{ item.status }}</td>
             <td>{{ item.target_skill_name }}</td>
@@ -630,6 +686,7 @@ const v3Report = ref(null);
 const v3Planning = ref(null);
 const v3TriggerDiagnostics = ref([]);
 const v3ExecutionNodes = ref([]);
+const v3TriggerRuleStates = ref({});
 const eventChain = ref(null);
 const eventChainView = ref("");
 const chainLoading = ref(false);
@@ -647,6 +704,37 @@ const v3GraphExecutionNodes = computed(() => {
 });
 const v3TriggerExecutionNodes = computed(() => {
   return v3ExecutionNodes.value.filter((node) => String(node?.kind || "") === "trigger");
+});
+const v3TriggerRules = computed(() => {
+  return Array.isArray(v3Planning.value?.trigger_rules) ? v3Planning.value.trigger_rules : [];
+});
+const triggerRuleStats = computed(() => {
+  return v3TriggerDiagnostics.value.reduce((acc, item) => {
+    const key = String(item?.trigger_rule_id || "");
+    if (!key) {
+      return acc;
+    }
+    if (!acc[key]) {
+      acc[key] = { executed: 0, skipped: 0 };
+    }
+    if (item.status === "executed") {
+      acc[key].executed += 1;
+    } else if (item.status === "skipped") {
+      acc[key].skipped += 1;
+    }
+    return acc;
+  }, {});
+});
+const filteredTriggerExecutionNodes = computed(() => {
+  return v3TriggerExecutionNodes.value.filter((node) => isTriggerRuleEnabled(node.trigger_rule_id));
+});
+const filteredTriggerDiagnostics = computed(() => {
+  return v3TriggerDiagnostics.value.filter((item) => {
+    if (item.trigger_rule_id === "__governance__") {
+      return true;
+    }
+    return isTriggerRuleEnabled(item.trigger_rule_id);
+  });
 });
 const executionNodeIndexMap = computed(() => {
   return v3ExecutionNodes.value.reduce((acc, node, index) => {
@@ -914,6 +1002,22 @@ watch(
   { flush: "post" }
 );
 
+watch(
+  () => v3TriggerRules.value,
+  (rules) => {
+    const nextStates = {};
+    for (const rule of rules) {
+      if (!rule?.rule_id) {
+        continue;
+      }
+      const explicit = v3TriggerRuleStates.value[rule.rule_id];
+      nextStates[rule.rule_id] = typeof explicit === "boolean" ? explicit : rule.enabled !== false;
+    }
+    v3TriggerRuleStates.value = nextStates;
+  },
+  { immediate: true, deep: true }
+);
+
 async function fetchReplay() {
   try {
     error.value = "";
@@ -1000,6 +1104,24 @@ function resetEventChainPanel() {
   chainFocusedEventId.value = "";
   replayLoading.value = false;
   replayResult.value = null;
+}
+
+function isTriggerRuleEnabled(ruleId) {
+  if (!ruleId) {
+    return true;
+  }
+  const current = v3TriggerRuleStates.value[ruleId];
+  return typeof current === "boolean" ? current : true;
+}
+
+function toggleTriggerRule(ruleId) {
+  if (!ruleId) {
+    return;
+  }
+  v3TriggerRuleStates.value = {
+    ...v3TriggerRuleStates.value,
+    [ruleId]: !isTriggerRuleEnabled(ruleId),
+  };
 }
 
 async function inspectEventChain(item) {
@@ -1282,6 +1404,13 @@ onBeforeUnmount(() => {
 
 .v3-trigger-section {
   margin-top: 16px;
+}
+
+.v3-trigger-rules-panel {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.78);
+  padding: 14px;
 }
 
 .event-chain-layout {

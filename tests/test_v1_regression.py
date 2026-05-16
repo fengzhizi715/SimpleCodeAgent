@@ -11,12 +11,17 @@ from fastapi import HTTPException
 
 from app.api.routes.agent import AgentRunRequest, run_agent
 from app.api.routes.debug import (
+    TriggerRuleToggleRequest,
+    get_trigger_hit_counts,
     get_root_trace_view,
     get_session_trace_view,
     get_trace_view,
     get_v3_event_chain,
     get_v3_event_chain_view,
+    list_trigger_rule_states,
     replay_v3_event_chain,
+    reset_trigger_rule,
+    toggle_trigger_rule,
 )
 from app.api.routes.debug import (
     RagDeleteSourceRequest,
@@ -52,6 +57,24 @@ from app.core.exceptions import RagIdValidationError
 from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids
 from app.v1.rag.retriever import DocumentRetriever
 from app.v1.rag.vector_store import ChromaVectorStore, normalize_rag_id_value
+from app.v3.contracts.planning_contracts import PlanningResult
+
+
+class _FakeTriggerRuleStateStore:
+    def __init__(self, initial: dict[str, bool] | None = None) -> None:
+        self._state = dict(initial or {})
+
+    def get_all(self) -> dict[str, bool]:
+        return dict(self._state)
+
+    def set_enabled(self, rule_id: str, enabled: bool) -> None:
+        self._state[rule_id] = enabled
+
+    def reset(self, rule_id: str | None = None) -> None:
+        if rule_id is None:
+            self._state.clear()
+            return
+        self._state.pop(rule_id, None)
 
 
 class StaticProvider(LLMProvider):
@@ -736,6 +759,101 @@ def test_debug_v3_event_chain_replay_returns_result(monkeypatch, tmp_path: Path)
     assert response.metadata["target_skill_name"] == "recording"
     assert response.summary == "replayed"
     assert any(event["event_type"] == "skill_finished" for event in response.events)
+
+
+def test_debug_trigger_hit_counts_by_rule_include_run_ids_and_exclude_governance(monkeypatch, tmp_path: Path) -> None:
+    db = SQLiteDB(tmp_path / "trigger-hit-counts.sqlite3")
+    monkeypatch.setattr("app.api.trigger_hit_counter.SQLiteDB", lambda: db)
+
+    from app.api.trigger_hit_counter import TriggerHitCounter
+
+    counter = TriggerHitCounter()
+    counter.increment("run-1", "rule-a", "executed")
+    counter.increment("run-2", "rule-a", "skipped")
+    counter.increment("run-2", "__governance__", "skipped")
+    monkeypatch.setattr("app.api.routes.debug.get_trigger_hit_counter", lambda: counter)
+
+    response = get_trigger_hit_counts(rule_id="rule-a")
+
+    assert response.rule_id == "rule-a"
+    assert response.total_executed == 1
+    assert response.total_skipped == 1
+    assert {item.run_id for item in response.items} == {"run-1", "run-2"}
+    assert all(item.rule_id == "rule-a" for item in response.items)
+
+
+def test_run_agent_v3_passes_trigger_rule_state_overrides(monkeypatch, tmp_path: Path) -> None:
+    store = _FakeTriggerRuleStateStore({"rule-a": False})
+    captured: dict[str, object] = {}
+
+    async def fake_run_v3(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "report": None,
+            "planning": PlanningResult.model_validate(
+                {
+                    "goal_kind": "testing",
+                    "repo_profile": "python_pytest",
+                    "template_name": "default",
+                    "template_reason": "demo",
+                    "planner_notes": [],
+                    "candidate_test_targets": [],
+                    "candidate_test_commands": [],
+                    "rag_ids": [],
+                    "coding_execution_mode": "internal",
+                    "recovery_strategy": "fix_and_retest",
+                    "graph": {
+                        "graph_id": "graph-1",
+                        "run_id": "run-1",
+                        "nodes": [
+                            {
+                                "node_id": "test_runner",
+                                "skill_name": "test_runner",
+                                "dependencies": [],
+                                "input_payload": {},
+                            }
+                        ],
+                    },
+                    "trigger_rules": [],
+                }
+            ),
+            "inspection": None,
+            "events": [],
+            "trace": [],
+        }
+
+    monkeypatch.setattr("app.api.routes.agent.get_trigger_rule_state_store", lambda: store)
+    monkeypatch.setattr(
+        "app.api.routes.agent.get_trigger_hit_counter",
+        lambda: type("Counter", (), {"increment": staticmethod(lambda *args: None)})(),
+    )
+    monkeypatch.setattr("app.api.routes.agent.run_v3", fake_run_v3)
+
+    response = run_agent(
+        AgentRunRequest(
+            version="v3",
+            task="run tests",
+            workdir=str(tmp_path),
+            plan_only=True,
+        )
+    )
+
+    assert response.version == "v3"
+    assert captured["trigger_rule_enabled_overrides"] == {"rule-a": False}
+
+
+def test_debug_trigger_rule_state_endpoints_round_trip(monkeypatch) -> None:
+    store = _FakeTriggerRuleStateStore()
+    monkeypatch.setattr("app.api.routes.debug.get_trigger_rule_state_store", lambda: store)
+
+    toggle_trigger_rule("rule-a", TriggerRuleToggleRequest(enabled=False))
+    response = list_trigger_rule_states()
+    assert response.rules[0].rule_id == "rule-a"
+    assert response.rules[0].enabled is False
+
+    reset = reset_trigger_rule("rule-a")
+    assert reset.enabled is True
+    assert list_trigger_rule_states().rules == []
 
 
 def test_v1_cli_basic_path_still_works(monkeypatch, tmp_path: Path) -> None:

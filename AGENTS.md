@@ -202,6 +202,7 @@
 仓库级目标只要求：
 
 - `v3` 作为独立实现继续演进
+- `v3` 可以在保持结构化运行时边界不变的前提下，继续沿 event-driven automation -> controlled autonomy enhancement 方向演进
 - 不直接破坏 `v1` / `v2` 的稳定性与课程边界
 - 具体实现规则、模块职责和演进约束以下级文档为准：
   - `app/v3/AGENTS.md`

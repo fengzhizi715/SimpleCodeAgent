@@ -11,6 +11,7 @@ from app.contracts.trace import TraceEvent
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v3 import build_default_skill_registry
+from app.v3.autonomy.autonomy_runtime import AutonomyRuntime
 from app.v3.contracts.agent_message_contracts import AgentMessage
 from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport, TriggerDiagnostic
 from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph
@@ -21,11 +22,14 @@ from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_builder import GraphBuilder
 from app.v3.graph.graph_validator import GraphValidator
+from app.v3.governance.circuit_breaker import CircuitBreakerManager
+from app.v3.governance.execution_budget import ExecutionBudgetState
+from app.v3.governance.propagation_limit import PropagationState
 from app.v3.runtime.execution_kernel import ExecutionKernel
 from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.trace import attach_trace_collector
-from app.v3.trigger.trigger_engine import TriggerEngine
+from app.v3.trigger.trigger_engine import HitCallback, TriggerEngine
 from app.v3.trigger.trigger_registry import TriggerRegistry
 from app.v3.skills.registry import SkillRegistry
 
@@ -48,6 +52,15 @@ async def run_v3(
     plan_only: bool = False,
     max_triggers_per_run: int = 20,
     max_trigger_depth: int = 5,
+    hit_callback: HitCallback | None = None,
+    trigger_rule_enabled_overrides: dict[str, bool] | None = None,
+    max_steps: int = 100,
+    max_events: int = 200,
+    max_runtime_seconds: float = 600.0,
+    max_autonomy_tasks_per_run: int = 10,
+    max_consecutive_rule_hits: int = 5,
+    circuit_breaker_threshold: int = 3,
+    autonomy_enabled: bool = False,
 ) -> dict[str, Any]:
     """Run a V3 goal or graph and return serializable output."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
@@ -57,14 +70,36 @@ async def run_v3(
     trigger_execution_nodes: list[ExecutionNode] = []
     trigger_diagnostics: list[TriggerDiagnostic] = []
     agent_messages: list[AgentMessage] = []
+    budget = ExecutionBudgetState(
+        run_id="",
+        max_steps=max_steps,
+        max_events=max_events,
+        max_trigger_count=max_triggers_per_run,
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    propagation = PropagationState(
+        run_id="",
+        max_depth=max_trigger_depth,
+        max_autonomy_tasks_per_run=max_autonomy_tasks_per_run,
+        max_consecutive_rule_hits=max_consecutive_rule_hits,
+    )
+    circuit_breaker = CircuitBreakerManager(
+        default_failure_threshold=circuit_breaker_threshold,
+    )
     skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
     skill_executor = SkillExecutor(skill_registry)
-    graph_executor = GraphExecutor(skill_executor, event_bus=event_bus, event_store=event_store)
+    graph_executor = GraphExecutor(
+        skill_executor,
+        event_bus=event_bus,
+        event_store=event_store,
+        budget=budget,
+    )
     kernel = ExecutionKernel(
         graph_executor=graph_executor,
         validator=GraphValidator(skill_registry=skill_registry),
         event_bus=event_bus,
         event_store=event_store,
+        budget=budget,
     )
 
     resolved_graph = graph
@@ -88,11 +123,21 @@ async def run_v3(
 
     if resolved_graph is None:
         raise ValueError("未能解析可执行的 graph。")
+    budget.run_id = resolved_graph.run_id
+    propagation.run_id = resolved_graph.run_id
     if planning_result is not None:
         inspection = build_graph_inspection(planning_result.graph, skill_registry=skill_registry)
     elif graph is not None:
         inspection = build_graph_inspection(graph, skill_registry=skill_registry)
 
+    effective_trigger_rules = _apply_trigger_rule_enabled_overrides(
+        trigger_rules or planned_trigger_rules,
+        trigger_rule_enabled_overrides,
+    )
+    if planning_result is not None:
+        planning_result = planning_result.model_copy(
+            update={"trigger_rules": list(effective_trigger_rules)}
+        )
     if plan_only:
         return {
             "report": None,
@@ -102,7 +147,6 @@ async def run_v3(
             "trace": [],
         }
 
-    effective_trigger_rules = list(trigger_rules or planned_trigger_rules)
     _attach_trigger_engine(
         event_bus=event_bus,
         event_store=event_store,
@@ -113,7 +157,24 @@ async def run_v3(
         skill_executor=skill_executor,
         max_triggers_per_run=max_triggers_per_run,
         max_trigger_depth=max_trigger_depth,
+        hit_callback=hit_callback,
+        budget=budget,
+        propagation=propagation,
+        circuit_breaker=circuit_breaker,
     )
+    autonomy_runtime: AutonomyRuntime | None = None
+    if autonomy_enabled:
+        autonomy_runtime = _attach_autonomy_runtime(
+            event_bus=event_bus,
+            event_store=event_store,
+            execution_nodes=trigger_execution_nodes,
+            messages=agent_messages,
+            skill_executor=skill_executor,
+            budget=budget,
+            propagation=propagation,
+            circuit_breaker=circuit_breaker,
+            workspace_root=resolved_workdir,
+        )
 
     context = await kernel.run_graph(
         resolved_graph,
@@ -121,7 +182,7 @@ async def run_v3(
             "workspace_root": resolved_workdir,
             "planning": (
                 {
-                    **planning_result.model_dump(mode="json", exclude={"graph", "trigger_rules"}),
+                    **planning_result.model_dump(mode="json", exclude={"graph"}),
                     "execution_layers": inspection.execution_layers if inspection is not None else [],
                 }
                 if planning_result is not None
@@ -145,6 +206,16 @@ async def run_v3(
         "report": report,
         "planning": planning_result,
         "inspection": inspection,
+        "autonomy": (
+            {
+                "requests": [request.model_dump(mode="json") for request in autonomy_runtime.requests],
+                "decisions": [decision.model_dump(mode="json") for decision in autonomy_runtime.decisions],
+                "audit_records": [record.model_dump(mode="json") for record in autonomy_runtime.audit_records],
+                "decision_traces": [trace.model_dump(mode="json") for trace in autonomy_runtime.decision_traces],
+            }
+            if autonomy_runtime is not None
+            else None
+        ),
         "events": [event.model_dump(mode="json") for event in event_store.list()] if include_events else [],
         "trace": [event.model_dump(mode="json") for event in trace_events] if include_trace else [],
     }
@@ -387,6 +458,10 @@ def _attach_trigger_engine(
     skill_executor: SkillExecutor,
     max_triggers_per_run: int = 20,
     max_trigger_depth: int = 5,
+    hit_callback: HitCallback | None = None,
+    budget: ExecutionBudgetState | None = None,
+    propagation: PropagationState | None = None,
+    circuit_breaker: CircuitBreakerManager | None = None,
 ) -> None:
     """Attach a trigger engine to the event bus for configured rules."""
     if not trigger_rules:
@@ -404,9 +479,82 @@ def _attach_trigger_engine(
         messages=messages,
         max_triggers_per_run=max_triggers_per_run,
         max_trigger_depth=max_trigger_depth,
+        hit_callback=hit_callback,
+        budget=budget,
+        propagation=propagation,
+        circuit_breaker=circuit_breaker,
     )
     for event_type in {rule.event_type for rule in trigger_rules if rule.enabled}:
         event_bus.subscribe(event_type, trigger_engine.handle_event)
+
+
+def _attach_autonomy_runtime(
+    *,
+    event_bus: EventBus,
+    event_store: EventStore,
+    execution_nodes: list[ExecutionNode],
+    messages: list[AgentMessage],
+    skill_executor: SkillExecutor,
+    budget: ExecutionBudgetState | None,
+    propagation: PropagationState | None,
+    circuit_breaker: CircuitBreakerManager | None,
+    workspace_root: str,
+) -> AutonomyRuntime:
+    """Attach a minimal controlled-autonomy policy to the event bus."""
+    autonomy_runtime = AutonomyRuntime(
+        skill_executor=skill_executor,
+        event_bus=event_bus,
+        event_store=event_store,
+        execution_nodes=execution_nodes,
+        messages=messages,
+        budget=budget,
+        propagation=propagation,
+        circuit_breaker=circuit_breaker,
+    )
+
+    async def handle_code_updated(event) -> None:
+        payload = dict(event.payload)
+        changed_files = payload.get("changed_files", [])
+        if not changed_files:
+            return
+        request = await autonomy_runtime.create_follow_up_request(
+            run_id=event.run_id,
+            target_skill_name="test_runner",
+            reason="code_updated_follow_up_verification",
+            source_event_id=event.event_id,
+            payload={
+                "workspace_root": workspace_root,
+                "workdir": workspace_root,
+                "changed_files": changed_files,
+            },
+            max_iterations=1,
+            stop_condition="verification_completed",
+        )
+        decision = await autonomy_runtime.evaluate_request(request)
+        if decision.approved:
+            await autonomy_runtime.execute_approved_request(request, decision)
+
+    event_bus.subscribe("code_updated", handle_code_updated)
+    return autonomy_runtime
+
+
+def _apply_trigger_rule_enabled_overrides(
+    trigger_rules: list[TriggerRule] | None,
+    overrides: dict[str, bool] | None,
+) -> list[TriggerRule]:
+    """Apply external enable/disable overrides without mutating source rules."""
+    if not trigger_rules:
+        return []
+    if not overrides:
+        return list(trigger_rules)
+    effective_rules: list[TriggerRule] = []
+    for rule in trigger_rules:
+        override_enabled = overrides.get(rule.rule_id)
+        if override_enabled is None:
+            effective_rules.append(rule)
+            continue
+        effective_rules.append(rule.model_copy(update={"enabled": override_enabled}))
+    return effective_rules
 
 
 def _compute_execution_layers(dependency_map: dict[str, list[str]]) -> list[list[str]]:

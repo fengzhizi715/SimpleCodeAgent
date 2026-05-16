@@ -1,19 +1,31 @@
-"""Trigger engine for V3."""
+"""Trigger engine for V3 with V3.2 governance integration."""
 
 from __future__ import annotations
 
-import time
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from app.v3.contracts.agent_message_contracts import AgentMessage, AgentMessageType
+from app.v3.contracts.audit_contracts import StopReason
 from app.v3.contracts.execution_contracts import ExecutionNode, TriggerDiagnostic
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.skill_contracts import SkillInput
-from app.v3.contracts.trigger_contracts import ConditionOperator, ConditionSpec, TriggerRule
+from app.v3.contracts.trigger_contracts import TriggerRule
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
+from app.v3.governance.circuit_breaker import CircuitBreakerManager
+from app.v3.governance.execution_budget import ExecutionBudgetState
+from app.v3.governance.propagation_limit import PropagationState
+from app.v3.governance.trigger_guard import TriggerGuard
 from app.v3.runtime.skill_executor import SkillExecutor
+from app.v3.trigger.condition_evaluator import ConditionEvaluator
+from app.v3.trigger.trigger_policy import build_governance_metadata
 from app.v3.trigger.trigger_registry import TriggerRegistry
+
+if TYPE_CHECKING:
+    from app.v3.audit.audit_store import AuditLogStore
+
+HitCallback = Callable[[str, str, str], None]
 
 _TRIGGER_DEPTH_KEY = "__trigger_depth__"
 
@@ -33,6 +45,12 @@ class TriggerEngine:
         messages: list[AgentMessage] | None = None,
         max_triggers_per_run: int = 20,
         max_trigger_depth: int = 5,
+        trigger_guard: TriggerGuard | None = None,
+        hit_callback: HitCallback | None = None,
+        budget: ExecutionBudgetState | None = None,
+        propagation: PropagationState | None = None,
+        circuit_breaker: CircuitBreakerManager | None = None,
+        audit_store: AuditLogStore | None = None,
     ) -> None:
         self.trigger_registry = trigger_registry
         self.skill_executor = skill_executor
@@ -41,18 +59,39 @@ class TriggerEngine:
         self.execution_nodes = execution_nodes
         self.diagnostics = diagnostics
         self.messages = messages
+        self._hit_callback = hit_callback
         self._fired_rule_runs: set[tuple[str, str]] = set()
         self._dedupe_keys_seen: set[tuple[str, str]] = set()
-        self._cooldown_windows: dict[tuple[str, str], float] = {}
         self._total_fired_count: dict[str, int] = {}
         self._rule_fired_count: dict[tuple[str, str], int] = {}
         self._max_triggers_per_run = max_triggers_per_run
         self._max_trigger_depth = max_trigger_depth
+        self._guard = trigger_guard or TriggerGuard(condition_evaluator=ConditionEvaluator())
+        self._budget = budget
+        self._propagation = propagation
+        self._circuit_breaker = circuit_breaker or CircuitBreakerManager()
+        self.audit_store = audit_store
+        self._stop_reasons: list[StopReason] = []
+
+    @property
+    def stop_reasons(self) -> list[StopReason]:
+        return list(self._stop_reasons)
 
     async def handle_event(self, event: V3Event) -> None:
         """Handle one published event."""
         run_id = event.run_id
         current_depth = self._get_trigger_depth(event)
+
+        if self._propagation is not None:
+            self._propagation.set_depth(current_depth)
+            if self._propagation.depth_exceeded:
+                self._record_diagnostic_for_event(
+                    event=event,
+                    status="skipped",
+                    skip_reason="propagation_depth_exceeded",
+                    metadata={"depth": current_depth, "max_depth": self._propagation.max_depth},
+                )
+                return
 
         if current_depth >= self._max_trigger_depth:
             self._record_diagnostic_for_event(
@@ -60,6 +99,24 @@ class TriggerEngine:
                 status="skipped",
                 skip_reason="max_depth_exceeded",
                 metadata={"depth": current_depth, "max_depth": self._max_trigger_depth},
+            )
+            return
+
+        if self._budget is not None and self._budget.triggers_exhausted:
+            self._record_diagnostic_for_event(
+                event=event,
+                status="skipped",
+                skip_reason="budget_triggers_exhausted",
+                metadata=self._budget.to_dict(),
+            )
+            return
+
+        if self._budget is not None and self._budget.runtime_exhausted:
+            self._record_diagnostic_for_event(
+                event=event,
+                status="skipped",
+                skip_reason="budget_runtime_exhausted",
+                metadata=self._budget.to_dict(),
             )
             return
 
@@ -78,8 +135,39 @@ class TriggerEngine:
             if self._total_fired_count.get(run_id, 0) >= self._max_triggers_per_run:
                 break
 
+            if self._budget is not None and self._budget.triggers_exhausted:
+                break
+
+            if self._circuit_breaker.is_open(rule.rule_id):
+                self._record_diagnostic(
+                    rule=rule,
+                    event=event,
+                    status="skipped",
+                    metadata={
+                        "skip_reason": "circuit_breaker_open",
+                        "circuit_state": self._circuit_breaker.get_state(rule.rule_id),
+                    },
+                )
+                continue
+
+            if self._propagation is not None:
+                consecutive_ok = self._propagation.record_rule_hit(rule.rule_id)
+                if not consecutive_ok:
+                    self._record_diagnostic(
+                        rule=rule,
+                        event=event,
+                        status="skipped",
+                        metadata={
+                            "skip_reason": "max_consecutive_rule_hits",
+                            "consecutive_hits": self._propagation.get_consecutive_hits(rule.rule_id),
+                        },
+                    )
+                    continue
+
             skip_metadata = self._get_skip_metadata(rule, event)
             if skip_metadata is not None:
+                if self._propagation is not None:
+                    self._propagation.record_rule_miss(rule.rule_id)
                 self._record_diagnostic(
                     rule=rule,
                     event=event,
@@ -95,6 +183,13 @@ class TriggerEngine:
                             "trigger_rule_id": rule.rule_id,
                             "source_event_type": event.event_type,
                             **skip_metadata,
+                        },
+                        metadata={
+                            "governance_decision": {
+                                **skip_metadata,
+                                "rule_id": rule.rule_id,
+                                "event_type": event.event_type,
+                            },
                         },
                     )
                 )
@@ -131,8 +226,15 @@ class TriggerEngine:
                         "input_payload": payload,
                         "trigger_governance": governance_metadata,
                     },
+                    metadata={
+                        "governance_decision": governance_metadata,
+                    },
                 )
             )
+
+            if self._budget is not None:
+                self._budget.consume_trigger()
+
             output = await self.skill_executor.execute(
                 rule.target_skill_name,
                 SkillInput(
@@ -143,6 +245,12 @@ class TriggerEngine:
             )
             self._total_fired_count[event.run_id] = self._total_fired_count.get(event.run_id, 0) + 1
             self._mark_fired(rule, event)
+
+            if output.success:
+                self._circuit_breaker.record_success(rule.rule_id)
+            else:
+                self._circuit_breaker.record_failure(rule.rule_id, output.error)
+
             self._record_diagnostic(
                 rule=rule,
                 event=event,
@@ -192,6 +300,9 @@ class TriggerEngine:
                         "data": output.data,
                         "trigger_governance": governance_metadata,
                     },
+                    metadata={
+                        "governance_decision": governance_metadata,
+                    },
                 )
             )
 
@@ -221,87 +332,35 @@ class TriggerEngine:
         return resolved
 
     def _get_skip_metadata(self, rule: TriggerRule, event: V3Event) -> dict[str, object] | None:
-        if not self._conditions_match(rule.conditions, event):
-            metadata = self._build_governance_metadata(rule, event)
-            metadata["skip_reason"] = "conditions_not_met"
-            return metadata
-        if rule.once_per_run and (event.run_id, rule.rule_id) in self._fired_rule_runs:
-            metadata = self._build_governance_metadata(rule, event)
-            metadata["skip_reason"] = "once_per_run"
-            return metadata
-        current_rule_count = self._rule_fired_count.get((event.run_id, rule.rule_id), 0)
-        if rule.max_trigger_count_per_run is not None and current_rule_count >= rule.max_trigger_count_per_run:
-            metadata = self._build_governance_metadata(rule, event)
-            metadata["skip_reason"] = "max_trigger_count_per_run"
-            metadata["rule_count"] = current_rule_count
-            metadata["max_trigger_count_per_run"] = rule.max_trigger_count_per_run
-            return metadata
-        if self._is_in_cooldown(rule, event):
-            metadata = self._build_governance_metadata(rule, event)
-            metadata["skip_reason"] = "cooldown"
-            return metadata
-        if not rule.suppress_repeats:
-            return None
         dedupe_key = self._build_dedupe_key(rule, event)
-        if dedupe_key is None:
-            dedupe_key = f"source_event:{event.event_id}"
-        if (event.run_id, dedupe_key) in self._dedupe_keys_seen:
-            metadata = self._build_governance_metadata(rule, event)
-            metadata["skip_reason"] = "dedupe"
-            return metadata
-        return None
+        cooldown_key = self._build_cooldown_key(rule, event)
+        skip_reason = self._guard.should_skip(
+            rule=rule,
+            event=event,
+            fired_rule_runs=self._fired_rule_runs,
+            dedupe_keys_seen=self._dedupe_keys_seen,
+            rule_fired_count=self._rule_fired_count,
+            dedupe_key=dedupe_key,
+            cooldown_key=cooldown_key,
+        )
+        if skip_reason is None:
+            return None
+        metadata = self._build_governance_metadata(rule, event)
+        metadata["skip_reason"] = skip_reason
+        if skip_reason == "max_trigger_count_per_run":
+            metadata["rule_count"] = self._rule_fired_count.get((event.run_id, rule.rule_id), 0)
+        return metadata
 
     def _mark_fired(self, rule: TriggerRule, event: V3Event) -> None:
-        if rule.once_per_run:
-            self._fired_rule_runs.add((event.run_id, rule.rule_id))
-        self._rule_fired_count[(event.run_id, rule.rule_id)] = self._rule_fired_count.get(
-            (event.run_id, rule.rule_id),
-            0,
-        ) + 1
-        self._mark_cooldown(rule, event)
-        if rule.suppress_repeats:
-            dedupe_key = self._build_dedupe_key(rule, event)
-            if dedupe_key is None:
-                dedupe_key = f"source_event:{event.event_id}"
-            self._dedupe_keys_seen.add((event.run_id, dedupe_key))
-
-    def _conditions_match(self, conditions: list[ConditionSpec], event: V3Event) -> bool:
-        for condition in conditions:
-            value = self._resolve_condition_field(condition.field, event)
-            if condition.op == ConditionOperator.EXISTS:
-                if value is None:
-                    return False
-                continue
-            if condition.op == ConditionOperator.EQ:
-                if value != condition.value:
-                    return False
-                continue
-            if condition.op == ConditionOperator.IN:
-                if not isinstance(condition.value, (list, tuple, set)):
-                    return False
-                if value not in condition.value:
-                    return False
-                continue
-            return False
-        return True
-
-    def _resolve_condition_field(self, field: str, event: V3Event) -> Any:
-        if field == "event.run_id":
-            return event.run_id
-        if field == "event.event_type":
-            return event.event_type
-        if field == "event.source":
-            return event.source
-        if field == "event.correlation_id":
-            return event.correlation_id
-        if field.startswith("event.payload."):
-            current: Any = event.payload
-            for part in field.removeprefix("event.payload.").split("."):
-                if not isinstance(current, dict):
-                    return None
-                current = current.get(part)
-            return current
-        return None
+        self._guard.mark_fired(
+            rule=rule,
+            event=event,
+            fired_rule_runs=self._fired_rule_runs,
+            dedupe_keys_seen=self._dedupe_keys_seen,
+            dedupe_key=self._build_dedupe_key(rule, event),
+            cooldown_key=self._build_cooldown_key(rule, event),
+            rule_fired_count=self._rule_fired_count,
+        )
 
     def _build_dedupe_key(self, rule: TriggerRule, event: V3Event) -> str | None:
         template = rule.dedupe_key_template
@@ -317,25 +376,6 @@ class TriggerEngine:
         resolved = self._resolve_template_value(template, event)
         return None if resolved is None else f"{rule.rule_id}:{resolved}"
 
-    def _is_in_cooldown(self, rule: TriggerRule, event: V3Event) -> bool:
-        if rule.cooldown_seconds is None or rule.cooldown_seconds <= 0:
-            return False
-        cooldown_key = self._build_cooldown_key(rule, event)
-        if cooldown_key is None:
-            cooldown_key = f"{rule.rule_id}:event_type:{event.event_type}"
-        last_fired_at = self._cooldown_windows.get((event.run_id, cooldown_key))
-        if last_fired_at is None:
-            return False
-        return (time.monotonic() - last_fired_at) < rule.cooldown_seconds
-
-    def _mark_cooldown(self, rule: TriggerRule, event: V3Event) -> None:
-        if rule.cooldown_seconds is None or rule.cooldown_seconds <= 0:
-            return
-        cooldown_key = self._build_cooldown_key(rule, event)
-        if cooldown_key is None:
-            cooldown_key = f"{rule.rule_id}:event_type:{event.event_type}"
-        self._cooldown_windows[(event.run_id, cooldown_key)] = time.monotonic()
-
     def _resolve_template_value(self, value: Any, event: V3Event) -> Any:
         if isinstance(value, str) and value.startswith("event.payload."):
             payload_key = value.removeprefix("event.payload.")
@@ -349,17 +389,13 @@ class TriggerEngine:
         return value
 
     def _build_governance_metadata(self, rule: TriggerRule, event: V3Event) -> dict[str, object]:
-        return {
-            "priority": rule.priority,
-            "conditions": [condition.model_dump(mode="json") for condition in rule.conditions],
-            "once_per_run": rule.once_per_run,
-            "suppress_repeats": rule.suppress_repeats,
-            "dedupe_key": self._build_dedupe_key(rule, event),
-            "cooldown_key": self._build_cooldown_key(rule, event),
-            "cooldown_seconds": rule.cooldown_seconds,
-            "rule_count": self._rule_fired_count.get((event.run_id, rule.rule_id), 0),
-            "max_trigger_count_per_run": rule.max_trigger_count_per_run,
-        }
+        return build_governance_metadata(
+            rule=rule,
+            event=event,
+            dedupe_key=self._build_dedupe_key(rule, event),
+            cooldown_key=self._build_cooldown_key(rule, event),
+            rule_count=self._rule_fired_count.get((event.run_id, rule.rule_id), 0),
+        )
 
     def _record_execution_node(
         self,
@@ -418,6 +454,20 @@ class TriggerEngine:
                 details=dict(metadata),
             )
         )
+        if status == "skipped":
+            skip_reason = str(metadata.get("skip_reason")) if metadata.get("skip_reason") is not None else "unknown"
+            stop_reason = StopReason(
+                run_id=event.run_id,
+                reason_type=skip_reason,
+                actor="trigger_engine",
+                summary=f"Trigger rule skipped: {skip_reason}",
+                details=dict(metadata),
+            )
+            if self.audit_store is not None:
+                self.audit_store.add_stop_reason(stop_reason)
+            self._stop_reasons.append(stop_reason)
+        if self._hit_callback is not None:
+            self._hit_callback(event.run_id, rule.rule_id, status)
 
     async def _publish(self, event: V3Event) -> None:
         payload = dict(event.payload)
@@ -430,6 +480,8 @@ class TriggerEngine:
                 "execution_chain_id": event.execution_chain_id or event.parent_event_id or event.event_id,
             }
         )
+        if self._budget is not None and not self._budget.consume_event():
+            return
         if self.event_store is not None:
             self.event_store.append(event)
         if self.event_bus is not None:
@@ -466,3 +518,14 @@ class TriggerEngine:
                 details=dict(metadata or {}),
             )
         )
+        if status == "skipped" and skip_reason is not None:
+            stop_reason = StopReason(
+                run_id=event.run_id,
+                reason_type=skip_reason,
+                actor="trigger_engine",
+                summary=f"Trigger skipped: {skip_reason}",
+                details=dict(metadata or {}),
+            )
+            if self.audit_store is not None:
+                self.audit_store.add_stop_reason(stop_reason)
+            self._stop_reasons.append(stop_reason)

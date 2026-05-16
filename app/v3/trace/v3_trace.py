@@ -32,6 +32,8 @@ def attach_trace_collector(event_bus: EventBus) -> list[TraceEvent]:
         "skill_finished",
         "skill_failed",
         "trigger_skipped",
+        "test_started",
+        "test_passed",
         "test_failed",
         "code_updated",
     ]:

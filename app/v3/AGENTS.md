@@ -11,8 +11,13 @@
 - `app/v3/graph`
 - `app/v3/skills`
 - `app/v3/events`
+- `app/v3/governance`
+- `app/v3/replay`
 - `app/v3/trigger`
 - `app/v3/adapters`
+- `app/v3/autonomy`
+- `app/v3/audit`
+- `app/v3/scheduler`
 - `app/v3/runner.py`
 
 如果与仓库根目录 `AGENTS.md` 存在交叉：
@@ -84,6 +89,8 @@
 - 实现 Graph Executor 与 Execution Kernel
 - 引入 Event Bus / Event Store
 - 支持 Trigger Rule 与 Trigger Engine
+- 在保持结构化边界的前提下引入受控自治增强能力
+- 为自治链路补齐执行治理、审计与基础 replay 能力
 - 通过 adapter 复用稳定的 `v1` / `v2` 执行能力
 - 提升 graph execution、event flow 与 trigger chain 的可观测性
 - 支持 graph 节点失败后由 trigger 虚拟节点完成恢复，并在最终 report 中收敛状态
@@ -184,6 +191,30 @@ Trigger 是 `v3` 的重要能力，也是最容易失控的部分。
 - 不允许通过 trigger 在运行时动态改写原始 graph
 
 不要把“未来可能有用的自动化链路”提前塞进默认执行路径。
+
+---
+
+### 4.1 Governance 必须先于 Autonomy
+
+`v3` 后续即使引入 controlled autonomy，也必须保持：
+
+- 先提出自治请求
+- 再做治理判断
+- 最后才进入 skill 或 graph 执行
+
+允许：
+
+- 基于事件生成有限 follow-up task
+- 基于显式 policy 请求一次受控执行
+- 由 runtime 统一收敛 stop / pause / budget exhausted
+
+不允许：
+
+- Skill 绕过 runtime / governance 直接扩张执行
+- Trigger 或 autonomy policy 直接改写原始 graph
+- 先执行、后补治理
+
+自治增强的目标是让系统“有限地主动工作”，不是让 `v3` 退化成无边界自治平台。
 
 ---
 
@@ -320,6 +351,70 @@ Skill 应具备：
 
 ---
 
+### `app/v3/governance`
+
+负责：
+
+- execution budget
+- trigger / autonomy cooldown
+- propagation limit
+- circuit breaker
+- 自治请求的治理判定与拒绝原因记录
+
+治理层负责“是否允许继续执行”的规则收敛，不负责承载具体业务 skill 逻辑。
+
+---
+
+### `app/v3/replay`
+
+负责：
+
+- replay 入口
+- replay metadata
+- 按 run / chain / event 的基础重放能力
+- replay 链路与原始链路的区分
+
+`v3` 当前只要求可解释、可审计的基础 replay，不承诺完整 deterministic replay。
+
+---
+
+### `app/v3/autonomy`
+
+负责：
+
+- 受控自治请求的创建
+- follow-up task / scheduled check 的受限生成
+- autonomy policy 到 execution request 的收敛
+
+自治层只能提出受控执行请求，不应绕过 runtime 与 governance 直接执行高风险动作。
+
+---
+
+### `app/v3/audit`
+
+负责：
+
+- audit log
+- decision trace
+- stop reason / governance action 记录
+- 自治链路的解释信息组织
+
+审计层负责解释系统为什么这样执行，不负责调度执行本身。
+
+---
+
+### `app/v3/scheduler`
+
+负责：
+
+- delayed / recurring / interval task 的基础调度
+- execution queue 状态流转
+- 调度请求到 runtime 的受控移交
+
+调度层应保持单机、可解释、可关闭，不应提前承接分布式协调复杂度。
+
+---
+
 ### `app/v3/trigger`
 
 负责：
@@ -342,7 +437,7 @@ Trigger 必须保持：
 - 触发 Skill
 - 记录 virtual execution node
 
-不要在 Trigger 层堆叠复杂条件、预算控制或多级自治链。
+不要在 Trigger 层堆叠复杂条件、预算控制或多级自治链；这类能力应优先收敛到 `governance` 或 `autonomy`。
 
 ---
 
@@ -375,14 +470,20 @@ Trigger 必须保持：
 - `graph`
 - `skills`
 - `events`
+- `governance`
+- `replay`
 - `trigger`
 - `adapters`
+- `autonomy`
+- `audit`
+- `scheduler`
 
 不要为了临时方便把边界打穿。
 
 当前目录边界也应与现状保持一致：
 
-- `app/v3` 保留内核目录：`contracts / skills / graph / runtime / events / trigger / adapters`
+- `app/v3` 保留内核目录：`contracts / skills / graph / runtime / events / governance / replay / trigger / adapters`
+- `autonomy / audit / scheduler` 属于 `v3` 后续可受控扩展的版本内目录，只有在对应能力正式落地时才引入
 - `app/v3/runner.py` 作为共享 API / CLI 的装配入口
 - HTTP 路由走共享 `app/api`
 - CLI 入口走共享 `app/cli` 或主入口

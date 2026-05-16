@@ -11,6 +11,7 @@ from app.v3.contracts.graph_contracts import TaskGraph
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.graph.graph_validator import GraphValidator
+from app.v3.governance.execution_budget import ExecutionBudgetState
 from app.v3.runtime.execution_context import ExecutionContext
 from app.v3.runtime.graph_executor import GraphExecutor
 
@@ -25,11 +26,13 @@ class ExecutionKernel:
         *,
         event_bus: EventBus | None = None,
         event_store: EventStore | None = None,
+        budget: ExecutionBudgetState | None = None,
     ) -> None:
         self.graph_executor = graph_executor
         self.validator = validator
         self.event_bus = event_bus
         self.event_store = event_store
+        self.budget = budget
 
     async def run_graph(
         self,
@@ -88,5 +91,7 @@ class ExecutionKernel:
     async def _publish(self, event: V3Event) -> None:
         if self.event_store is not None:
             self.event_store.append(event)
+        if self.budget is not None and self.budget.events_exhausted:
+            return
         if self.event_bus is not None:
             await self.event_bus.publish(event)
