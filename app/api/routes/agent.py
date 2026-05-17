@@ -131,6 +131,7 @@ class AgentRunRequest(BaseModel):
     run_timeout_seconds: int = Field(default=120, ge=1, le=1800, description="单次运行超时时间。")
     include_trace: bool = Field(default=False, description="是否在响应中附带简版 Trace。")
     include_events: bool = Field(default=True, description="v3 是否在响应中附带本地事件记录。")
+    autonomy_enabled: bool = Field(default=False, description="v3 是否启用受控自治 follow-up 能力。")
     plan_only: bool = Field(default=False, description="v3 是否只返回 planning/inspection，不执行 graph。")
     graph: TaskGraph | None = Field(default=None, description="v3 可选显式 graph。")
     v3_coding_execution_mode: Literal["internal", "external"] = Field(
@@ -188,6 +189,7 @@ class AgentRunResponse(BaseModel):
     report: ExecutionReport | None = None
     planning: PlanningResult | None = None
     inspection: GraphInspection | None = None
+    autonomy: dict[str, object] | None = None
     events: list[dict[str, object]] = Field(default_factory=list)
 
 
@@ -312,6 +314,7 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                         if request.v3_coding_execution_mode == "external" and request.v2_external_coding is not None
                         else None
                     ),
+                    autonomy_enabled=request.autonomy_enabled,
                     plan_only=request.plan_only,
                     include_events=request.include_events,
                     include_trace=request.include_trace,
@@ -344,6 +347,7 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
             report=report,
             planning=planning,
             inspection=inspection,
+            autonomy=result.get("autonomy"),
             events=result.get("events", []),
         )
     if request.version == "v1":

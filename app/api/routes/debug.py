@@ -34,9 +34,9 @@ from app.v1.rag.rag_id_policy import strict_normalize_v2_rag_ids, strict_normali
 from app.v1.rag.vector_store import ChromaVectorStore
 from app.v3 import build_default_skill_registry
 from app.v3.contracts.event_contracts import V3Event
-from app.v3.contracts.replay_contracts import ReplayResult
+from app.v3.contracts.replay_contracts import ReplayMode, ReplayPlan, ReplayResult
 from app.v3.events.event_history import EventChainItem, EventChainTrace, build_event_chain_trace, format_event_chain_trace
-from app.v3.replay import replay_event_chain
+from app.v3.replay import replay_by_chain, replay_by_event, replay_by_run, replay_event_chain
 
 router = APIRouter(tags=["debug"])
 
@@ -198,7 +198,7 @@ class V3EventChainTraceResponse(BaseModel):
 
 
 class V3ReplayResponse(BaseModel):
-    """V3 simple replay response."""
+    """V3 replay execution response."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -209,6 +209,17 @@ class V3ReplayResponse(BaseModel):
     output: dict[str, object] = Field(default_factory=dict)
     events: list[dict[str, object]] = Field(default_factory=list)
     trace: list[dict[str, object]] = Field(default_factory=list)
+
+
+class V3ReplayPlanResponse(BaseModel):
+    """V3 replay plan response for run/chain entrypoints."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_run_id: str
+    entry_type: str
+    available_targets: list[dict[str, object]] = Field(default_factory=list)
+    chain_views: list[dict[str, object]] = Field(default_factory=list)
 
 
 class TriggerRuleStateItem(BaseModel):
@@ -735,17 +746,28 @@ def get_v3_event_chain_view(
 async def replay_v3_event_chain(
     run_id: str,
     event_id: str = Query(description="要作为 replay 入口的源事件 ID。"),
+    mode: ReplayMode = Query(default=ReplayMode.FIRST_ACTION_REPLAY, description="replay 模式。"),
 ) -> V3ReplayResponse:
-    """Replay a single V3 event chain entry by re-executing its first triggered skill."""
+    """Replay a single V3 event chain entry using the requested replay mode."""
     repository = get_trace_repository()
     workdir = _lookup_run_workdir(run_id)
     try:
-        result: ReplayResult = await replay_event_chain(
+        if mode == ReplayMode.FIRST_ACTION_REPLAY:
+            result = await replay_event_chain(
+                repository=repository,
+                run_id=run_id,
+                event_id=event_id,
+                workspace_root=workdir,
+                registry=build_default_skill_registry(workspace_root=workdir),
+            )
+        else:
+            result = await replay_by_event(
             repository=repository,
             run_id=run_id,
             event_id=event_id,
             workspace_root=workdir,
             registry=build_default_skill_registry(workspace_root=workdir),
+            mode=mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -757,6 +779,59 @@ async def replay_v3_event_chain(
         output=result.output,
         events=result.events,
         trace=result.trace,
+    )
+
+
+@router.get(
+    "/debug/v3/runs/{run_id}/replay-plan",
+    response_model=V3ReplayPlanResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_v3_run_replay_plan(run_id: str) -> V3ReplayPlanResponse:
+    """List replay targets for an entire V3 run."""
+    repository = get_trace_repository()
+    workdir = _lookup_run_workdir(run_id)
+    try:
+        plan: ReplayPlan = await replay_by_run(
+            repository=repository,
+            run_id=run_id,
+            workspace_root=workdir,
+            registry=build_default_skill_registry(workspace_root=workdir),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return V3ReplayPlanResponse(
+        source_run_id=plan.source_run_id,
+        entry_type=plan.entry_type.value if hasattr(plan.entry_type, "value") else str(plan.entry_type),
+        available_targets=plan.available_targets,
+        chain_views=[view.model_dump(mode="json") for view in plan.chain_views],
+    )
+
+
+@router.get(
+    "/debug/v3/runs/{run_id}/replay-plan/chain/{execution_chain_id}",
+    response_model=V3ReplayPlanResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_v3_chain_replay_plan(run_id: str, execution_chain_id: str) -> V3ReplayPlanResponse:
+    """List replay targets for one execution chain inside a V3 run."""
+    repository = get_trace_repository()
+    workdir = _lookup_run_workdir(run_id)
+    try:
+        plan: ReplayPlan = await replay_by_chain(
+            repository=repository,
+            run_id=run_id,
+            execution_chain_id=execution_chain_id,
+            workspace_root=workdir,
+            registry=build_default_skill_registry(workspace_root=workdir),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return V3ReplayPlanResponse(
+        source_run_id=plan.source_run_id,
+        entry_type=plan.entry_type.value if hasattr(plan.entry_type, "value") else str(plan.entry_type),
+        available_targets=plan.available_targets,
+        chain_views=[view.model_dump(mode="json") for view in plan.chain_views],
     )
 
 
