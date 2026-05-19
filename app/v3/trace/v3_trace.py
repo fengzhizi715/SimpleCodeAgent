@@ -36,6 +36,8 @@ def attach_trace_collector(event_bus: EventBus) -> list[TraceEvent]:
         "test_passed",
         "test_failed",
         "code_updated",
+        "llm_called",
+        "llm_responded",
     ]:
         event_bus.subscribe(event_type, _handler)
     return traces

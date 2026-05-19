@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -19,7 +20,10 @@ from app.api.routes.agent import (
     plan_agent,
     run_agent,
 )
+from app.contracts.message import ChatMessage
+from app.contracts.run import RunChoice, RunRequest, RunResult
 from app.db.sqlite import SQLiteDB
+from app.llm.client import LLMProvider
 from app.contracts.trace import TraceEvent
 from app.trace.repository import SQLiteTraceRepository
 from app.trace.viewer import load_and_format_timeline
@@ -160,6 +164,101 @@ class SleepSkill(Skill):
         return SkillOutput(success=True, summary=f"{self.spec.name} done", data={"ok": True})
 
 
+class StaticPlanningProvider(LLMProvider):
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.calls: list[RunRequest] = []
+
+    def chat(self, chat_request: RunRequest) -> RunResult:
+        self.calls.append(chat_request)
+        return RunResult(
+            id="planning-1",
+            model=chat_request.model,
+            choices=[
+                RunChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=self.content),
+                    finish_reason="stop",
+                )
+            ],
+        )
+
+
+def test_run_v3_llm_planning_mode_uses_provider(tmp_path: Path) -> None:
+    provider = StaticPlanningProvider(
+        json.dumps(
+            {
+                "goal_kind": "analysis",
+                "should_include_retrieval": True,
+                "recovery_strategy": "none",
+                "template_reason": "Need documentation context before repository inspection.",
+                "planner_notes": [
+                    "LLM selected retrieval-first planning for an analysis task."
+                ],
+            }
+        )
+    )
+
+    result = asyncio.run(
+        run_v3(
+            goal="analyze the project structure with docs context",
+            workdir=str(tmp_path),
+            plan_only=True,
+            provider=provider,
+            model="planner-model",
+            planning_mode="llm",
+        )
+    )
+
+    planning = result["planning"]
+    assert planning is not None
+    assert planning.planning_mode == "llm"
+    assert [node.node_id for node in planning.graph.nodes[:2]] == [
+        "retrieve_docs",
+        "analyze_repo",
+    ]
+    assert provider.calls
+    assert provider.calls[0].model == "planner-model"
+    assert any(
+        "project structure" in str(message.content or "")
+        for message in provider.calls[0].messages
+        if message.role == "user"
+    )
+
+
+def test_run_v3_llm_planning_emits_llm_trace_events(tmp_path: Path) -> None:
+    provider = StaticPlanningProvider(
+        json.dumps(
+            {
+                "goal_kind": "analysis",
+                "should_include_retrieval": False,
+                "recovery_strategy": "none",
+                "template_reason": "Analyze repo directly.",
+                "planner_notes": ["LLM kept the plan minimal."],
+            }
+        )
+    )
+
+    result = asyncio.run(
+        run_v3(
+            goal="analyze the project structure",
+            workdir=str(tmp_path),
+            include_trace=True,
+            provider=provider,
+            model="planner-model",
+            planning_mode="llm",
+        )
+    )
+
+    trace = result["trace"]
+    event_types = [item["event_type"] for item in trace]
+
+    assert "llm_called" in event_types
+    assert "llm_responded" in event_types
+    llm_called = next(item for item in trace if item["event_type"] == "llm_called")
+    assert llm_called["payload"]["payload"]["model"] == "planner-model"
+
+
 def test_v3_kernel_executes_serial_graph_and_collects_events() -> None:
     registry = SkillRegistry()
     registry.register(EchoSkill("analyze"))
@@ -218,6 +317,47 @@ def test_v3_kernel_executes_serial_graph_and_collects_events() -> None:
         "skill_finished",
         "graph_finished",
     ]
+
+
+def test_v3_planning_skill_can_use_llm_planning_mode(tmp_path: Path) -> None:
+    provider = StaticPlanningProvider(
+        json.dumps(
+            {
+                "goal_kind": "analysis",
+                "should_include_retrieval": False,
+                "preferred_recovery_strategy": "none",
+                "template_reason": "LLM selected analysis-only planning for this repository inspection task.",
+                "planner_notes": ["LLM reviewed the goal and chose a single-node analysis graph."],
+            }
+        )
+    )
+    registry = build_default_skill_registry(
+        workspace_root=tmp_path,
+        provider=provider,
+        planning_mode="llm",
+        model="demo-model",
+    )
+
+    result = asyncio.run(
+        registry.get("planning").execute(
+            SkillInput(
+                run_id="run-llm-plan",
+                payload={
+                    "goal": "分析项目结构",
+                    "workspace_root": str(tmp_path),
+                    "planning_mode": "llm",
+                },
+                context={},
+            )
+        )
+    )
+
+    planning = PlanningResult.model_validate(result.data)
+    assert planning.planning_mode == "llm"
+    assert planning.goal_kind == "analysis"
+    assert "LLM selected analysis-only" in planning.template_reason
+    assert len(provider.calls) == 1
+    assert provider.calls[0].model == "demo-model"
 
 
 def test_v3_kernel_supports_branch_and_join_execution() -> None:
@@ -1987,6 +2127,29 @@ def test_run_v3_can_enable_controlled_autonomy_follow_up() -> None:
     assert any(node["node_id"].startswith("autonomy:") for node in result["report"].model_dump()["execution_nodes"])
     assert result["audit"]["summary"]["approved_decisions"] == 1
     assert result["audit"]["summary"]["total_audit_records"] >= 3
+
+
+def test_run_v3_graph_execution_nodes_include_success_summary(tmp_path: Path) -> None:
+    registry = SkillRegistry()
+    recording = RecordingSkill()
+    registry.register(recording)
+    graph = TaskGraph(
+        graph_id="graph-summary",
+        run_id="run-summary",
+        nodes=[TaskNode(node_id="root", skill_name="recording")],
+    )
+
+    result = asyncio.run(
+        run_v3(
+            graph=graph,
+            registry=registry,
+            include_events=False,
+            include_trace=False,
+        )
+    )
+
+    graph_node = next(node for node in result["report"].execution_nodes if node.node_id == "root")
+    assert graph_node.summary == "recorded"
 
 
 def test_run_v3_supports_configurable_autonomy_policies() -> None:

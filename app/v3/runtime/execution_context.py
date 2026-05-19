@@ -38,6 +38,21 @@ class ExecutionContext(BaseModel):
         self.node_outputs[node_id] = data
         self.shared_state[node_id] = data
 
+    def set_node_result(
+        self,
+        node_id: str,
+        *,
+        summary: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Store a successful node result with a top-level summary."""
+        stored = {
+            "summary": summary,
+            **dict(data),
+        }
+        self.node_outputs[node_id] = stored
+        self.shared_state[node_id] = stored
+
     def resolve_input_mapping(
         self,
         input_mapping: dict[str, Any],

@@ -27,6 +27,7 @@ class PlanningResult(BaseModel):
     repo_profile: str
     goal_kind: str
     recovery_strategy: RecoveryStrategy = RecoveryStrategy.NONE
+    planning_mode: str = "rule_based"
     coding_execution_mode: str = "internal"
     template_name: str = "default"
     template_reason: str = ""
@@ -36,3 +37,6 @@ class PlanningResult(BaseModel):
     candidate_test_commands: list[str] = Field(default_factory=list)
     candidate_test_targets: list[str] = Field(default_factory=list)
     trigger_rules: list[TriggerRule] = Field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0

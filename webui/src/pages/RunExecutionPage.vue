@@ -30,6 +30,16 @@
           <tr><th>step_count</th><td>{{ replay.run.step_count ?? 0 }}</td></tr>
         </tbody>
       </table>
+      <div class="v3-summary-card">
+        <div class="v3-summary-head">
+          <strong>Final Summary</strong>
+          <span class="badge" v-if="v3SummaryHighlights.length">{{ v3SummaryHighlights.length }} insights</span>
+        </div>
+        <p class="v3-summary-text">{{ v3FinalSummary }}</p>
+        <div v-if="v3SummaryHighlights.length" class="v3-summary-highlights">
+          <span v-for="item in v3SummaryHighlights" :key="item">{{ item }}</span>
+        </div>
+      </div>
     </section>
 
     <nav class="run-tabs" aria-label="V3 detail tabs">
@@ -60,6 +70,11 @@
         </tbody>
       </table>
       <p class="muted" style="margin-top: 10px">{{ v3Planning.template_reason || "—" }}</p>
+    </section>
+
+    <section class="panel" v-if="v3ActiveTab === 'graph' && v3AnalysisSummary">
+      <h3>Analysis Summary</h3>
+      <div class="analysis-summary-content" v-html="renderMarkdown(v3AnalysisSummary)"></div>
     </section>
 
     <section class="panel" v-if="v3ActiveTab === 'graph' && (v3GraphLayerSections.length || v3GraphExecutionNodes.length)">
@@ -793,6 +808,78 @@ const v3GraphLayerSections = computed(() => {
 const v3EventRows = computed(() => {
   return Array.isArray(trace.value) ? trace.value : [];
 });
+const v3FinalSummary = computed(() => {
+  const graphNodes = v3GraphExecutionNodes.value;
+  const meaningfulNodeSummary = graphNodes
+    .map((node) => compactText(node?.summary || "", 220))
+    .find((text) => text && text !== "—");
+  if (meaningfulNodeSummary) {
+    return meaningfulNodeSummary;
+  }
+
+  const planning = v3Planning.value || {};
+  if (planning.goal_kind === "analysis") {
+    const repoProfile = planning.repo_profile || "unknown";
+    return `Repository analysis completed. Detected repo profile: ${repoProfile}.`;
+  }
+
+  if (typeof planning.template_reason === "string" && planning.template_reason.trim()) {
+    return planning.template_reason.trim();
+  }
+
+  if (typeof replay.run?.task === "string" && replay.run.task.trim()) {
+    return `Run completed for task: ${compactText(replay.run.task.trim(), 160)}`;
+  }
+
+  if (typeof replay.run?.status === "string" && replay.run.status.trim()) {
+    return `Run finished with status: ${replay.run.status.trim()}.`;
+  }
+
+  return "暂无摘要。";
+});
+const v3SummaryHighlights = computed(() => {
+  const planning = v3Planning.value || {};
+  const analyzeRepo = v3Report.value?.shared_state?.analyze_repo || v3Report.value?.node_outputs?.analyze_repo || {};
+  const highlights = [
+    planning.goal_kind ? `goal: ${planning.goal_kind}` : null,
+    planning.repo_profile ? `profile: ${planning.repo_profile}` : null,
+    Array.isArray(analyzeRepo.root_entries) && analyzeRepo.root_entries.length
+      ? `${analyzeRepo.root_entries.length} root entries`
+      : null,
+    analyzeRepo.has_python_tests === true
+      ? "python tests detected"
+      : analyzeRepo.has_python_tests === false
+        ? "no python tests detected"
+        : null,
+    Array.isArray(planning.execution_layers) && planning.execution_layers.length
+      ? `${planning.execution_layers.length} execution layer${planning.execution_layers.length > 1 ? "s" : ""}`
+      : null,
+  ];
+  return highlights.filter(Boolean);
+});
+const v3AnalysisSummary = computed(() => {
+  const summaryNode = v3ExecutionNodes.value.find((n) => n.node_id === "analysis_summary");
+  if (summaryNode?.summary) {
+    return summaryNode.summary;
+  }
+  const output = v3Report.value?.node_outputs?.analysis_summary;
+  if (output?.summary) {
+    return output.summary;
+  }
+  return null;
+});
+function renderMarkdown(text) {
+  if (!text) return "";
+  return text
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/^- (.+)$/gm, "<li>$1</li>")
+    .replace(/\n/g, "<br>");
+}
 const chainFocusedItem = computed(() => {
   const items = Array.isArray(eventChain.value?.items) ? eventChain.value.items : [];
   if (!items.length) {
@@ -1900,6 +1987,49 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
+.v3-summary-card {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(79, 70, 229, 0.12);
+  background:
+    linear-gradient(135deg, rgba(79, 70, 229, 0.08), rgba(255, 255, 255, 0.98) 36%),
+    #fff;
+}
+
+.v3-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.v3-summary-text {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text-primary, #111827);
+}
+
+.v3-summary-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.v3-summary-highlights span {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--text-secondary, #475569);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 /* 窄屏：竖向时间轴，少横滑 */
 @media (max-width: 640px) {
   .event-chain-layout,
@@ -1942,6 +2072,40 @@ onBeforeUnmount(() => {
   .flow-detail-meta {
     grid-template-columns: 1fr;
   }
+}
+
+.analysis-summary-content {
+  line-height: 1.7;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.analysis-summary-content h1,
+.analysis-summary-content h2,
+.analysis-summary-content h3 {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+}
+
+.analysis-summary-content h3 {
+  font-size: 1rem;
+  color: var(--accent-text);
+}
+
+.analysis-summary-content code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.analysis-summary-content strong {
+  font-weight: 600;
+}
+
+.analysis-summary-content li {
+  margin-left: 1.2em;
+  list-style: disc;
 }
 
 </style>

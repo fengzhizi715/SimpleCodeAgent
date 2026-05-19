@@ -842,6 +842,75 @@ def test_run_agent_v3_passes_trigger_rule_state_overrides(monkeypatch, tmp_path:
     assert captured["trigger_rule_enabled_overrides"] == {"rule-a": False}
 
 
+def test_run_agent_v3_llm_planning_passes_provider_and_mode(monkeypatch, tmp_path: Path) -> None:
+    store = _FakeTriggerRuleStateStore()
+    captured: dict[str, object] = {}
+    sentinel_provider = StaticProvider(["unused"])
+
+    async def fake_run_v3(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "report": None,
+            "planning": PlanningResult.model_validate(
+                {
+                    "goal_kind": "analysis",
+                    "repo_profile": "generic",
+                    "template_name": "analysis_with_context",
+                    "template_reason": "demo",
+                    "planner_notes": [],
+                    "candidate_test_targets": [],
+                    "candidate_test_commands": [],
+                    "rag_ids": [],
+                    "coding_execution_mode": "internal",
+                    "recovery_strategy": "none",
+                    "planning_mode": "llm",
+                    "graph": {
+                        "graph_id": "graph-1",
+                        "run_id": "run-llm",
+                        "nodes": [
+                            {
+                                "node_id": "analyze_repo",
+                                "skill_name": "analyze_repo",
+                                "dependencies": [],
+                                "input_payload": {},
+                            }
+                        ],
+                    },
+                    "trigger_rules": [],
+                }
+            ),
+            "inspection": None,
+            "events": [],
+            "trace": [],
+        }
+
+    monkeypatch.setattr("app.api.routes.agent.get_trigger_rule_state_store", lambda: store)
+    monkeypatch.setattr(
+        "app.api.routes.agent.get_trigger_hit_counter",
+        lambda: type("Counter", (), {"increment": staticmethod(lambda *args: None)})(),
+    )
+    monkeypatch.setattr("app.api.routes.agent.get_provider", lambda **kwargs: sentinel_provider)
+    monkeypatch.setattr("app.api.routes.agent.run_v3", fake_run_v3)
+
+    response = run_agent(
+        AgentRunRequest(
+            version="v3",
+            task="analyze project structure",
+            workdir=str(tmp_path),
+            model="planner-model",
+            api_key="demo-key",
+            plan_only=True,
+            v3_planning_mode="llm",
+        )
+    )
+
+    assert response.planning is not None
+    assert response.planning.planning_mode == "llm"
+    assert captured["planning_mode"] == "llm"
+    assert captured["provider"] is sentinel_provider
+    assert captured["model"] == "planner-model"
+
+
 def test_debug_trigger_rule_state_endpoints_round_trip(monkeypatch) -> None:
     store = _FakeTriggerRuleStateStore()
     monkeypatch.setattr("app.api.routes.debug.get_trigger_rule_state_store", lambda: store)

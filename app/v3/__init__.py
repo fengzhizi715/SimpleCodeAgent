@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.llm.client import LLMProvider
 from app.v3.adapters.v1_tool_adapter import V1ToolAdapter
 from app.v3.adapters.v2_agent_adapter import V2AgentAdapter
 from app.v3.contracts.skill_contracts import SkillSpec, SkillType
@@ -20,7 +21,13 @@ from app.v3.skills.builtin.test_runner_skill import TestRunnerSkill
 from app.v3.skills.registry import SkillRegistry
 
 
-def build_default_skill_registry(workspace_root: str | Path | None = None) -> SkillRegistry:
+def build_default_skill_registry(
+    workspace_root: str | Path | None = None,
+    *,
+    provider: LLMProvider | None = None,
+    model: str | None = None,
+    planning_mode: str = "rule_based",
+) -> SkillRegistry:
     """Build the default V3 skill registry."""
     registry = SkillRegistry()
     registry.register(
@@ -39,7 +46,10 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
                     "coding_focus_then_full_suite",
                     "default",
                 ],
-            )
+            ),
+            provider=provider,
+            model=model,
+            default_planning_mode=planning_mode,
         )
     )
     registry.register(
@@ -95,7 +105,10 @@ def build_default_skill_registry(workspace_root: str | Path | None = None) -> Sk
                     "template_fix_after_test_failed",
                 ],
             ),
-            internal_agent_adapter=V2AgentAdapter.for_coder(workspace_root=workspace_root),
+            internal_agent_adapter=V2AgentAdapter.for_coder(
+                workspace_root=workspace_root,
+                provider=provider,
+            ),
             external_agent_adapter=V2AgentAdapter.for_external_coder(workspace_root=workspace_root),
         )
     )

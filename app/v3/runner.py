@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from app.db.sqlite import SQLiteDB
 from app.contracts.trace import TraceEvent
+from app.llm.client import LLMProvider
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v3 import build_default_skill_registry
@@ -50,6 +51,7 @@ async def run_v3(
     workdir: str | None = None,
     session_id: str | None = None,
     model: str | None = None,
+    provider: LLMProvider | None = None,
     rag_id: str | None = None,
     rag_ids: list[str] | None = None,
     coding_execution_mode: str = "internal",
@@ -72,6 +74,7 @@ async def run_v3(
     autonomy_enabled: bool = False,
     autonomy_policies: list[dict[str, Any]] | None = None,
     phase2_features: dict[str, Any] | None = None,
+    planning_mode: str = "rule_based",
 ) -> dict[str, Any]:
     """Run a V3 goal or graph and return serializable output."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
@@ -98,7 +101,12 @@ async def run_v3(
     circuit_breaker = CircuitBreakerManager(
         default_failure_threshold=circuit_breaker_threshold,
     )
-    skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
+    skill_registry = registry or build_default_skill_registry(
+        workspace_root=resolved_workdir,
+        provider=provider,
+        model=model,
+        planning_mode=planning_mode,
+    )
     skill_executor = SkillExecutor(skill_registry)
     graph_executor = GraphExecutor(
         skill_executor,
@@ -130,6 +138,8 @@ async def run_v3(
             rag_ids=rag_ids,
             coding_execution_mode=coding_execution_mode,
             external_coding=external_coding,
+            planning_mode=planning_mode,
+            event_bus=event_bus,
         )
         resolved_graph = planning_result.graph
         planned_trigger_rules = list(planning_result.trigger_rules)
@@ -251,6 +261,7 @@ async def run_v3(
         workdir=resolved_workdir,
         session_id=session_id or report.run_id,
         model=model or "",
+        planning_tokens=planning_result.total_tokens if planning_result is not None else 0,
     )
     return {
         "report": report,
@@ -325,6 +336,8 @@ async def plan_v3_graph(
     rag_ids: list[str] | None = None,
     coding_execution_mode: str = "internal",
     external_coding: dict[str, object] | None = None,
+    planning_mode: str = "rule_based",
+    event_bus: EventBus | None = None,
 ) -> PlanningResult:
     """Generate a graph for a V3 goal."""
     run_id = str(uuid4())
@@ -338,9 +351,13 @@ async def plan_v3_graph(
                 "rag_id": rag_id,
                 "rag_ids": rag_ids or [],
                 "coding_execution_mode": coding_execution_mode,
+                "planning_mode": planning_mode,
                 **(external_coding or {}),
             },
-            context={"workspace_root": workdir},
+            context={
+                "workspace_root": workdir,
+                "event_bus": event_bus,
+            },
         ),
     )
     if not planning_output.success:
@@ -358,10 +375,18 @@ async def inspect_v3_graph(
     rag_ids: list[str] | None = None,
     coding_execution_mode: str = "internal",
     external_coding: dict[str, object] | None = None,
+    provider: LLMProvider | None = None,
+    model: str | None = None,
+    planning_mode: str = "rule_based",
 ) -> tuple[GraphInspection, PlanningResult | None]:
     """Inspect a V3 graph or a planner-generated graph without executing it."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
-    skill_registry = registry or build_default_skill_registry(workspace_root=resolved_workdir)
+    skill_registry = registry or build_default_skill_registry(
+        workspace_root=resolved_workdir,
+        provider=provider,
+        model=model,
+        planning_mode=planning_mode,
+    )
     planning_result: PlanningResult | None = None
     resolved_graph = graph
 
@@ -376,6 +401,7 @@ async def inspect_v3_graph(
             rag_ids=rag_ids,
             coding_execution_mode=coding_execution_mode,
             external_coding=external_coding,
+            planning_mode=planning_mode,
         )
         resolved_graph = planning_result.graph
 
@@ -490,11 +516,12 @@ def _persist_v3_trace(*, run_id: str, trace_events: list[TraceEvent]) -> None:
 
 def _persist_v3_run_metadata(
     *,
-    report: ExecutionReport,
+    report,
     task: str,
     workdir: str,
     session_id: str,
     model: str,
+    planning_tokens: int = 0,
 ) -> None:
     """Persist V3 run metadata into the shared runs table for history/detail views."""
     db = SQLiteDB()
@@ -506,6 +533,62 @@ def _persist_v3_run_metadata(
         ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at
         """,
         (session_id, timestamp, timestamp),
+    )
+    child_tokens = db.fetchone(
+        """
+        SELECT
+            COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+            COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM runs
+        WHERE parent_run_id = ?
+        """,
+        (report.run_id,),
+    )
+    child_prompt = int(child_tokens["prompt_tokens"]) if child_tokens else 0
+    child_completion = int(child_tokens["completion_tokens"]) if child_tokens else 0
+    child_total = int(child_tokens["total_tokens"]) if child_tokens else 0
+    total_prompt = planning_tokens + child_prompt
+    total_completion = child_completion
+    total_all = planning_tokens + child_total
+    db.execute(
+        """
+        INSERT INTO runs (
+            run_id, session_id, model, task, workdir, is_top_level, parent_run_id, status, step_count, final_output,
+            prompt_tokens, completion_tokens, total_tokens, created_at, updated_at, agent_version
+        )
+        VALUES (?, ?, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'v3')
+        ON CONFLICT(run_id) DO UPDATE SET
+            session_id = excluded.session_id,
+            model = excluded.model,
+            task = excluded.task,
+            workdir = excluded.workdir,
+            is_top_level = 1,
+            parent_run_id = NULL,
+            status = excluded.status,
+            step_count = excluded.step_count,
+            final_output = excluded.final_output,
+            prompt_tokens = excluded.prompt_tokens,
+            completion_tokens = excluded.completion_tokens,
+            total_tokens = excluded.total_tokens,
+            agent_version = 'v3',
+            updated_at = excluded.updated_at
+        """,
+        (
+            report.run_id,
+            session_id,
+            model,
+            task,
+            workdir,
+            report.status.value,
+            len(report.execution_nodes),
+            report.model_dump_json(indent=2),
+            total_prompt,
+            total_completion,
+            total_all,
+            timestamp,
+            timestamp,
+        ),
     )
     db.execute(
         """

@@ -24,6 +24,8 @@ class EventType(str, Enum):
     TEST_PASSED = "test_passed"
     TEST_FAILED = "test_failed"
     CODE_UPDATED = "code_updated"
+    LLM_CALLED = "llm_called"
+    LLM_RESPONDED = "llm_responded"
 
 
 class V3Event(BaseModel):

@@ -73,6 +73,18 @@
           <p class="muted">v3 会围绕 planning、graph inspection、execution report 和本地 event/trigger，输出面向图执行节点能力的结构化结果。</p>
         </div>
       </div>
+      <div class="grid-two" style="margin-top: 12px">
+        <div>
+          <label>V3 Planning Mode</label>
+          <select v-model="form.v3_planning_mode">
+            <option value="llm">llm（推荐）</option>
+            <option value="rule_based">rule_based</option>
+          </select>
+          <p class="muted" style="margin: 6px 0 0">
+            <code>llm</code> 会真实调用模型做模板/策略选择，并在 trace 中记录 <code>llm_called / llm_responded</code>。
+          </p>
+        </div>
+      </div>
       <div class="review-rule-grid" style="margin-top: 12px">
         <label class="review-rule-option">
           <input type="checkbox" v-model="form.plan_only" />
@@ -524,6 +536,7 @@ const form = reactive({
   plan_only: false,
   v3_use_rag: false,
   v3_rag_id: "default",
+  v3_planning_mode: "llm",
   v3_coding_executor: "internal",
   v3_external_coding: {
     preferred_agent: "codex_cli",
@@ -662,6 +675,7 @@ async function submitRun() {
     } else if (form.version === "v3") {
       payload.include_events = Boolean(form.include_events);
       payload.plan_only = Boolean(form.plan_only);
+      payload.v3_planning_mode = form.v3_planning_mode;
       payload.v3_coding_execution_mode = form.v3_coding_executor;
       if (form.v3_use_rag) {
         payload.rag_id = form.v3_rag_id?.trim() || "default";

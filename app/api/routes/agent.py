@@ -138,6 +138,10 @@ class AgentRunRequest(BaseModel):
         default="internal",
         description="v3 coding skill 的执行后端；internal 走内置 coder，external 走外部 CLI coder。",
     )
+    v3_planning_mode: Literal["rule_based", "llm"] = Field(
+        default="rule_based",
+        description="v3 planning 模式；llm 会使用统一 provider 做模板/策略选择。",
+    )
     v2_enabled_agents: list[
         Literal["orchestrator", "planner", "analyst", "coder", "external_coder", "tester", "reviewer"]
     ] | None = Field(
@@ -209,11 +213,19 @@ class AgentPlanRequest(BaseModel):
     )
     workdir: str | None = Field(default=None, description="可选 workspace root。")
     project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+    model: str | None = Field(default=None, description="可覆盖的模型名。")
+    base_url: str | None = Field(default=None, description="可覆盖的 LLM Base URL。")
+    api_key: str | None = Field(default=None, description="可覆盖的 LLM API Key。")
+    service_token: str | None = Field(default=None, description="可覆盖的 Service Token。")
     rag_id: str | None = Field(default=None, description="可选知识库标识；v3 检索节点会使用它。")
     rag_ids: list[str] | None = Field(default=None, description="可选知识库标识列表；v3 检索节点支持多库并查。")
     v3_coding_execution_mode: Literal["internal", "external"] = Field(
         default="internal",
         description="v3 coding skill 的执行后端。",
+    )
+    v3_planning_mode: Literal["rule_based", "llm"] = Field(
+        default="rule_based",
+        description="v3 planning 模式；llm 会使用统一 provider 做模板/策略选择。",
     )
     v3_external_coding: V2ExternalCodingRequest | None = Field(
         default=None,
@@ -257,11 +269,19 @@ class AgentInspectGraphRequest(BaseModel):
     graph: TaskGraph | None = Field(default=None, description="可选显式 graph。")
     workdir: str | None = Field(default=None, description="可选 workspace root。")
     project_root: str | None = Field(default=None, description="历史兼容字段，等价于 workdir。")
+    model: str | None = Field(default=None, description="可覆盖的模型名。")
+    base_url: str | None = Field(default=None, description="可覆盖的 LLM Base URL。")
+    api_key: str | None = Field(default=None, description="可覆盖的 LLM API Key。")
+    service_token: str | None = Field(default=None, description="可覆盖的 Service Token。")
     rag_id: str | None = Field(default=None, description="可选知识库标识；v3 检索节点会使用它。")
     rag_ids: list[str] | None = Field(default=None, description="可选知识库标识列表；v3 检索节点支持多库并查。")
     v3_coding_execution_mode: Literal["internal", "external"] = Field(
         default="internal",
         description="v3 coding skill 的执行后端。",
+    )
+    v3_planning_mode: Literal["rule_based", "llm"] = Field(
+        default="rule_based",
+        description="v3 planning 模式；llm 会使用统一 provider 做模板/策略选择。",
     )
     v3_external_coding: V2ExternalCodingRequest | None = Field(
         default=None,
@@ -298,6 +318,24 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
         resolved_workdir = request.workdir or request.project_root or settings.workdir or None
         hit_counter = get_trigger_hit_counter()
         trigger_rule_state_store = get_trigger_rule_state_store()
+        resolved_model = request.model or get_effective_llm_model()
+        has_auth = bool(request.api_key or request.service_token or settings.llm_api_key or settings.llm_service_token)
+        provider = None
+        if request.v3_planning_mode == "llm":
+            if not resolved_model:
+                raise HTTPException(status_code=400, detail="v3 llm planning 缺少模型名，请传入 model 或配置 LLM_MODEL。")
+            if not has_auth:
+                raise HTTPException(
+                    status_code=400,
+                    detail="v3 llm planning 缺少鉴权信息，请传入 api_key / service_token，或配置 LLM_API_KEY / LLM_SERVICE_TOKEN。",
+                )
+        if resolved_model and has_auth:
+            provider = get_provider(
+                base_url=request.base_url,
+                api_key=request.api_key,
+                service_token=request.service_token,
+                model=resolved_model,
+            )
         try:
             result = asyncio.run(
                 run_v3(
@@ -305,7 +343,8 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                     graph=request.graph,
                     workdir=resolved_workdir,
                     session_id=session_id,
-                    model=request.model,
+                    model=resolved_model,
+                    provider=provider,
                     rag_id=request.rag_id,
                     rag_ids=request.rag_ids,
                     coding_execution_mode=request.v3_coding_execution_mode,
@@ -320,6 +359,7 @@ def _run_agent_impl(request: AgentRunRequest) -> AgentRunResponse:
                     include_trace=request.include_trace,
                     hit_callback=hit_counter.increment,
                     trigger_rule_enabled_overrides=trigger_rule_state_store.get_all(),
+                    planning_mode=request.v3_planning_mode,
                 )
             )
         except ValueError as exc:
@@ -525,12 +565,35 @@ def run_agent_legacy(request: AgentRunRequest) -> AgentRunResponse:
 async def plan_agent(request: AgentPlanRequest) -> AgentPlanResponse:
     """生成结构化计划；当前由 v3 planning 提供。"""
     resolved_workdir = request.workdir or request.project_root or "."
+    resolved_model = request.model or get_effective_llm_model()
+    has_auth = bool(request.api_key or request.service_token or settings.llm_api_key or settings.llm_service_token)
+    provider = None
+    if request.v3_planning_mode == "llm":
+        if not resolved_model:
+            raise HTTPException(status_code=400, detail="v3 llm planning 缺少模型名，请先配置 LLM_MODEL。")
+        if not has_auth:
+            raise HTTPException(
+                status_code=400,
+                detail="v3 llm planning 缺少鉴权信息，请传入 api_key / service_token，或配置 LLM_API_KEY / LLM_SERVICE_TOKEN。",
+            )
+    if resolved_model and has_auth:
+        provider = get_provider(
+            base_url=request.base_url,
+            api_key=request.api_key,
+            service_token=request.service_token,
+            model=resolved_model,
+        )
     try:
         planning = await plan_v3_graph(
             goal=request.task,
             workdir=resolved_workdir,
             skill_executor=SkillExecutor(
-                build_default_skill_registry(workspace_root=resolved_workdir)
+                build_default_skill_registry(
+                    workspace_root=resolved_workdir,
+                    provider=provider,
+                    model=resolved_model,
+                    planning_mode=request.v3_planning_mode,
+                )
             ),
             rag_id=request.rag_id,
             rag_ids=request.rag_ids,
@@ -540,6 +603,7 @@ async def plan_agent(request: AgentPlanRequest) -> AgentPlanResponse:
                 if request.v3_coding_execution_mode == "external" and request.v3_external_coding is not None
                 else None
             ),
+            planning_mode=request.v3_planning_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -550,6 +614,24 @@ async def plan_agent(request: AgentPlanRequest) -> AgentPlanResponse:
 async def inspect_agent_graph(request: AgentInspectGraphRequest) -> AgentInspectGraphResponse:
     """检查 graph 结构；当前由 v3 graph inspection 提供。"""
     resolved_workdir = request.workdir or request.project_root
+    resolved_model = request.model or get_effective_llm_model()
+    has_auth = bool(request.api_key or request.service_token or settings.llm_api_key or settings.llm_service_token)
+    provider = None
+    if request.v3_planning_mode == "llm":
+        if not resolved_model:
+            raise HTTPException(status_code=400, detail="v3 llm planning 缺少模型名，请先配置 LLM_MODEL。")
+        if not has_auth:
+            raise HTTPException(
+                status_code=400,
+                detail="v3 llm planning 缺少鉴权信息，请传入 api_key / service_token，或配置 LLM_API_KEY / LLM_SERVICE_TOKEN。",
+            )
+    if resolved_model and has_auth:
+        provider = get_provider(
+            base_url=request.base_url,
+            api_key=request.api_key,
+            service_token=request.service_token,
+            model=resolved_model,
+        )
     try:
         inspection, planning = await inspect_v3_graph(
             goal=request.task,
@@ -563,6 +645,9 @@ async def inspect_agent_graph(request: AgentInspectGraphRequest) -> AgentInspect
                 if request.v3_coding_execution_mode == "external" and request.v3_external_coding is not None
                 else None
             ),
+            provider=provider,
+            model=resolved_model,
+            planning_mode=request.v3_planning_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -149,7 +149,11 @@ class GraphExecutor:
                 if output.success:
                     node.status = TaskNodeStatus.DONE
                     completed.add(node.node_id)
-                    context.set_output(node.node_id, output.data)
+                    context.set_node_result(
+                        node.node_id,
+                        summary=output.summary,
+                        data=output.data,
+                    )
                     context.agent_messages.append(
                         AgentMessage(
                             run_id=context.run_id,
