@@ -26,9 +26,12 @@ from app.trace.viewer import load_and_format_timeline
 from app.v3.contracts.agent_message_contracts import AgentMessageType
 from app.v3.contracts.event_contracts import EventType, V3Event
 from app.v3.contracts.graph_contracts import TaskGraph, TaskNode
+from app.v3.contracts.messaging_contracts import MessageStatus
 from app.v3.contracts.planning_contracts import PlanningResult, RecoveryStrategy
 from app.v3.contracts.replay_contracts import ReplayMode
+from app.v3.contracts.scheduler_contracts import TaskStatus
 from app.v3.contracts.skill_contracts import SkillInput, SkillOutput, SkillSpec, SkillType
+from app.v3.contracts.snapshot_contracts import SnapshotType
 from app.v3.contracts.trigger_contracts import ConditionOperator, ConditionSpec, TriggerRule
 from app.v3 import build_default_skill_registry
 from app.v3.events.event_bus import EventBus
@@ -1910,6 +1913,31 @@ def test_dynamic_expansion_preserves_run_id_in_expanded_graph() -> None:
     assert expanded_graph.run_id == "run-expand"
 
 
+def test_dynamic_expansion_append_execution_plan_builds_valid_task_nodes() -> None:
+    graph = TaskGraph(
+        graph_id="graph-expand-plan",
+        run_id="run-expand-plan",
+        nodes=[TaskNode(node_id="root", skill_name="recording")],
+    )
+    expansion = DynamicExpansion(run_id="run-expand-plan", original_graph=graph)
+    request = expansion.request_append_execution_plan(
+        plan=[
+            {
+                "skill_name": "recording",
+                "dependencies": ["root"],
+                "input_mapping": {"goal": "verify"},
+            }
+        ],
+        reason="append verification step",
+    )
+
+    result = expansion.approve(request.request_id)
+
+    assert result.success is True
+    assert result.appended_nodes[0].dependencies == ["root"]
+    assert result.appended_nodes[0].input_payload == {"goal": "verify"}
+
+
 def test_run_v3_can_enable_controlled_autonomy_follow_up() -> None:
     registry = SkillRegistry()
 
@@ -1957,6 +1985,151 @@ def test_run_v3_can_enable_controlled_autonomy_follow_up() -> None:
     assert len(recording_test_runner.inputs) == 1
     assert result["autonomy"]["decisions"][0]["approved"] is True
     assert any(node["node_id"].startswith("autonomy:") for node in result["report"].model_dump()["execution_nodes"])
+    assert result["audit"]["summary"]["approved_decisions"] == 1
+    assert result["audit"]["summary"]["total_audit_records"] >= 3
+
+
+def test_run_v3_supports_configurable_autonomy_policies() -> None:
+    registry = SkillRegistry()
+
+    class CodingSkillForPolicy(Skill):
+        def __init__(self) -> None:
+            super().__init__(
+                SkillSpec(
+                    name="coding",
+                    description="emit code update",
+                    skill_type=SkillType.COMPOSITE,
+                    capabilities=["code.modify"],
+                )
+            )
+
+        async def execute(self, skill_input: SkillInput) -> SkillOutput:
+            return SkillOutput(
+                success=True,
+                summary="code updated",
+                data={"changed_files": ["app/example.py"]},
+            )
+
+    recording_verify = RecordingSkill()
+    recording_verify.spec.name = "recording_verify"
+    registry.register(CodingSkillForPolicy())
+    registry.register(recording_verify)
+
+    graph = TaskGraph(
+        graph_id="graph-policy",
+        run_id="run-policy",
+        nodes=[TaskNode(node_id="coding", skill_name="coding")],
+    )
+
+    result = asyncio.run(
+        run_v3(
+            graph=graph,
+            registry=registry,
+            autonomy_enabled=True,
+            autonomy_policies=[
+                {
+                    "policy_id": "verify_code_updates",
+                    "event_type": EventType.CODE_UPDATED.value,
+                    "target_skill_name": "recording_verify",
+                    "reason": "verify_after_code_change",
+                    "payload_template": {"verification_mode": "targeted"},
+                    "copy_changed_files": True,
+                }
+            ],
+        )
+    )
+
+    assert len(recording_verify.inputs) == 1
+    assert recording_verify.inputs[0].payload["verification_mode"] == "targeted"
+    assert recording_verify.inputs[0].payload["changed_files"] == ["app/example.py"]
+    assert result["autonomy"]["decisions"][0]["policy_id"] == "verify_code_updates"
+
+
+def test_run_v3_collects_unified_audit_for_trigger_governance() -> None:
+    registry = SkillRegistry()
+    registry.register(RecordingSkill())
+    graph = TaskGraph(
+        graph_id="graph-trigger-audit",
+        run_id="run-trigger-audit",
+        nodes=[TaskNode(node_id="root", skill_name="recording")],
+    )
+
+    result = asyncio.run(
+        run_v3(
+            graph=graph,
+            registry=registry,
+            trigger_rules=[
+                TriggerRule(
+                    rule_id="skip-on-budget",
+                    event_type=EventType.SKILL_FINISHED.value,
+                    target_skill_name="recording",
+                )
+            ],
+            max_triggers_per_run=0,
+        )
+    )
+
+    assert result["audit"]["summary"]["total_stop_reasons"] >= 1
+    assert any(reason["reason_type"] == "budget_exhausted" for reason in result["audit"]["stop_reasons"])
+
+
+def test_run_v3_can_enable_phase2_snapshot_messaging_and_scheduler() -> None:
+    registry = SkillRegistry()
+    recording = RecordingSkill()
+    registry.register(recording)
+
+    graph = TaskGraph(
+        graph_id="graph-phase2",
+        run_id="run-phase2",
+        nodes=[TaskNode(node_id="root", skill_name="recording")],
+    )
+
+    result = asyncio.run(
+        run_v3(
+            graph=graph,
+            registry=registry,
+            phase2_features={
+                "snapshot": True,
+                "messaging": {
+                    "enabled": True,
+                    "messages": [
+                        {
+                            "from_actor": "graph_executor",
+                            "to_actor": "recording",
+                            "message_type": "follow_up",
+                            "payload": {"kind": "phase2"},
+                        }
+                    ],
+                },
+                "scheduler": {
+                    "enabled": True,
+                    "tasks": [
+                        {
+                            "task_type": "delayed",
+                            "target_skill_name": "recording",
+                            "payload": {"from": "scheduler"},
+                            "reason": "run once",
+                            "delay_seconds": 0.0,
+                        }
+                    ],
+                    "run_loop": False,
+                },
+            },
+        )
+    )
+
+    assert result["phase2"] is not None
+    assert len(result["phase2"]["snapshots"]) == 3
+    assert {snap["snapshot_type"] for snap in result["phase2"]["snapshots"]} == {
+        SnapshotType.WORKSPACE.value,
+        SnapshotType.EXECUTION_STATE.value,
+        SnapshotType.EVENT_CHECKPOINT.value,
+    }
+    assert result["phase2"]["messaging"]["messages"][0]["status"] == MessageStatus.DELIVERED.value
+    assert result["phase2"]["scheduler"]["tasks"][0]["status"] in {
+        TaskStatus.COMPLETED.value,
+        TaskStatus.SCHEDULED.value,
+    }
 
 
 def test_run_v3_shared_runner_returns_report_events_and_trace(tmp_path: Path) -> None:

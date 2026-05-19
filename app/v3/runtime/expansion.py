@@ -251,8 +251,13 @@ class DynamicExpansion:
             node = TaskNode(
                 node_id=f"expanded:{request.request_id}:plan_{i}",
                 skill_name=plan_entry.get("skill_name", "unknown"),
-                dependencies=set(plan_entry.get("dependencies", [])),
-                input_mapping=plan_entry.get("input_mapping", {}),
+                dependencies=list(plan_entry.get("dependencies", [])),
+                input_payload=dict(
+                    plan_entry.get(
+                        "input_payload",
+                        plan_entry.get("input_mapping", {}),
+                    )
+                ),
                 status=TaskNodeStatus.PENDING,
             )
             nodes.append(node)

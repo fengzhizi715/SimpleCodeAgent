@@ -11,12 +11,17 @@ from app.contracts.trace import TraceEvent
 from app.trace.recorder import JsonlTraceRecorder
 from app.trace.repository import SQLiteTraceRepository
 from app.v3 import build_default_skill_registry
+from app.v3.audit.audit_store import AuditLogStore
 from app.v3.autonomy.autonomy_runtime import AutonomyRuntime
-from app.v3.contracts.agent_message_contracts import AgentMessage
+from app.v3.contracts.agent_message_contracts import AgentMessage, AgentMessageType
+from app.v3.contracts.autonomy_contracts import AutonomyPolicy
 from app.v3.contracts.execution_contracts import ExecutionNode, ExecutionReport, TriggerDiagnostic
-from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph
+from app.v3.contracts.graph_contracts import GraphInspection, TaskGraph, TaskNode
+from app.v3.contracts.messaging_contracts import MessagePolicy
 from app.v3.contracts.planning_contracts import PlanningResult
+from app.v3.contracts.scheduler_contracts import TaskPriority, TaskType
 from app.v3.contracts.skill_contracts import SkillInput
+from app.v3.contracts.snapshot_contracts import WorkspaceSnapshotMetadata
 from app.v3.contracts.trigger_contracts import TriggerRule
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
@@ -26,8 +31,12 @@ from app.v3.governance.circuit_breaker import CircuitBreakerManager
 from app.v3.governance.execution_budget import ExecutionBudgetState
 from app.v3.governance.propagation_limit import PropagationState
 from app.v3.runtime.execution_kernel import ExecutionKernel
+from app.v3.runtime.expansion import DynamicExpansion
 from app.v3.runtime.graph_executor import GraphExecutor
+from app.v3.runtime.messaging import RuntimeMessaging
 from app.v3.runtime.skill_executor import SkillExecutor
+from app.v3.runtime.snapshot import SnapshotManager
+from app.v3.scheduler.scheduler_runtime import SchedulerRuntime
 from app.v3.trace import attach_trace_collector
 from app.v3.trigger.trigger_engine import HitCallback, TriggerEngine
 from app.v3.trigger.trigger_registry import TriggerRegistry
@@ -61,6 +70,8 @@ async def run_v3(
     max_consecutive_rule_hits: int = 5,
     circuit_breaker_threshold: int = 3,
     autonomy_enabled: bool = False,
+    autonomy_policies: list[dict[str, Any]] | None = None,
+    phase2_features: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run a V3 goal or graph and return serializable output."""
     resolved_workdir = str(Path(workdir or ".").expanduser().resolve())
@@ -70,6 +81,7 @@ async def run_v3(
     trigger_execution_nodes: list[ExecutionNode] = []
     trigger_diagnostics: list[TriggerDiagnostic] = []
     agent_messages: list[AgentMessage] = []
+    audit_store = AuditLogStore()
     budget = ExecutionBudgetState(
         run_id="",
         max_steps=max_steps,
@@ -93,6 +105,7 @@ async def run_v3(
         event_bus=event_bus,
         event_store=event_store,
         budget=budget,
+        audit_store=audit_store,
     )
     kernel = ExecutionKernel(
         graph_executor=graph_executor,
@@ -123,6 +136,15 @@ async def run_v3(
 
     if resolved_graph is None:
         raise ValueError("未能解析可执行的 graph。")
+    phase2_config = dict(phase2_features or {})
+    expansion_runtime = _build_phase2_expansion(
+        graph=resolved_graph,
+        phase2_features=phase2_config,
+    )
+    if expansion_runtime is not None:
+        resolved_graph = expansion_runtime.get_expanded_graph()
+        if planning_result is not None:
+            planning_result = planning_result.model_copy(update={"graph": resolved_graph})
     budget.run_id = resolved_graph.run_id
     propagation.run_id = resolved_graph.run_id
     if planning_result is not None:
@@ -161,6 +183,7 @@ async def run_v3(
         budget=budget,
         propagation=propagation,
         circuit_breaker=circuit_breaker,
+        audit_store=audit_store,
     )
     autonomy_runtime: AutonomyRuntime | None = None
     if autonomy_enabled:
@@ -174,6 +197,8 @@ async def run_v3(
             propagation=propagation,
             circuit_breaker=circuit_breaker,
             workspace_root=resolved_workdir,
+            audit_store=audit_store,
+            policies=_normalize_autonomy_policies(autonomy_policies),
         )
 
     context = await kernel.run_graph(
@@ -193,7 +218,32 @@ async def run_v3(
         trigger_diagnostics=trigger_diagnostics,
         agent_messages=agent_messages,
     )
+    runtime_messaging = _build_runtime_messaging(
+        run_id=resolved_graph.run_id,
+        phase2_features=phase2_config,
+        agent_messages=agent_messages,
+    )
+    if runtime_messaging is not None:
+        for delivered_message in runtime_messaging.to_agent_messages():
+            agent_messages.append(delivered_message)
+    scheduler_runtime = await _run_scheduler_runtime(
+        run_id=resolved_graph.run_id,
+        phase2_features=phase2_config,
+        skill_executor=skill_executor,
+        event_bus=event_bus,
+        event_store=event_store,
+        execution_nodes=trigger_execution_nodes,
+        messages=agent_messages,
+    )
     report = context.to_report(resolved_graph)
+    snapshot_manager = _capture_phase2_snapshots(
+        run_id=resolved_graph.run_id,
+        workdir=resolved_workdir,
+        phase2_features=phase2_config,
+        report=report,
+        event_store=event_store,
+        trigger_execution_nodes=trigger_execution_nodes,
+    )
     _persist_v3_trace(run_id=report.run_id, trace_events=trace_events)
     _persist_v3_run_metadata(
         report=report,
@@ -216,6 +266,51 @@ async def run_v3(
             if autonomy_runtime is not None
             else None
         ),
+        "audit": {
+            "summary": audit_store.get_audit_summary(report.run_id),
+            "records": [record.model_dump(mode="json") for record in audit_store.list_records_by_run_id(report.run_id)],
+            "decision_traces": [
+                trace.model_dump(mode="json")
+                for trace in audit_store.list_decision_traces_by_run_id(report.run_id)
+            ],
+            "governance_actions": [
+                action.model_dump(mode="json")
+                for action in audit_store.list_governance_actions_by_run_id(report.run_id)
+            ],
+            "stop_reasons": [
+                reason.model_dump(mode="json")
+                for reason in audit_store.list_stop_reasons_by_run_id(report.run_id)
+            ],
+        },
+        "phase2": {
+            "expansion": (
+                {
+                    "requests": [request.model_dump(mode="json") for request in expansion_runtime.requests],
+                    "appended_nodes": [node.model_dump(mode="json") for node in expansion_runtime.appended_nodes],
+                }
+                if expansion_runtime is not None
+                else None
+            ),
+            "messaging": (
+                {
+                    "messages": [message.model_dump(mode="json") for message in runtime_messaging.messages],
+                }
+                if runtime_messaging is not None
+                else None
+            ),
+            "scheduler": (
+                {
+                    "tasks": [task.model_dump(mode="json") for task in scheduler_runtime.tasks],
+                }
+                if scheduler_runtime is not None
+                else None
+            ),
+            "snapshots": (
+                [snapshot.model_dump(mode="json") for snapshot in snapshot_manager.snapshots]
+                if snapshot_manager is not None
+                else []
+            ),
+        },
         "events": [event.model_dump(mode="json") for event in event_store.list()] if include_events else [],
         "trace": [event.model_dump(mode="json") for event in trace_events] if include_trace else [],
     }
@@ -462,6 +557,7 @@ def _attach_trigger_engine(
     budget: ExecutionBudgetState | None = None,
     propagation: PropagationState | None = None,
     circuit_breaker: CircuitBreakerManager | None = None,
+    audit_store: AuditLogStore | None = None,
 ) -> None:
     """Attach a trigger engine to the event bus for configured rules."""
     if not trigger_rules:
@@ -483,6 +579,7 @@ def _attach_trigger_engine(
         budget=budget,
         propagation=propagation,
         circuit_breaker=circuit_breaker,
+        audit_store=audit_store,
     )
     for event_type in {rule.event_type for rule in trigger_rules if rule.enabled}:
         event_bus.subscribe(event_type, trigger_engine.handle_event)
@@ -499,8 +596,10 @@ def _attach_autonomy_runtime(
     propagation: PropagationState | None,
     circuit_breaker: CircuitBreakerManager | None,
     workspace_root: str,
+    audit_store: AuditLogStore | None,
+    policies: list[AutonomyPolicy],
 ) -> AutonomyRuntime:
-    """Attach a minimal controlled-autonomy policy to the event bus."""
+    """Attach controlled-autonomy policies to the event bus."""
     autonomy_runtime = AutonomyRuntime(
         skill_executor=skill_executor,
         event_bus=event_bus,
@@ -510,32 +609,231 @@ def _attach_autonomy_runtime(
         budget=budget,
         propagation=propagation,
         circuit_breaker=circuit_breaker,
+        audit_store=audit_store,
     )
 
-    async def handle_code_updated(event) -> None:
-        payload = dict(event.payload)
-        changed_files = payload.get("changed_files", [])
-        if not changed_files:
-            return
-        request = await autonomy_runtime.create_follow_up_request(
-            run_id=event.run_id,
-            target_skill_name="test_runner",
-            reason="code_updated_follow_up_verification",
-            source_event_id=event.event_id,
-            payload={
-                "workspace_root": workspace_root,
-                "workdir": workspace_root,
-                "changed_files": changed_files,
-            },
-            max_iterations=1,
-            stop_condition="verification_completed",
-        )
-        decision = await autonomy_runtime.evaluate_request(request)
-        if decision.approved:
-            await autonomy_runtime.execute_approved_request(request, decision)
+    policies_by_event: dict[str, list[AutonomyPolicy]] = {}
+    for policy in policies:
+        policies_by_event.setdefault(policy.event_type, []).append(policy)
 
-    event_bus.subscribe("code_updated", handle_code_updated)
+    def _make_handler(matched_policies: list[AutonomyPolicy]):
+        async def _handle_event(event) -> None:
+            event_payload = dict(event.payload)
+            changed_files = list(event_payload.get("changed_files", []))
+            for policy in matched_policies:
+                if policy.require_changed_files and not changed_files:
+                    continue
+                payload = dict(policy.payload_template)
+                payload.setdefault("workspace_root", workspace_root)
+                payload.setdefault("workdir", workspace_root)
+                if policy.copy_changed_files and changed_files:
+                    payload["changed_files"] = changed_files
+                request = await autonomy_runtime.create_request_from_policy(
+                    policy=policy,
+                    run_id=event.run_id,
+                    source_event_id=event.event_id,
+                    source_trigger_rule_id=event.trigger_rule_id,
+                    payload=payload,
+                )
+                decision = await autonomy_runtime.evaluate_request(request)
+                if decision.approved:
+                    await autonomy_runtime.execute_approved_request(request, decision)
+
+        return _handle_event
+
+    for event_type, matched_policies in policies_by_event.items():
+        event_bus.subscribe(event_type, _make_handler(matched_policies))
     return autonomy_runtime
+
+
+def _normalize_autonomy_policies(
+    autonomy_policies: list[dict[str, Any]] | None,
+) -> list[AutonomyPolicy]:
+    if not autonomy_policies:
+        return [
+            AutonomyPolicy(
+                policy_id="default_code_updated_follow_up",
+                event_type="code_updated",
+                target_skill_name="test_runner",
+                reason="code_updated_follow_up_verification",
+                copy_changed_files=True,
+                require_changed_files=True,
+                stop_condition="verification_completed",
+            )
+        ]
+    return [AutonomyPolicy.model_validate(policy) for policy in autonomy_policies]
+
+
+def _build_phase2_expansion(
+    *,
+    graph: TaskGraph,
+    phase2_features: dict[str, Any],
+) -> DynamicExpansion | None:
+    config = phase2_features.get("expansion")
+    if not config:
+        return None
+    if config is True:
+        config = {"enabled": True}
+    if not isinstance(config, dict) or not config.get("enabled", True):
+        return None
+
+    expansion = DynamicExpansion(run_id=graph.run_id, original_graph=graph)
+    for request_spec in config.get("requests", []):
+        request_type = str(request_spec.get("type") or "append_execution_plan")
+        reason = str(request_spec.get("reason") or "phase2_expansion")
+        if request_type == "append_virtual_node":
+            node = TaskNode.model_validate(request_spec["node"])
+            request = expansion.request_append_virtual_node(node=node, reason=reason)
+        elif request_type == "instantiate_subgraph":
+            request = expansion.request_instantiate_subgraph(
+                template_id=request_spec.get("template_id"),
+                reason=reason,
+            )
+        else:
+            request = expansion.request_append_execution_plan(
+                plan=list(request_spec.get("plan", [])),
+                reason=reason,
+            )
+        if request_spec.get("approve", True):
+            expansion.approve(request.request_id)
+    return expansion
+
+
+def _build_runtime_messaging(
+    *,
+    run_id: str,
+    phase2_features: dict[str, Any],
+    agent_messages: list[AgentMessage],
+) -> RuntimeMessaging | None:
+    config = phase2_features.get("messaging")
+    if not config:
+        return None
+    if config is True:
+        config = {"enabled": True}
+    if not isinstance(config, dict) or not config.get("enabled", True):
+        return None
+
+    policy = MessagePolicy.model_validate(config.get("policy", {}))
+    messaging = RuntimeMessaging(run_id=run_id, policy=policy)
+    for message_spec in config.get("messages", []):
+        messaging.send(
+            from_actor=str(message_spec["from_actor"]),
+            to_actor=str(message_spec["to_actor"]),
+            message_type=str(message_spec["message_type"]),
+            payload=dict(message_spec.get("payload", {})),
+            delay_seconds=message_spec.get("delay_seconds"),
+            correlation_id=message_spec.get("correlation_id"),
+            metadata=dict(message_spec.get("metadata", {})),
+        )
+    delivered_messages = messaging.tick()
+    for delivered in delivered_messages:
+        agent_messages.append(
+            AgentMessage(
+                run_id=run_id,
+                from_actor=delivered.from_actor,
+                to_actor=delivered.to_actor,
+                message_type=AgentMessageType.REQUEST,
+                payload=delivered.payload,
+                correlation_id=delivered.correlation_id,
+            )
+        )
+    return messaging
+
+
+async def _run_scheduler_runtime(
+    *,
+    run_id: str,
+    phase2_features: dict[str, Any],
+    skill_executor: SkillExecutor,
+    event_bus: EventBus,
+    event_store: EventStore,
+    execution_nodes: list[ExecutionNode],
+    messages: list[AgentMessage],
+) -> SchedulerRuntime | None:
+    config = phase2_features.get("scheduler")
+    if not config:
+        return None
+    if config is True:
+        config = {"enabled": True}
+    if not isinstance(config, dict) or not config.get("enabled", True):
+        return None
+
+    scheduler = SchedulerRuntime(
+        skill_executor=skill_executor,
+        run_id=run_id,
+        event_bus=event_bus,
+        event_store=event_store,
+        execution_nodes=execution_nodes,
+        messages=messages,
+    )
+    for task_spec in config.get("tasks", []):
+        task_type = TaskType(str(task_spec.get("task_type", "delayed")))
+        priority = TaskPriority(str(task_spec.get("priority", "normal")))
+        common_kwargs = {
+            "target_skill_name": str(task_spec["target_skill_name"]),
+            "payload": dict(task_spec.get("payload", {})),
+            "reason": str(task_spec.get("reason", "")),
+            "priority": priority,
+            "metadata": dict(task_spec.get("metadata", {})),
+        }
+        if task_type == TaskType.RECURRING:
+            scheduler.schedule_recurring(
+                interval_seconds=float(task_spec.get("interval_seconds", 0.0)),
+                max_repeats=task_spec.get("max_repeats"),
+                **common_kwargs,
+            )
+        elif task_type == TaskType.INTERVAL:
+            scheduler.schedule_interval(
+                interval_seconds=float(task_spec.get("interval_seconds", 0.0)),
+                max_repeats=task_spec.get("max_repeats"),
+                **common_kwargs,
+            )
+        else:
+            scheduler.schedule_delayed(
+                delay_seconds=float(task_spec.get("delay_seconds", 0.0)),
+                **common_kwargs,
+            )
+
+    if config.get("run_loop", False):
+        await scheduler.run_loop(
+            tick_interval=float(config.get("tick_interval", 0.0)),
+            max_ticks=int(config.get("max_ticks", 1)),
+        )
+    else:
+        await scheduler.tick()
+    return scheduler
+
+
+def _capture_phase2_snapshots(
+    *,
+    run_id: str,
+    workdir: str,
+    phase2_features: dict[str, Any],
+    report: ExecutionReport,
+    event_store: EventStore,
+    trigger_execution_nodes: list[ExecutionNode],
+) -> SnapshotManager | None:
+    config = phase2_features.get("snapshot")
+    if not config:
+        return None
+    if config is True:
+        config = {"enabled": True}
+    if not isinstance(config, dict) or not config.get("enabled", True):
+        return None
+
+    snapshot_manager = SnapshotManager(run_id=run_id)
+    snapshot_manager.capture_all(
+        event_store=event_store,
+        completed_nodes=report.completed_node_ids,
+        failed_nodes=report.failed_node_ids,
+        pending_nodes=report.skipped_node_ids,
+        shared_state_keys=sorted(report.shared_state.keys()),
+        trigger_count=len(trigger_execution_nodes),
+        workspace_metadata=WorkspaceSnapshotMetadata(root_path=workdir),
+        label=str(config.get("label", "final")),
+        description=str(config.get("description", "post_run_snapshot")),
+    )
+    return snapshot_manager
 
 
 def _apply_trigger_rule_enabled_overrides(

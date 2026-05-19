@@ -59,3 +59,21 @@ class AutonomyDecision(BaseModel):
     policy_id: str | None = None
     applied_budget: AutonomyBudget | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutonomyPolicy(BaseModel):
+    """A minimal, configurable autonomy policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    policy_id: str
+    event_type: str
+    target_skill_name: str
+    reason: str
+    task_type: AutonomyTaskType = AutonomyTaskType.FOLLOW_UP
+    payload_template: dict[str, Any] = Field(default_factory=dict)
+    copy_changed_files: bool = False
+    require_changed_files: bool = False
+    max_iterations: int = 1
+    stop_condition: str | None = None
+    budget: AutonomyBudget | None = None

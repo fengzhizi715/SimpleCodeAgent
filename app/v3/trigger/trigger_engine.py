@@ -458,7 +458,7 @@ class TriggerEngine:
             skip_reason = str(metadata.get("skip_reason")) if metadata.get("skip_reason") is not None else "unknown"
             stop_reason = StopReason(
                 run_id=event.run_id,
-                reason_type=skip_reason,
+                reason_type=self._classify_stop_reason(skip_reason),
                 actor="trigger_engine",
                 summary=f"Trigger rule skipped: {skip_reason}",
                 details=dict(metadata),
@@ -521,7 +521,7 @@ class TriggerEngine:
         if status == "skipped" and skip_reason is not None:
             stop_reason = StopReason(
                 run_id=event.run_id,
-                reason_type=skip_reason,
+                reason_type=self._classify_stop_reason(skip_reason),
                 actor="trigger_engine",
                 summary=f"Trigger skipped: {skip_reason}",
                 details=dict(metadata or {}),
@@ -529,3 +529,13 @@ class TriggerEngine:
             if self.audit_store is not None:
                 self.audit_store.add_stop_reason(stop_reason)
             self._stop_reasons.append(stop_reason)
+
+    @staticmethod
+    def _classify_stop_reason(skip_reason: str) -> str:
+        if skip_reason.startswith("budget_") or skip_reason.startswith("max_triggers_"):
+            return "budget_exhausted"
+        if skip_reason in ("max_consecutive_rule_hits",) or skip_reason.startswith("propagation_") or skip_reason.startswith("max_depth_"):
+            return "propagation_limit"
+        if skip_reason == "circuit_breaker_open":
+            return "circuit_breaker_open"
+        return skip_reason

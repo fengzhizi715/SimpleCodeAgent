@@ -15,6 +15,7 @@ from app.v3.contracts.audit_contracts import (
 from app.v3.contracts.autonomy_contracts import (
     AutonomyBudget,
     AutonomyDecision,
+    AutonomyPolicy,
     AutonomyRequest,
     AutonomyTaskType,
 )
@@ -24,9 +25,12 @@ from app.v3.contracts.skill_contracts import SkillInput
 from app.v3.events.event_bus import EventBus
 from app.v3.events.event_store import EventStore
 from app.v3.governance.circuit_breaker import CircuitBreakerManager
+from app.v3.governance.cooldown_manager import CooldownManager
 from app.v3.governance.execution_budget import ExecutionBudgetState
 from app.v3.governance.propagation_limit import PropagationState
 from app.v3.runtime.skill_executor import SkillExecutor
+
+from app.v3.audit.audit_store import AuditLogStore
 
 
 class AutonomyRuntime:
@@ -51,6 +55,10 @@ class AutonomyRuntime:
         budget: ExecutionBudgetState | None = None,
         propagation: PropagationState | None = None,
         circuit_breaker: CircuitBreakerManager | None = None,
+        cooldown_manager: CooldownManager | None = None,
+        skill_cooldown_seconds: float | None = None,
+        policy_cooldown_seconds: float | None = None,
+        audit_store: AuditLogStore | None = None,
     ) -> None:
         self.skill_executor = skill_executor
         self.event_bus = event_bus
@@ -60,6 +68,10 @@ class AutonomyRuntime:
         self.budget = budget
         self.propagation = propagation
         self.circuit_breaker = circuit_breaker or CircuitBreakerManager()
+        self.cooldown_manager = cooldown_manager or CooldownManager()
+        self.skill_cooldown_seconds = skill_cooldown_seconds
+        self.policy_cooldown_seconds = policy_cooldown_seconds
+        self.audit_store = audit_store
 
         self._requests: list[AutonomyRequest] = []
         self._decisions: list[AutonomyDecision] = []
@@ -87,6 +99,50 @@ class AutonomyRuntime:
     def governance_actions(self) -> list[GovernanceAction]:
         return list(self._governance_actions)
 
+    async def create_request_from_policy(
+        self,
+        *,
+        policy: AutonomyPolicy,
+        run_id: str,
+        source_event_id: str | None = None,
+        source_trigger_rule_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> AutonomyRequest:
+        metadata = {"policy_id": policy.policy_id}
+        if policy.task_type == AutonomyTaskType.SCHEDULED_CHECK:
+            request = await self.create_scheduled_check_request(
+                run_id=run_id,
+                target_skill_name=policy.target_skill_name,
+                reason=policy.reason,
+                payload=payload,
+                budget=policy.budget,
+                metadata=metadata,
+            )
+        elif policy.task_type == AutonomyTaskType.RETRY:
+            request = await self.create_retry_request(
+                run_id=run_id,
+                target_skill_name=policy.target_skill_name,
+                reason=policy.reason,
+                source_event_id=source_event_id,
+                payload=payload,
+                budget=policy.budget,
+                metadata=metadata,
+            )
+        else:
+            request = await self.create_follow_up_request(
+                run_id=run_id,
+                target_skill_name=policy.target_skill_name,
+                reason=policy.reason,
+                source_event_id=source_event_id,
+                source_trigger_rule_id=source_trigger_rule_id,
+                payload=payload,
+                max_iterations=policy.max_iterations,
+                stop_condition=policy.stop_condition,
+                budget=policy.budget,
+                metadata=metadata,
+            )
+        return request
+
     async def create_follow_up_request(
         self,
         *,
@@ -99,6 +155,7 @@ class AutonomyRuntime:
         max_iterations: int = 1,
         stop_condition: str | None = None,
         budget: AutonomyBudget | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AutonomyRequest:
         request = AutonomyRequest(
             request_id=str(uuid4()),
@@ -112,6 +169,7 @@ class AutonomyRuntime:
             max_iterations=max_iterations,
             stop_condition=stop_condition,
             budget=budget,
+            metadata=metadata or {},
         )
         self._requests.append(request)
         self._record_audit(
@@ -137,6 +195,7 @@ class AutonomyRuntime:
         reason: str,
         payload: dict[str, Any] | None = None,
         budget: AutonomyBudget | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AutonomyRequest:
         request = AutonomyRequest(
             request_id=str(uuid4()),
@@ -146,6 +205,7 @@ class AutonomyRuntime:
             reason=reason,
             payload=payload or {},
             budget=budget,
+            metadata=metadata or {},
         )
         self._requests.append(request)
         self._record_audit(
@@ -171,6 +231,7 @@ class AutonomyRuntime:
         source_event_id: str | None = None,
         payload: dict[str, Any] | None = None,
         budget: AutonomyBudget | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> AutonomyRequest:
         request = AutonomyRequest(
             request_id=str(uuid4()),
@@ -181,6 +242,7 @@ class AutonomyRuntime:
             source_event_id=source_event_id,
             payload=payload or {},
             budget=budget,
+            metadata=metadata or {},
         )
         self._requests.append(request)
         self._record_audit(
@@ -206,6 +268,7 @@ class AutonomyRuntime:
             run_id=request.run_id,
             approved=approved,
             reason=reason,
+            policy_id=str(request.metadata.get("policy_id")) if request.metadata.get("policy_id") else None,
             applied_budget=request.budget,
             metadata={"factors": factors},
         )
@@ -231,7 +294,7 @@ class AutonomyRuntime:
             },
         )
 
-        self._decision_traces.append(
+        self._record_decision_trace(
             DecisionTrace(
                 run_id=request.run_id,
                 event_id=request.source_event_id,
@@ -241,6 +304,14 @@ class AutonomyRuntime:
                 factors=factors,
                 summary=f"Autonomy request {request.request_id} {'approved' if approved else 'rejected'}: {reason}",
             )
+        )
+        self._record_governance_action(
+            run_id=request.run_id,
+            action_type="approve_request" if approved else "reject_request",
+            target_id=request.request_id,
+            target_type="autonomy_request",
+            reason=reason,
+            parameters={"policy_id": decision.policy_id, "factors": factors},
         )
 
         return decision
@@ -305,6 +376,36 @@ class AutonomyRuntime:
                 "success": False,
                 "error": f"Circuit breaker open for {request.target_skill_name}",
             }
+
+        if self.skill_cooldown_seconds is not None:
+            skill_key = f"skill:{request.target_skill_name}"
+            if self.cooldown_manager.is_in_cooldown(
+                run_id=run_id,
+                cooldown_key=skill_key,
+                cooldown_seconds=self.skill_cooldown_seconds,
+            ):
+                remaining = self.cooldown_manager.get_remaining_seconds(
+                    run_id=run_id,
+                    cooldown_key=skill_key,
+                    cooldown_seconds=self.skill_cooldown_seconds,
+                )
+                self._record_audit(
+                    run_id=run_id,
+                    action=AuditAction.GOVERNANCE_INTERCEPTED,
+                    actor="skill_cooldown",
+                    target=request.target_skill_name,
+                    reason=f"Skill cooldown active for {request.target_skill_name}",
+                    summary="Skill cooldown preventing execution",
+                    details={
+                        "request_id": request.request_id,
+                        "skill_name": request.target_skill_name,
+                        "remaining_seconds": remaining,
+                    },
+                )
+                return {
+                    "success": False,
+                    "error": f"Skill cooldown active for {request.target_skill_name}, {remaining:.1f}s remaining",
+                }
 
         if self.propagation is not None:
             if not self.propagation.consume_autonomy_task():
@@ -413,6 +514,20 @@ class AutonomyRuntime:
                 request.target_skill_name, output.error
             )
 
+        if self.skill_cooldown_seconds is not None:
+            self.cooldown_manager.mark(
+                run_id=run_id,
+                cooldown_key=f"skill:{request.target_skill_name}",
+                cooldown_seconds=self.skill_cooldown_seconds,
+            )
+
+        if self.policy_cooldown_seconds is not None:
+            self.cooldown_manager.mark(
+                run_id=run_id,
+                cooldown_key=f"policy:{request.task_type.value}",
+                cooldown_seconds=self.policy_cooldown_seconds,
+            )
+
         self._record_audit(
             run_id=run_id,
             action=AuditAction.TASK_EXECUTED,
@@ -500,8 +615,56 @@ class AutonomyRuntime:
                 )
                 return False, "Autonomy task limit exceeded", factors
 
+        if self.policy_cooldown_seconds is not None:
+            policy_key = f"policy:{request.task_type.value}"
+            if self.cooldown_manager.is_in_cooldown(
+                run_id=request.run_id,
+                cooldown_key=policy_key,
+                cooldown_seconds=self.policy_cooldown_seconds,
+            ):
+                remaining = self.cooldown_manager.get_remaining_seconds(
+                    run_id=request.run_id,
+                    cooldown_key=policy_key,
+                    cooldown_seconds=self.policy_cooldown_seconds,
+                )
+                factors.append(
+                    {
+                        "factor": "policy_cooldown",
+                        "value": "active",
+                        "detail": {"policy_type": request.task_type.value, "remaining_seconds": remaining},
+                    }
+                )
+                return False, f"Autonomy policy cooldown active for {request.task_type.value}", factors
+
         factors.append({"factor": "governance_check", "value": "passed"})
         return True, "Governance checks passed", factors
+
+    def _record_decision_trace(self, trace: DecisionTrace) -> None:
+        self._decision_traces.append(trace)
+        if self.audit_store is not None:
+            self.audit_store.add_decision_trace(trace)
+
+    def _record_governance_action(
+        self,
+        *,
+        run_id: str,
+        action_type: str,
+        target_id: str,
+        target_type: str,
+        reason: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> None:
+        action = GovernanceAction(
+            run_id=run_id,
+            action_type=action_type,
+            target_id=target_id,
+            target_type=target_type,
+            reason=reason,
+            parameters=parameters or {},
+        )
+        self._governance_actions.append(action)
+        if self.audit_store is not None:
+            self.audit_store.add_governance_action(action)
 
     def _record_audit(
         self,
@@ -532,6 +695,8 @@ class AutonomyRuntime:
             details=details or {},
         )
         self._audit_records.append(record)
+        if self.audit_store is not None:
+            self.audit_store.add_record(record)
         return record
 
     async def _publish_event(self, event: V3Event) -> None:
