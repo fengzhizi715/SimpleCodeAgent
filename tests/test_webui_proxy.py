@@ -21,6 +21,33 @@ def test_v3_execution_page_surfaces_final_summary() -> None:
     assert "v3-summary-card" in page
 
 
+def test_v3_execution_page_uses_result_first_layout() -> None:
+    page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
+
+    assert "v3PrimaryAnswer" in page
+    assert "v3KeyFindings" in page
+    assert "v3OverviewCards" in page
+    assert "v3-flow-detail" in page
+
+
+def test_v3_execution_page_surfaces_outcome_next_step_and_risks() -> None:
+    page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
+
+    assert "v3OutcomeCards" in page
+    assert "Outcome" in page
+    assert "Next Step" in page
+    assert "Risks" in page
+
+
+def test_v3_execution_page_composes_task_aware_primary_answer() -> None:
+    page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
+
+    assert "composeV3AnalysisAnswer" in page
+    assert "composeV3CodingAnswer" in page
+    assert "composeV3TestingAnswer" in page
+    assert "v3PrimaryAnswer" in page
+
+
 def test_history_page_supports_bulk_delete_controls() -> None:
     page = Path("webui/src/pages/HistoryPage.vue").read_text(encoding="utf-8")
 

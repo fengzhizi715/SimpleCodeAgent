@@ -19,26 +19,111 @@
 
   <template v-if="isV3Detail">
     <section class="panel" v-if="replay.run">
-      <h3>运行摘要</h3>
-      <table>
-        <tbody>
-          <tr><th>status</th><td>{{ replay.run.status }}</td></tr>
-          <tr><th>session_id</th><td>{{ replay.run.session_id || "—" }}</td></tr>
-          <tr><th>workdir</th><td>{{ replay.run.workdir || "—" }}</td></tr>
-          <tr><th>task</th><td>{{ replay.run.task || "—" }}</td></tr>
-          <tr><th>model</th><td>{{ replay.run.model || "—" }}</td></tr>
-          <tr><th>step_count</th><td>{{ replay.run.step_count ?? 0 }}</td></tr>
-        </tbody>
-      </table>
-      <div class="v3-summary-card">
-        <div class="v3-summary-head">
-          <strong>Final Summary</strong>
-          <span class="badge" v-if="v3SummaryHighlights.length">{{ v3SummaryHighlights.length }} insights</span>
+      <div class="v3-result-hero">
+        <div class="v3-run-header">
+          <div class="v3-run-title">
+            <h3>{{ replay.run.task || "未命名任务" }}</h3>
+            <div class="v3-run-badges">
+              <span class="badge">{{ detailVersion.toUpperCase() }}</span>
+              <span class="status-badge" :class="statusBadgeClass(replay.run.status)">{{ replay.run.status }}</span>
+            </div>
+          </div>
+          <div class="v3-run-meta">
+            <span class="v3-meta-item"><strong>Model:</strong> {{ replay.run.model || "—" }}</span>
+            <span class="v3-meta-item"><strong>Tokens:</strong> {{ formatTokens(replay.run) }}</span>
+            <span class="v3-meta-item"><strong>Workdir:</strong> {{ replay.run.workdir || "—" }}</span>
+          </div>
         </div>
-        <p class="v3-summary-text">{{ v3FinalSummary }}</p>
-        <div v-if="v3SummaryHighlights.length" class="v3-summary-highlights">
-          <span v-for="item in v3SummaryHighlights" :key="item">{{ item }}</span>
+
+        <div class="v3-overview-grid">
+          <article v-for="card in v3OverviewCards" :key="card.label" class="v3-overview-card">
+            <span>{{ card.label }}</span>
+            <strong>{{ card.value }}</strong>
+            <small v-if="card.help">{{ card.help }}</small>
+          </article>
         </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="v3-primary-answer-head">
+        <div>
+          <h3>最终答案</h3>
+          <p class="muted">先看本次运行最后产出了什么，再往下看它是怎么完成的。</p>
+        </div>
+      </div>
+      <div class="v3-final-answer v3-final-answer-prominent" v-html="renderMarkdown(v3PrimaryAnswer)"></div>
+      <div v-if="v3OutcomeCards.length" class="v3-outcome-grid">
+        <article v-for="card in v3OutcomeCards" :key="card.label" class="v3-outcome-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small v-if="card.help">{{ card.help }}</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" v-if="v3KeyFindings.length">
+      <div class="v3-section-head">
+        <div>
+          <h3>关键结论</h3>
+          <p class="muted">把这次运行里最值得先读的信息提到前面。</p>
+        </div>
+      </div>
+      <div class="v3-key-findings">
+        <article v-for="item in v3KeyFindings" :key="`${item.label}-${item.value}`" class="v3-key-card">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+          <small v-if="item.help">{{ item.help }}</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" v-if="v3GraphExecutionNodes.length">
+      <div class="v3-section-head">
+        <div>
+          <h3>执行流程</h3>
+          <p class="muted">{{ v3FlowStepLine }}</p>
+        </div>
+        <span class="badge">{{ v3GraphExecutionNodes.length }} steps</span>
+      </div>
+      <div class="v3-flow-layout">
+        <div class="v3-flow-chain">
+          <button
+            v-for="(node, index) in v3GraphExecutionNodes"
+            :key="node.node_id"
+            type="button"
+            class="v3-flow-node"
+            :class="[
+              `is-${node.status}`,
+              selectedV3NodeId === node.node_id ? 'is-selected' : '',
+            ]"
+            @click="selectV3Node(node.node_id)"
+          >
+            <div class="v3-flow-node-index">#{{ index + 1 }}</div>
+            <div class="v3-flow-node-content">
+              <div class="v3-flow-node-title">
+                <strong>{{ node.skill_name }}</strong>
+                <span class="v3-flow-node-id">{{ node.node_id }}</span>
+              </div>
+              <div class="v3-flow-node-summary">{{ node.summary || "暂无摘要" }}</div>
+            </div>
+            <span class="v3-flow-node-status">{{ statusLabel(node.status) }}</span>
+          </button>
+        </div>
+        <aside class="v3-flow-detail" v-if="v3SelectedGraphNode">
+          <div class="v3-flow-detail-head">
+            <h4>当前步骤</h4>
+            <span class="status-badge" :class="statusBadgeClass(v3SelectedGraphNode.status)">
+              {{ statusLabel(v3SelectedGraphNode.status) }}
+            </span>
+          </div>
+          <div class="v3-flow-detail-meta">
+            <p><strong>Skill：</strong>{{ v3SelectedGraphNode.skill_name || "—" }}</p>
+            <p><strong>Node ID：</strong>{{ v3SelectedGraphNode.node_id || "—" }}</p>
+            <p><strong>Dependencies：</strong>{{ Array.isArray(v3SelectedGraphNode.dependencies) && v3SelectedGraphNode.dependencies.length ? v3SelectedGraphNode.dependencies.join(", ") : "—" }}</p>
+          </div>
+          <pre class="flow-detail-pre">{{ v3SelectedGraphNode.summary || "暂无摘要。" }}</pre>
+        </aside>
       </div>
     </section>
 
@@ -57,7 +142,7 @@
     </nav>
 
     <section class="panel" v-if="v3ActiveTab === 'graph' && v3Planning">
-      <h3>Planning Summary</h3>
+      <h3>Planning Details</h3>
       <table>
         <tbody>
           <tr><th>goal_kind</th><td>{{ v3Planning.goal_kind || "—" }}</td></tr>
@@ -70,56 +155,6 @@
         </tbody>
       </table>
       <p class="muted" style="margin-top: 10px">{{ v3Planning.template_reason || "—" }}</p>
-    </section>
-
-    <section class="panel" v-if="v3ActiveTab === 'graph' && v3AnalysisSummary">
-      <h3>Analysis Summary</h3>
-      <div class="analysis-summary-content" v-html="renderMarkdown(v3AnalysisSummary)"></div>
-    </section>
-
-    <section class="panel" v-if="v3ActiveTab === 'graph' && (v3GraphLayerSections.length || v3GraphExecutionNodes.length)">
-      <h3>Execution Nodes</h3>
-      <div v-if="v3GraphLayerSections.length" class="v3-layer-list">
-        <section
-          v-for="layer in v3GraphLayerSections"
-          :key="layer.id"
-          class="v3-layer-section"
-        >
-          <div class="v3-layer-head">
-            <div>
-              <h4>{{ layer.label }}</h4>
-              <p class="muted">{{ layer.description }}</p>
-            </div>
-            <span class="badge">{{ layer.nodes.length }} nodes</span>
-          </div>
-          <div class="planning-node-list v3-layer-grid">
-            <article
-              v-for="node in layer.nodes"
-              :key="node.node_id"
-              class="planning-node-card"
-            >
-              <div class="planning-node-top">
-                <div class="planning-node-title">
-                  <span class="planning-node-index">#{{ executionNodeIndexMap[node.node_id] }}</span>
-                  <strong>{{ node.node_id }}</strong>
-                </div>
-                <span class="agent-version agent-version--v2">
-                  {{ node.skill_name }}
-                </span>
-              </div>
-              <p class="planning-node-deps muted">
-                status: <strong>{{ node.status || "unknown" }}</strong>
-              </p>
-              <p class="planning-node-deps muted">
-                dependencies:
-                <span v-if="Array.isArray(node.dependencies) && node.dependencies.length">{{ node.dependencies.join(", ") }}</span>
-                <span v-else>—</span>
-              </p>
-              <pre class="flow-detail-pre">{{ node.summary || "暂无摘要。" }}</pre>
-            </article>
-          </div>
-        </section>
-      </div>
     </section>
 
     <section class="panel" v-if="v3ActiveTab === 'graph' && v3Report">
@@ -711,6 +746,7 @@ const chainFocusedEventId = ref("");
 const replayLoading = ref(false);
 const replayResult = ref(null);
 const selectedDelegationId = ref("");
+const selectedV3NodeId = ref("");
 const nodeEls = ref(new Map());
 const copyHint = ref("复制摘要");
 const isV3Detail = computed(() => detailVersion.value === "v3");
@@ -837,6 +873,31 @@ const v3FinalSummary = computed(() => {
 
   return "暂无摘要。";
 });
+const v3PrimaryAnswer = computed(() => {
+  const planning = v3Planning.value || {};
+  const report = v3Report.value || {};
+  if (planning.goal_kind === "analysis") {
+    return composeV3AnalysisAnswer({
+      planning,
+      report,
+      analysisSummary: v3AnalysisSummary.value,
+    });
+  }
+  if (planning.goal_kind === "coding") {
+    return composeV3CodingAnswer({
+      planning,
+      report,
+      codingSummary: v3GraphExecutionNodes.value.find((node) => node?.skill_name === "coding")?.summary || "",
+    });
+  }
+  if (planning.goal_kind === "testing") {
+    return composeV3TestingAnswer({
+      planning,
+      report,
+    });
+  }
+  return v3AnalysisSummary.value || v3FinalSummary.value;
+});
 const v3SummaryHighlights = computed(() => {
   const planning = v3Planning.value || {};
   const analyzeRepo = v3Report.value?.shared_state?.analyze_repo || v3Report.value?.node_outputs?.analyze_repo || {};
@@ -857,6 +918,124 @@ const v3SummaryHighlights = computed(() => {
   ];
   return highlights.filter(Boolean);
 });
+const v3OverviewCards = computed(() => {
+  const run = replay.run || {};
+  const planning = v3Planning.value || {};
+  return [
+    {
+      label: "状态",
+      value: statusLabel(run.status || "unknown"),
+      help: planning.planning_mode === "llm" ? "本次规划已使用模型" : "本次规划使用规则模板",
+    },
+    {
+      label: "规划模式",
+      value: planning.planning_mode || "rule_based",
+      help: planning.template_name ? `template: ${planning.template_name}` : "",
+    },
+    {
+      label: "执行节点",
+      value: `${v3GraphExecutionNodes.value.length}`,
+      help: Array.isArray(planning.execution_layers) && planning.execution_layers.length
+        ? `${planning.execution_layers.length} layers`
+        : "single path",
+    },
+    {
+      label: "仓库画像",
+      value: planning.repo_profile || "—",
+      help: planning.goal_kind ? `goal: ${planning.goal_kind}` : "",
+    },
+  ];
+});
+const v3KeyFindings = computed(() => {
+  const planning = v3Planning.value || {};
+  const notes = Array.isArray(planning.planner_notes) ? planning.planner_notes : [];
+  const analyzeRepo = v3Report.value?.shared_state?.analyze_repo || v3Report.value?.node_outputs?.analyze_repo || {};
+  const rows = [
+    planning.goal_kind ? { label: "任务类型", value: planning.goal_kind, help: planning.template_reason || "" } : null,
+    planning.repo_profile ? { label: "仓库画像", value: planning.repo_profile, help: "" } : null,
+    Array.isArray(analyzeRepo.root_entries) && analyzeRepo.root_entries.length
+      ? { label: "根目录规模", value: `${analyzeRepo.root_entries.length} 个入口`, help: compactText(analyzeRepo.root_entries.slice(0, 6).join(", "), 120) }
+      : null,
+    analyzeRepo.has_python_tests === true
+      ? { label: "测试情况", value: "检测到 Python tests", help: "" }
+      : analyzeRepo.has_python_tests === false
+        ? { label: "测试情况", value: "未检测到 Python tests", help: "" }
+        : null,
+    notes[0] ? { label: "Planner Note", value: notes[0], help: notes[1] || "" } : null,
+  ];
+  return rows.filter(Boolean);
+});
+const v3OutcomeCards = computed(() => {
+  const planning = v3Planning.value || {};
+  const report = v3Report.value || {};
+  const analyzeRepo = report?.shared_state?.analyze_repo || report?.node_outputs?.analyze_repo || {};
+  const candidateCommands = Array.isArray(analyzeRepo.candidate_test_commands)
+    ? analyzeRepo.candidate_test_commands
+    : Array.isArray(planning.candidate_test_commands)
+      ? planning.candidate_test_commands
+      : [];
+  const rootEntries = Array.isArray(analyzeRepo.root_entries) ? analyzeRepo.root_entries : [];
+
+  const outcomeValue = (() => {
+    if (planning.goal_kind === "analysis") {
+      return `Completed repository analysis for ${planning.repo_profile || "generic"} workspace`;
+    }
+    if (replay.run?.status) {
+      return `Run ${String(replay.run.status).toLowerCase()}`;
+    }
+    return "Run completed";
+  })();
+
+  const nextStepValue = (() => {
+    if (planning.goal_kind === "analysis") {
+      if (candidateCommands.length) {
+        return `Run verification with ${candidateCommands[0]}`;
+      }
+      return "Pick one concrete area and continue with a scoped coding or review task";
+    }
+    if (planning.goal_kind === "coding") {
+      return candidateCommands.length
+        ? `Verify the patch with ${candidateCommands[0]}`
+        : "Review the changed area and define a verification step";
+    }
+    return "Continue with the next concrete task based on this output";
+  })();
+
+  const riskValue = (() => {
+    const risks = [];
+    if (analyzeRepo.has_python_tests === false) {
+      risks.push("no python tests detected");
+    }
+    if (!candidateCommands.length) {
+      risks.push("no candidate test command");
+    }
+    if ((planning.repo_profile || "") === "generic") {
+      risks.push("repo profile is generic");
+    }
+    if (rootEntries.length >= 20) {
+      risks.push("large root surface");
+    }
+    return risks.length ? risks.join(" · ") : "no obvious execution risk captured";
+  })();
+
+  return [
+    {
+      label: "Outcome",
+      value: outcomeValue,
+      help: planning.template_reason || "",
+    },
+    {
+      label: "Next Step",
+      value: nextStepValue,
+      help: candidateCommands.length ? `candidate commands: ${candidateCommands.slice(0, 2).join(" / ")}` : "",
+    },
+    {
+      label: "Risks",
+      value: riskValue,
+      help: rootEntries.length ? `root entries: ${rootEntries.length}` : "",
+    },
+  ];
+});
 const v3AnalysisSummary = computed(() => {
   const summaryNode = v3ExecutionNodes.value.find((n) => n.node_id === "analysis_summary");
   if (summaryNode?.summary) {
@@ -866,8 +1045,40 @@ const v3AnalysisSummary = computed(() => {
   if (output?.summary) {
     return output.summary;
   }
+  const codingNode = v3ExecutionNodes.value.find((n) => n.skill_name === "coding" && n.summary);
+  if (codingNode?.summary) {
+    return codingNode.summary;
+  }
   return null;
 });
+const v3SelectedGraphNode = computed(() => {
+  if (!v3GraphExecutionNodes.value.length) {
+    return null;
+  }
+  return v3GraphExecutionNodes.value.find((node) => node.node_id === selectedV3NodeId.value) || v3GraphExecutionNodes.value[0];
+});
+const v3FlowStepLine = computed(() => {
+  const total = v3GraphExecutionNodes.value.length;
+  if (!total) {
+    return "暂无执行步骤。";
+  }
+  const currentIndex = v3GraphExecutionNodes.value.findIndex((node) => node.node_id === v3SelectedGraphNode.value?.node_id);
+  const current = currentIndex >= 0 ? currentIndex + 1 : 1;
+  return `共 ${total} 步，当前查看第 ${current} 步。`;
+});
+function formatTokens(run) {
+  if (!run) return "—";
+  const total = run.total_tokens || 0;
+  if (total === 0) return "—";
+  return `${total.toLocaleString()}`;
+}
+function statusBadgeClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "badge-ok";
+  if (s === "failed") return "badge-bad";
+  if (s === "partial_completed") return "badge-warn";
+  return "badge-muted";
+}
 function renderMarkdown(text) {
   if (!text) return "";
   return text
@@ -1105,6 +1316,21 @@ watch(
   { immediate: true, deep: true }
 );
 
+watch(
+  () => v3GraphExecutionNodes.value,
+  (nodes) => {
+    if (!Array.isArray(nodes) || !nodes.length) {
+      selectedV3NodeId.value = "";
+      return;
+    }
+    const exists = nodes.some((node) => node?.node_id === selectedV3NodeId.value);
+    if (!exists) {
+      selectedV3NodeId.value = nodes[0].node_id || "";
+    }
+  },
+  { immediate: true, deep: true }
+);
+
 async function fetchReplay() {
   try {
     error.value = "";
@@ -1121,6 +1347,10 @@ async function fetchReplay() {
     v3Planning.value = data.planning || null;
     v3TriggerDiagnostics.value = Array.isArray(data.trigger_diagnostics) ? data.trigger_diagnostics : [];
     v3ExecutionNodes.value = Array.isArray(data.execution_nodes) ? data.execution_nodes : [];
+    if (detailVersion.value === "v3" && Array.isArray(v3ExecutionNodes.value) && v3ExecutionNodes.value.length) {
+      const graphNode = v3ExecutionNodes.value.find((node) => String(node?.kind || "graph") !== "trigger");
+      selectedV3NodeId.value = graphNode?.node_id || "";
+    }
     resetEventChainPanel();
     if (detailVersion.value === "v3") {
       polling.value = false;
@@ -1280,6 +1510,10 @@ function selectDelegation(id) {
   selectedDelegationId.value = id;
 }
 
+function selectV3Node(nodeId) {
+  selectedV3NodeId.value = nodeId;
+}
+
 function onFlowKeydown(e) {
   const keys = ["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"];
   if (!keys.includes(e.key)) {
@@ -1334,16 +1568,12 @@ function normalizeStatus(status) {
 }
 
 function statusLabel(status) {
-  const key = normalizeStatus(status);
-  if (key === "completed") {
-    return "已完成";
-  }
-  if (key === "failed") {
-    return "失败";
-  }
-  if (key === "running") {
-    return "进行中";
-  }
+  const s = String(status || "").toLowerCase();
+  if (s === "completed" || s === "done") return "已完成";
+  if (s === "failed") return "失败";
+  if (s === "partial_completed") return "部分完成";
+  if (s === "running") return "进行中";
+  if (s === "skipped") return "跳过";
   const raw = String(status || "").trim();
   return raw && raw.toLowerCase() !== "unknown" ? raw : "未确定";
 }
@@ -1373,6 +1603,105 @@ function compactText(value, maxLength = 180) {
     return text;
   }
   return `${text.slice(0, maxLength)}…`;
+}
+
+function composeV3AnalysisAnswer({ planning, report, analysisSummary }) {
+  if (typeof analysisSummary === "string" && analysisSummary.trim()) {
+    const analyzeRepo = report?.shared_state?.analyze_repo || report?.node_outputs?.analyze_repo || {};
+    const rootEntries = Array.isArray(analyzeRepo.root_entries) ? analyzeRepo.root_entries : [];
+    const importantDirs = rootEntries.filter((item) => ["backend", "frontend", "docs", "data", "src"].includes(String(item))).slice(0, 4);
+    const candidateCommands = Array.isArray(analyzeRepo.candidate_test_commands) ? analyzeRepo.candidate_test_commands : [];
+    const lines = [
+      `### 结论`,
+      `已完成对该项目结构的分析。`,
+      "",
+      `### 结构重点`,
+      `- 仓库画像：${planning.repo_profile || "generic"}`,
+      importantDirs.length ? `- 关键目录：${importantDirs.join("、")}` : null,
+      rootEntries.length ? `- 根目录入口数：${rootEntries.length}` : null,
+      candidateCommands.length ? `- 候选验证命令：${candidateCommands.slice(0, 2).join(" / ")}` : `- 候选验证命令：未识别`,
+      "",
+      "### 建议下一步",
+      candidateCommands.length
+        ? `- 如果要继续推进，可以先运行 ${candidateCommands[0]} 做一次环境级验证。`
+        : "- 如果要继续推进，建议先选择 backend、frontend 或 data 中的一个子系统做更细分析。",
+      "",
+      "### 详细分析",
+      analysisSummary.trim(),
+    ];
+    return lines.filter(Boolean).join("\n");
+  }
+  return v3FinalSummary.value;
+}
+
+function composeV3CodingAnswer({ planning, report, codingSummary }) {
+  const codingText = typeof codingSummary === "string" ? codingSummary.trim() : "";
+  const testRunner = report?.node_outputs?.test_runner || {};
+  const testSummary = typeof testRunner.summary === "string" ? testRunner.summary.trim() : "";
+  const modifiedFiles = Array.isArray(report?.node_outputs?.coding?.modified_files)
+    ? report.node_outputs.coding.modified_files
+    : [];
+  const riskNotes = Array.isArray(report?.node_outputs?.coding?.risk_notes)
+    ? report.node_outputs.coding.risk_notes
+    : [];
+  const lines = ["### 结果"];
+  if (codingText) {
+    lines.push(codingText);
+  } else {
+    lines.push("本次编码任务已完成。");
+  }
+  if (modifiedFiles.length) {
+    lines.push("");
+    lines.push("### 变更范围");
+    lines.push(...modifiedFiles.slice(0, 6).map((item) => `- ${item}`));
+  }
+  if (testSummary) {
+    lines.push("");
+    lines.push("### 验证");
+    lines.push(`- ${testSummary}`);
+  } else if (Array.isArray(planning?.candidate_test_commands) && planning.candidate_test_commands.length) {
+    lines.push("");
+    lines.push("### 验证");
+    lines.push(`- 尚未看到自动验证结果，建议执行：${planning.candidate_test_commands[0]}`);
+  }
+  lines.push("");
+  lines.push("### 风险");
+  if (riskNotes.length) {
+    lines.push(...riskNotes.slice(0, 4).map((item) => `- ${item}`));
+  } else if (testSummary) {
+    lines.push("- 当前未记录额外风险，建议结合受影响页面或模块再做一次手工回归。");
+  } else {
+    lines.push("- 目前缺少明确验证结果，交付前最好补一轮自动或手工验证。");
+  }
+  return lines.join("\n");
+}
+
+function composeV3TestingAnswer({ planning, report }) {
+  const testRunner = report?.node_outputs?.test_runner || {};
+  const command = testRunner.executed_command
+    || (Array.isArray(planning?.candidate_test_commands) && planning.candidate_test_commands.length ? planning.candidate_test_commands[0] : "");
+  const summary = typeof testRunner.summary === "string" && testRunner.summary.trim()
+    ? testRunner.summary.trim()
+    : "测试任务已完成。";
+  const stdout = typeof testRunner.stdout === "string" ? testRunner.stdout.trim() : "";
+  const observation = stdout
+    ? compactText(stdout.split("\n").filter(Boolean).slice(-3).join(" | "), 180)
+    : "未记录额外输出摘要。";
+  return [
+    "### 结果",
+    summary,
+    "",
+    "### 执行命令",
+    `- ${command || "未记录"}`,
+    "",
+    "### 观察",
+    `- ${observation}`,
+    "",
+    "### 建议下一步",
+    summary.toLowerCase().includes("passed")
+      ? "- 当前验证已通过；如果这是一次修复任务，可以继续做手工回归或提交结果。"
+      : "- 当前结果需要继续排查失败原因，并决定是否进入修复流程。",
+  ].join("\n");
 }
 
 function normalizeVersion(v) {
@@ -2074,10 +2403,390 @@ onBeforeUnmount(() => {
   }
 }
 
+.v3-run-header {
+  margin-bottom: 12px;
+}
+
+.v3-result-hero {
+  display: grid;
+  gap: 16px;
+}
+
+.v3-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v3-overview-card,
+.v3-key-card,
+.v3-flow-detail {
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 1px 2px rgba(15, 20, 25, 0.03);
+}
+
+.v3-overview-card,
+.v3-key-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+}
+
+.v3-overview-card span,
+.v3-key-card span {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b929e);
+}
+
+.v3-overview-card strong,
+.v3-key-card strong {
+  font-size: 1rem;
+  color: var(--text-primary, #1a1d26);
+}
+
+.v3-overview-card small,
+.v3-key-card small {
+  color: var(--text-secondary, #5c6370);
+  line-height: 1.45;
+}
+
+.v3-primary-answer-head,
+.v3-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.v3-primary-answer-head h3,
+.v3-section-head h3 {
+  margin: 0 0 4px;
+}
+
+.v3-primary-answer-head p,
+.v3-section-head p {
+  margin: 0;
+}
+
+.v3-key-findings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v3-outcome-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.v3-outcome-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(79, 70, 229, 0.12);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 1px 2px rgba(15, 20, 25, 0.03);
+}
+
+.v3-outcome-card span {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted, #8b929e);
+}
+
+.v3-outcome-card strong {
+  font-size: 0.96rem;
+  color: var(--text-primary, #1a1d26);
+  line-height: 1.45;
+}
+
+.v3-outcome-card small {
+  color: var(--text-secondary, #5c6370);
+  line-height: 1.45;
+}
+
+.v3-flow-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.v3-run-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.v3-run-title h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.4;
+}
+
+.v3-run-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--text-secondary, #475569);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.status-badge {
+  padding: 4px 12px;
+  font-size: 0.78rem;
+}
+
+.badge-ok {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.badge-bad {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.badge-warn {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.badge-muted {
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+}
+
+.v3-run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.82rem;
+  color: var(--text-secondary, #5c6370);
+}
+
+.v3-meta-item strong {
+  color: var(--text-primary, #1a1d26);
+}
+
+.v3-flow-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.v3-flow-node {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-subtle, rgba(15, 20, 25, 0.08));
+  background: #fff;
+}
+
+.v3-flow-node.is-selected {
+  border-color: rgba(79, 70, 229, 0.34);
+  box-shadow: 0 8px 22px rgba(79, 70, 229, 0.12);
+  transform: translateY(-1px);
+}
+
+.v3-flow-node.is-completed {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.04);
+}
+
+.v3-flow-node.is-failed {
+  border-color: rgba(220, 38, 38, 0.4);
+  background: rgba(220, 38, 38, 0.06);
+}
+
+.v3-flow-node.is-partial_completed {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.v3-flow-node-index {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted, #8b929e);
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.v3-flow-node-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.v3-flow-node-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.v3-flow-node-title strong {
+  font-size: 0.9rem;
+}
+
+.v3-flow-node-id {
+  font-size: 0.72rem;
+  color: var(--text-muted, #8b929e);
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+}
+
+.v3-flow-node-summary {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-secondary, #5c6370);
+}
+
+.v3-flow-node-status {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+}
+
+.v3-flow-node.is-completed .v3-flow-node-status {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.v3-flow-node.is-failed .v3-flow-node-status {
+  background: rgba(220, 38, 38, 0.12);
+  color: #b91c1c;
+}
+
+.v3-flow-detail {
+  padding: 14px;
+  position: sticky;
+  top: 12px;
+}
+
+.v3-flow-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.v3-flow-detail-head h4 {
+  margin: 0;
+}
+
+.v3-flow-detail-meta {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.v3-flow-detail-meta p {
+  margin: 0;
+  color: var(--text-secondary, #5c6370);
+  font-size: 0.84rem;
+}
+
+.v3-final-answer {
+  line-height: 1.7;
+  font-size: 0.92rem;
+  color: var(--text-primary, #111827);
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.04);
+  border: 1px solid rgba(79, 70, 229, 0.12);
+}
+
+.v3-final-answer-prominent {
+  padding: 18px 20px;
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at top right, rgba(79, 70, 229, 0.08), transparent 34%),
+    rgba(248, 250, 252, 0.88);
+}
+
+.v3-final-answer h1,
+.v3-final-answer h2,
+.v3-final-answer h3 {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+}
+
+.v3-final-answer h1 {
+  font-size: 1.2rem;
+}
+
+.v3-final-answer h2 {
+  font-size: 1.1rem;
+}
+
+.v3-final-answer h3 {
+  font-size: 1rem;
+  color: var(--accent-text, #4f46e5);
+}
+
+.v3-final-answer code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+}
+
+.v3-final-answer strong {
+  font-weight: 600;
+}
+
+.v3-final-answer li {
+  margin-left: 1.2em;
+  list-style: disc;
+}
+
+.v3-final-answer p {
+  margin: 0.5em 0;
+}
+
 .analysis-summary-content {
   line-height: 1.7;
   font-size: 0.9rem;
   color: var(--text-primary);
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.04);
+  border: 1px solid rgba(79, 70, 229, 0.12);
 }
 
 .analysis-summary-content h1,
@@ -2087,9 +2796,17 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+.analysis-summary-content h1 {
+  font-size: 1.2rem;
+}
+
+.analysis-summary-content h2 {
+  font-size: 1.1rem;
+}
+
 .analysis-summary-content h3 {
   font-size: 1rem;
-  color: var(--accent-text);
+  color: var(--accent-text, #4f46e5);
 }
 
 .analysis-summary-content code {
@@ -2097,6 +2814,7 @@ onBeforeUnmount(() => {
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 0.85em;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 }
 
 .analysis-summary-content strong {
@@ -2106,6 +2824,23 @@ onBeforeUnmount(() => {
 .analysis-summary-content li {
   margin-left: 1.2em;
   list-style: disc;
+}
+
+.analysis-summary-content p {
+  margin: 0.5em 0;
+}
+
+@media (max-width: 960px) {
+  .v3-overview-grid,
+  .v3-outcome-grid,
+  .v3-key-findings,
+  .v3-flow-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .v3-flow-detail {
+    position: static;
+  }
 }
 
 </style>

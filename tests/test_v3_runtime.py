@@ -2327,12 +2327,13 @@ def test_run_v3_persists_run_metadata_with_session_id(monkeypatch, tmp_path: Pat
     )
     captured = {}
 
-    def fake_persist(*, report, task, workdir, session_id, model) -> None:
+    def fake_persist(*, report, task, workdir, session_id, model, planning_tokens=0) -> None:
         captured["run_id"] = report.run_id
         captured["task"] = task
         captured["workdir"] = workdir
         captured["session_id"] = session_id
         captured["model"] = model
+        captured["planning_tokens"] = planning_tokens
 
     monkeypatch.setattr("app.v3.runner._persist_v3_run_metadata", fake_persist)
 
@@ -2351,6 +2352,7 @@ def test_run_v3_persists_run_metadata_with_session_id(monkeypatch, tmp_path: Pat
     assert captured["workdir"] == str(tmp_path.resolve())
     assert captured["session_id"] == "session-v3"
     assert captured["model"] == "demo-model"
+    assert captured["planning_tokens"] == 0
 
 
 def test_unified_run_agent_supports_v3_plan_only(tmp_path: Path) -> None:
