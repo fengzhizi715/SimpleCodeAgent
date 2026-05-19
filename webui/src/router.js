@@ -5,6 +5,7 @@ import RunPage from "./pages/RunPage.vue";
 import HistoryPage from "./pages/HistoryPage.vue";
 import RunExecutionPage from "./pages/RunExecutionPage.vue";
 import RunTracePage from "./pages/RunTracePage.vue";
+import AutonomyPage from "./pages/AutonomyPage.vue";
 import RagPage from "./pages/RagPage.vue";
 import RagCreatePage from "./pages/RagCreatePage.vue";
 import RagDetailPage from "./pages/RagDetailPage.vue";
@@ -17,6 +18,7 @@ const routes = [
   { path: "/dashboard", name: "dashboard", component: DashboardPage, meta: { title: "Token Dashboard" } },
   { path: "/run", name: "run", component: RunPage, meta: { title: "运行任务" } },
   { path: "/history", name: "history", component: HistoryPage, meta: { title: "运行历史" } },
+  { path: "/autonomy", name: "autonomy", component: AutonomyPage, meta: { title: "Autonomy Runtime" } },
   { path: "/agents", name: "agents", component: AgentsPage, meta: { title: "智能体列表" } },
   { path: "/skills", name: "skills", component: SkillsPage, meta: { title: "Skills 列表" } },
   { path: "/rag", name: "rag", component: RagPage, meta: { title: "RAG 文档库" } },

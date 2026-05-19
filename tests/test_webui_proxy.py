@@ -48,6 +48,13 @@ def test_v3_execution_page_composes_task_aware_primary_answer() -> None:
     assert "v3PrimaryAnswer" in page
 
 
+def test_v3_analysis_answer_prioritizes_chinese_summary() -> None:
+    page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
+
+    assert "中文结果摘要" in page
+    assert "原始详细分析（模型输出）" in page
+
+
 def test_history_page_supports_bulk_delete_controls() -> None:
     page = Path("webui/src/pages/HistoryPage.vue").read_text(encoding="utf-8")
 
@@ -62,3 +69,28 @@ def test_run_page_exposes_v3_planning_mode() -> None:
 
     assert "v3_planning_mode" in page
     assert 'payload.v3_planning_mode = form.v3_planning_mode' in page
+
+
+def test_router_registers_autonomy_page() -> None:
+    router = Path("webui/src/router.js").read_text(encoding="utf-8")
+
+    assert 'name: "autonomy"' in router
+    assert 'path: "/autonomy"' in router
+
+
+def test_sidebar_exposes_autonomy_entry() -> None:
+    app_shell = Path("webui/src/App.vue").read_text(encoding="utf-8")
+
+    assert 'to="/autonomy"' in app_shell
+    assert "Autonomy" in app_shell
+
+
+def test_autonomy_page_includes_graph_events_and_triggers_tabs() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "Overview" in page
+    assert "Graph" in page
+    assert "Events" in page
+    assert "Triggers" in page
+    assert "getV3EventChain" in page
+    assert "listRuns" in page

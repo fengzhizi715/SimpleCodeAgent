@@ -1612,10 +1612,10 @@ function composeV3AnalysisAnswer({ planning, report, analysisSummary }) {
     const importantDirs = rootEntries.filter((item) => ["backend", "frontend", "docs", "data", "src"].includes(String(item))).slice(0, 4);
     const candidateCommands = Array.isArray(analyzeRepo.candidate_test_commands) ? analyzeRepo.candidate_test_commands : [];
     const lines = [
-      `### 结论`,
-      `已完成对该项目结构的分析。`,
+      "### 中文结果摘要",
+      `已完成对该项目结构的分析，当前更像一个 **${planning.repo_profile || "generic"}** 画像的工程仓库。`,
       "",
-      `### 结构重点`,
+      "### 结构重点",
       `- 仓库画像：${planning.repo_profile || "generic"}`,
       importantDirs.length ? `- 关键目录：${importantDirs.join("、")}` : null,
       rootEntries.length ? `- 根目录入口数：${rootEntries.length}` : null,
@@ -1626,7 +1626,7 @@ function composeV3AnalysisAnswer({ planning, report, analysisSummary }) {
         ? `- 如果要继续推进，可以先运行 ${candidateCommands[0]} 做一次环境级验证。`
         : "- 如果要继续推进，建议先选择 backend、frontend 或 data 中的一个子系统做更细分析。",
       "",
-      "### 详细分析",
+      "### 原始详细分析（模型输出）",
       analysisSummary.trim(),
     ];
     return lines.filter(Boolean).join("\n");

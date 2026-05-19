@@ -14,6 +14,9 @@
         <RouterLink to="/history" class="side-nav-link" active-class="is-active">
           历史记录
         </RouterLink>
+        <RouterLink to="/autonomy" class="side-nav-link" active-class="is-active">
+          Autonomy
+        </RouterLink>
         <RouterLink to="/dashboard" class="side-nav-link" active-class="is-active">
           Token Dashboard
         </RouterLink>

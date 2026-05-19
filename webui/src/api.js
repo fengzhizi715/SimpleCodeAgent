@@ -125,6 +125,28 @@ export async function replayV3EventChain(runId, { eventId = "" } = {}) {
   });
 }
 
+export async function getV3TriggerRuleStates() {
+  return requestJson("/debug/v3/trigger-rules");
+}
+
+export async function setV3TriggerRuleEnabled(ruleId, enabled) {
+  return requestJson(`/debug/v3/trigger-rules/${encodeURIComponent(ruleId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled: Boolean(enabled) }),
+  });
+}
+
+export async function getV3TriggerHitCounts({ runId = "", ruleId = "" } = {}) {
+  const params = new URLSearchParams();
+  if (runId) {
+    params.set("run_id", String(runId));
+  }
+  if (ruleId) {
+    params.set("rule_id", String(ruleId));
+  }
+  return requestJson(`/debug/v3/trigger-rules/hit-counts${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
 export async function listRuns({ limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
