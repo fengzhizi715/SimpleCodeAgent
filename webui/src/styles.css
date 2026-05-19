@@ -539,6 +539,23 @@ button:disabled {
   font-size: 0.8125rem;
 }
 
+.btn-text {
+  padding: 4px 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btn-text:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: var(--radius-sm);
+}
+
 .row {
   display: flex;
   gap: 12px;

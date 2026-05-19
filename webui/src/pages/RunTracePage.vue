@@ -193,7 +193,7 @@
 import { computed, onMounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import JsonBlock from "../components/JsonBlock.vue";
-import { getRunReplay, getRunTrace } from "../api";
+import { getRunDetail, getRunTrace } from "../api";
 
 const props = defineProps({
   runId: { type: String, required: true },
@@ -427,11 +427,12 @@ async function refresh() {
 
 async function refreshRunMetadata() {
   runMetadata.value = null;
-  if (normalizeVersion(version.value) !== "v2") return;
+  const normalizedVersion = normalizeVersion(version.value);
+  if (!["v2", "v3"].includes(normalizedVersion)) return;
 
   try {
-    const replay = await getRunReplay(props.runId);
-    runMetadata.value = replay?.run || null;
+    const detail = await getRunDetail(props.runId);
+    runMetadata.value = detail?.run || null;
   } catch (_err) {
     // Trace 数据本身仍然可用时，不因为补充 metadata 失败而阻塞页面。
     runMetadata.value = null;

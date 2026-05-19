@@ -17,7 +17,7 @@ if ! curl -sS -o /dev/null -m 2 --fail "http://127.0.0.1:8000/healthz" 2>/dev/nu
   echo "" >&2
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2
   echo "  提示：本机 8000 端口未检测到 FastAPI（/healthz 无响应）。" >&2
-  echo "  Web UI 会把 /agent、/debug 代理到 127.0.0.1:8000，需先启动后端：" >&2
+  echo "  Web UI 会把 /run、/agent、/debug 代理到 127.0.0.1:8000，需先启动后端：" >&2
   echo "    cd \"$(cd \"${WEBUI_DIR}/..\" && pwd)\" && .venv/bin/uvicorn app.api.server:app --host 127.0.0.1 --port 8000" >&2
   echo "  或一键起 API+Vite：\"$(cd \"${WEBUI_DIR}/..\" && pwd)\"/run-all.sh" >&2
   echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >&2

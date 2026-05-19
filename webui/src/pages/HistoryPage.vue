@@ -1,41 +1,57 @@
 <template>
-  <section class="panel history-intro">
-    <h2>运行历史</h2>
-    <details class="history-intro-details">
-      <summary class="history-intro-summary">关于本列表（数据来源与过滤规则）</summary>
-      <p class="muted history-intro-body">
-        展示用户发起的顶层运行（<code>GET /debug/runs</code>），含 <code>v1</code> / <code>v2</code>。
-        v1 规划中的 direct-tool 子步骤默认不显示，避免与一次完整运行混在一起。
-      </p>
-    </details>
-    <div class="row history-toolbar">
-      <button class="btn-secondary" :disabled="loading" @click="load">
-        {{ loading ? "加载中…" : "刷新" }}
-      </button>
-      <RouterLink to="/run">新建任务</RouterLink>
+  <section class="panel history-page">
+    <div class="history-header">
+      <h2 class="history-title">运行历史</h2>
+      <div class="history-header-actions">
+        <button class="btn-secondary btn-sm" :disabled="loading" @click="load">
+          {{ loading ? "加载中…" : "刷新" }}
+        </button>
+        <RouterLink class="btn-primary btn-sm" to="/run">新建任务</RouterLink>
+      </div>
     </div>
-    <div class="history-filters">
-      <input v-model.trim="keyword" placeholder="搜索 task / 摘要 / run_id" />
-      <select v-model="versionFilter">
+
+    <div class="history-toolbar">
+      <div class="history-search-wrap">
+        <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input v-model.trim="keyword" placeholder="搜索任务、摘要或 run_id" />
+      </div>
+      <select v-model="versionFilter" class="filter-select">
         <option value="">全部版本</option>
         <option value="v1">V1</option>
         <option value="v2">V2</option>
         <option value="v3">V3</option>
       </select>
-      <select v-model="statusFilter">
+      <select v-model="statusFilter" class="filter-select">
         <option value="">全部状态</option>
-        <option value="completed">completed</option>
-        <option value="failed">failed</option>
-        <option value="running">running / other</option>
+        <option value="completed">完成</option>
+        <option value="failed">失败</option>
+        <option value="running">进行中</option>
       </select>
-      <button class="btn-secondary btn-sm" type="button" @click="clearFilters">清空筛选</button>
+      <button v-if="hasActiveFilters" class="btn-text btn-sm" type="button" @click="clearFilters">清空</button>
     </div>
-    <div v-if="runs.length" class="history-stats">
-      <span class="history-stat muted">本页筛选 <strong>{{ displayRuns.length }}</strong> / {{ runs.length }} 条</span>
+
+    <div v-if="runs.length" class="history-stats-bar">
+      <span class="history-stat-text">共 <strong>{{ total }}</strong> 条</span>
       <span v-if="filterStats.completed" class="history-stat-pill history-stat-pill--ok">完成 {{ filterStats.completed }}</span>
       <span v-if="filterStats.failed" class="history-stat-pill history-stat-pill--bad">失败 {{ filterStats.failed }}</span>
       <span v-if="filterStats.other" class="history-stat-pill history-stat-pill--muted">其它 {{ filterStats.other }}</span>
+      <div class="history-stats-spacer"></div>
+      <label v-if="displayRuns.length" class="history-bulk-toggle">
+        <input type="checkbox" :checked="allVisibleSelected" :disabled="bulkDeleting" @change="toggleSelectAllVisible" />
+        全选
+      </label>
+      <span v-if="selectedCount" class="history-selection-count">已选 {{ selectedCount }}</span>
+      <button
+        v-if="selectedCount"
+        class="btn-text btn-sm history-bulk-delete-btn"
+        type="button"
+        :disabled="bulkDeleting"
+        @click="removeSelectedRuns"
+      >
+        {{ bulkDeleting ? `删除中 (${bulkDeleteProgressText})` : "批量删除" }}
+      </button>
     </div>
+
     <p v-if="error" class="error">{{ error }}</p>
   </section>
 
@@ -47,85 +63,87 @@
     <div class="history-table-scroll">
       <table class="history-table">
         <colgroup>
+          <col style="width: 36px" />
+          <col style="width: 56px" />
           <col style="width: 72px" />
-          <col style="width: 128px" />
-          <col style="width: 150px" />
-          <col style="width: 30%" />
-          <col style="width: 34%" />
-          <col style="width: 150px" />
-          <col style="width: 210px" />
+          <col style="width: 100px" />
+          <col style="width: 20%" />
+          <col style="width: 28%" />
+          <col style="width: 80px" />
+          <col style="width: 160px" />
         </colgroup>
         <thead>
           <tr>
+            <th class="th-checkbox">
+              <input type="checkbox" :checked="allVisibleSelected" :disabled="bulkDeleting || !displayRuns.length" @change="toggleSelectAllVisible" />
+            </th>
             <th class="th-narrow">版本</th>
             <th class="th-narrow">状态</th>
-            <th class="th-run-id">run_id</th>
+            <th class="th-run-id">Run ID</th>
             <th>目标</th>
             <th>结果摘要</th>
-            <th class="th-time">更新时间</th>
-            <th class="th-actions">操作</th>
+            <th class="th-time">时间</th>
+            <th class="th-actions history-actions-sticky">操作</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="r in displayRuns" :key="r.run_id">
             <tr class="history-row">
+              <td class="history-checkbox-cell">
+                <input type="checkbox" :checked="isSelected(r.run_id)" :disabled="bulkDeleting" @change="toggleSelectedRun(r.run_id)" />
+              </td>
               <td>
                 <span class="agent-version" :class="versionClass(r.agent_version)">{{ formatVersion(r.agent_version) }}</span>
               </td>
               <td>
-                <span class="status-pill" :class="statusClass(r.status)">{{ r.status || "unknown" }}</span>
+                <span class="status-pill" :class="statusClass(r.status)">{{ formatStatus(r.status) }}</span>
               </td>
-              <td
-                class="mono history-run-id history-run-id--clickable"
-                :title="`点击复制：${r.run_id}`"
-                @click="copyRunId(r.run_id)"
-              >
-                {{ shortId(r.run_id) }}
+              <td class="mono history-run-id-cell">
+                <button class="history-run-id-btn" :title="`点击复制：${r.run_id}`" @click="copyRunId(r.run_id)">
+                  <svg class="copy-icon" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span class="history-run-id">{{ shortId(r.run_id) }}</span>
+                </button>
               </td>
               <td class="td-target" :title="r.user_goal || r.task">
                 <div class="history-cell-text history-task">{{ r.user_goal || r.task || "—" }}</div>
               </td>
-              <td class="td-summary" :title="plainText(r.final_output)">
-                <div class="history-cell-text history-output">{{ summaryCell(r.final_output) }}</div>
+              <td class="td-summary" :title="extractSummary(r)">
+                <div class="history-cell-text history-output">{{ extractSummary(r) }}</div>
               </td>
-              <td class="muted history-time td-time">{{ formatDateTimeCompact(r.updated_at) }}</td>
-              <td class="history-actions td-actions">
+              <td class="muted history-time td-time">{{ formatTimeAgo(r.updated_at) }}</td>
+              <td class="history-actions td-actions history-actions-sticky">
                 <div class="history-action-group">
                   <template v-if="normalizeVersion(r.agent_version) === 'v2' || normalizeVersion(r.agent_version) === 'v3'">
-                    <RouterLink class="history-action history-action--primary" :to="{ name: 'execution', params: { runId: r.run_id } }">
-                      详情
-                    </RouterLink>
-                    <RouterLink class="history-action" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">
-                      Trace
-                    </RouterLink>
+                    <RouterLink class="history-action history-action--primary" :to="{ name: 'execution', params: { runId: r.run_id } }">详情</RouterLink>
+                    <RouterLink class="history-action history-action--secondary" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">Trace</RouterLink>
                   </template>
                   <template v-else>
                     <button type="button" class="history-action history-action--primary" @click="toggleExpanded(r.run_id)">
                       {{ expandedRunId === r.run_id ? "收起" : "结果" }}
                     </button>
-                    <RouterLink class="history-action" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">
-                      Trace
-                    </RouterLink>
+                    <RouterLink class="history-action history-action--secondary" :to="{ name: 'trace', params: { runId: r.run_id }, query: { version: normalizeVersion(r.agent_version) } }">Trace</RouterLink>
                   </template>
                   <button
                     type="button"
                     class="history-action history-action--danger"
-                    :disabled="deletingRunId === r.run_id"
+                    :disabled="deletingRunId === r.run_id || bulkDeleting"
+                    :title="deletingRunId === r.run_id ? '删除中' : '删除'"
                     @click="removeRun(r.run_id)"
                   >
-                    {{ deletingRunId === r.run_id ? "删除中" : "删除" }}
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                    <span>删除</span>
                   </button>
                 </div>
               </td>
             </tr>
             <tr v-if="expandedRunId === r.run_id" class="history-expanded-row">
-              <td colspan="7">
+              <td colspan="8">
                 <pre>{{ r.final_output || "暂无结果内容。" }}</pre>
               </td>
             </tr>
           </template>
           <tr v-if="!displayRuns.length">
-            <td colspan="7" class="muted history-empty-filter">当前筛选条件下无结果，可尝试清空筛选。</td>
+            <td colspan="8" class="muted history-empty-filter">当前筛选条件下无结果，可尝试清空筛选。</td>
           </tr>
         </tbody>
       </table>
@@ -142,14 +160,10 @@
       </div>
       <div class="row history-pagination-right">
         <span class="muted history-page-info">
-          第 <span class="history-page-current">{{ currentPage }}</span> / {{ totalPages }} 页 · 共 {{ total }} 条
+          第 <span class="history-page-current">{{ currentPage }}</span> / {{ totalPages }} 页
         </span>
-        <button class="btn-secondary btn-sm" type="button" :disabled="currentPage <= 1 || loading" @click="goPrevPage">
-          上一页
-        </button>
-        <button class="btn-secondary btn-sm" type="button" :disabled="currentPage >= totalPages || loading" @click="goNextPage">
-          下一页
-        </button>
+        <button class="btn-secondary btn-sm" type="button" :disabled="currentPage <= 1 || loading" @click="goPrevPage">上一页</button>
+        <button class="btn-secondary btn-sm" type="button" :disabled="currentPage >= totalPages || loading" @click="goNextPage">下一页</button>
       </div>
     </footer>
   </section>
@@ -170,6 +184,9 @@ const runs = ref([]);
 const loading = ref(false);
 const error = ref("");
 const deletingRunId = ref("");
+const bulkDeleting = ref(false);
+const bulkDeleteCompleted = ref(0);
+const bulkDeleteTotal = ref(0);
 const total = ref(0);
 const pageSize = ref(20);
 const page = ref(1);
@@ -178,6 +195,7 @@ const keyword = ref("");
 const versionFilter = ref("");
 const statusFilter = ref("");
 const copyToast = ref("");
+const selectedRunIds = ref(new Set());
 let copyToastTimer = null;
 
 function shortId(id) {
@@ -190,18 +208,46 @@ function plainText(s) {
   return String(s).replace(/\s+/g, " ").trim();
 }
 
-function summaryCell(finalOutput) {
-  const t = plainText(finalOutput);
-  return t || "—";
+function extractSummary(r) {
+  if (!r.final_output) return "—";
+  try {
+    const parsed = typeof r.final_output === "string" ? JSON.parse(r.final_output) : r.final_output;
+    if (parsed && typeof parsed === "object") {
+      if (parsed.summary) return String(parsed.summary);
+      if (parsed.status) return `状态: ${parsed.status}`;
+      if (parsed.run_id) return `Run ${shortId(parsed.run_id)}`;
+      const keys = Object.keys(parsed).filter((k) => typeof parsed[k] === "string" && parsed[k].length < 200);
+      if (keys.length) return String(parsed[keys[0]]);
+    }
+    return plainText(r.final_output).slice(0, 120);
+  } catch {
+    return plainText(r.final_output).slice(0, 120);
+  }
 }
 
-function formatDateTimeCompact(value) {
+function formatStatus(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "completed") return "完成";
+  if (s === "partial_completed") return "部分完成";
+  if (s === "failed") return "失败";
+  if (s === "running") return "进行中";
+  return status || "未知";
+}
+
+function formatTimeAgo(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  const d = date.toLocaleDateString();
-  const t = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return `${d}\n${t}`;
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "刚刚";
+  if (diffMins < 60) return `${diffMins} 分钟前`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours} 小时前`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays} 天前`;
+  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
 }
 
 function normalizeVersion(v) {
@@ -232,6 +278,8 @@ function statusClass(status) {
   return "status-pill--running";
 }
 
+const hasActiveFilters = computed(() => keyword.value || versionFilter.value || statusFilter.value);
+
 async function load() {
   error.value = "";
   loading.value = true;
@@ -239,6 +287,10 @@ async function load() {
     const data = await listRuns({ limit: pageSize.value, offset: (page.value - 1) * pageSize.value });
     runs.value = Array.isArray(data.runs) ? data.runs : [];
     total.value = Number(data.total || 0);
+    const visibleRunIds = new Set(runs.value.map((item) => item.run_id).filter(Boolean));
+    selectedRunIds.value = new Set(
+      [...selectedRunIds.value].filter((runId) => visibleRunIds.has(runId))
+    );
     const pages = Math.max(1, Math.ceil(total.value / pageSize.value));
     if (page.value > pages) {
       page.value = pages;
@@ -270,6 +322,18 @@ const displayRuns = computed(() => {
     const text = `${r.run_id || ""} ${r.user_goal || ""} ${r.task || ""} ${plainText(r.final_output || "")}`.toLowerCase();
     return text.includes(kw);
   });
+});
+
+const selectedCount = computed(() => selectedRunIds.value.size);
+
+const allVisibleSelected = computed(() => {
+  if (!displayRuns.value.length) return false;
+  return displayRuns.value.every((item) => item.run_id && selectedRunIds.value.has(item.run_id));
+});
+
+const bulkDeleteProgressText = computed(() => {
+  if (!bulkDeleteTotal.value) return "0/0";
+  return `${bulkDeleteCompleted.value}/${bulkDeleteTotal.value}`;
 });
 
 const filterStats = computed(() => {
@@ -319,6 +383,9 @@ async function removeRun(runId) {
   error.value = "";
   try {
     await deleteRun(runId);
+    const next = new Set(selectedRunIds.value);
+    next.delete(runId);
+    selectedRunIds.value = next;
     if (expandedRunId.value === runId) {
       expandedRunId.value = "";
     }
@@ -330,8 +397,82 @@ async function removeRun(runId) {
   }
 }
 
+async function removeSelectedRuns() {
+  const runIds = displayRuns.value
+    .map((item) => item.run_id)
+    .filter((runId) => runId && selectedRunIds.value.has(runId));
+  if (!runIds.length) return;
+
+  const ok = window.confirm(
+    `确认批量删除 ${runIds.length} 条运行记录吗？关联 replay / trace 将一并删除。`
+  );
+  if (!ok) return;
+
+  bulkDeleting.value = true;
+  bulkDeleteCompleted.value = 0;
+  bulkDeleteTotal.value = runIds.length;
+  error.value = "";
+
+  const failedRunIds = [];
+  for (const runId of runIds) {
+    try {
+      await deleteRun(runId);
+      bulkDeleteCompleted.value += 1;
+      if (expandedRunId.value === runId) {
+        expandedRunId.value = "";
+      }
+    } catch (_err) {
+      failedRunIds.push(runId);
+    }
+  }
+
+  if (failedRunIds.length) {
+    error.value = `批量删除完成，但有 ${failedRunIds.length} 条删除失败。`;
+    selectedRunIds.value = new Set(failedRunIds);
+  } else {
+    selectedRunIds.value = new Set();
+  }
+
+  await load();
+  bulkDeleting.value = false;
+  bulkDeleteCompleted.value = 0;
+  bulkDeleteTotal.value = 0;
+}
+
 function toggleExpanded(runId) {
   expandedRunId.value = expandedRunId.value === runId ? "" : runId;
+}
+
+function isSelected(runId) {
+  return selectedRunIds.value.has(runId);
+}
+
+function toggleSelectedRun(runId) {
+  const next = new Set(selectedRunIds.value);
+  if (next.has(runId)) {
+    next.delete(runId);
+  } else {
+    next.add(runId);
+  }
+  selectedRunIds.value = next;
+}
+
+function toggleSelectAllVisible() {
+  const next = new Set(selectedRunIds.value);
+  if (allVisibleSelected.value) {
+    for (const item of displayRuns.value) {
+      if (item.run_id) {
+        next.delete(item.run_id);
+      }
+    }
+  } else {
+    for (const item of displayRuns.value) {
+      if (item.run_id) {
+        next.add(item.run_id);
+      }
+    }
+  }
+  selectedRunIds.value = next;
 }
 
 function clearFilters() {
@@ -359,36 +500,190 @@ onMounted(load);
   font-size: 0.8125rem;
 }
 
-.history-intro-details {
-  margin: 0 0 12px;
+/* ---- Page Header ---- */
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.history-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.history-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- Toolbar ---- */
+.history-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.history-search-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+  width: 15px;
+  height: 15px;
+}
+
+.history-search-wrap input {
+  width: 100%;
+  padding-left: 34px;
+  height: 34px;
+  font-size: 0.8125rem;
+}
+
+.filter-select {
+  height: 34px;
+  padding: 0 26px 0 10px;
+  font-size: 0.8125rem;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: #fafbfc;
-  padding: 0 12px;
+  background: #fff;
+  color: var(--text-primary);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+  background-size: 12px;
+  width: 100px;
+  flex-shrink: 0;
 }
 
-.history-intro-summary {
+.filter-select:hover {
+  border-color: var(--border-strong);
+}
+
+.filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+}
+
+@media (max-width: 768px) {
+  .history-toolbar {
+    grid-template-columns: 1fr;
+  }
+  .filter-select {
+    width: 100%;
+  }
+}
+
+/* ---- Stats Bar ---- */
+.history-stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 0;
+  border-top: 1px solid var(--border-subtle);
+  margin-bottom: 4px;
+  min-height: 32px;
+}
+
+.history-stat-text {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.history-stat-text strong {
+  color: var(--text-primary);
+}
+
+.history-stats-spacer {
+  flex: 1;
+}
+
+.history-bulk-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
   cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.history-bulk-toggle:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-primary);
+}
+
+.history-bulk-toggle input[type="checkbox"] {
+  cursor: pointer;
+  margin: 0;
+}
+
+.history-selection-count {
   font-size: 0.8125rem;
   font-weight: 600;
+  color: var(--accent-text, #4338ca);
+  padding: 2px 8px;
+  background: rgba(79, 70, 229, 0.08);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.history-bulk-delete-btn:not(:disabled) {
+  color: var(--danger);
+}
+
+.history-bulk-delete-btn:not(:disabled):hover {
+  background: rgba(220, 38, 38, 0.06);
+}
+
+/* ---- Stat Pills ---- */
+.history-stat-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.history-stat-pill--ok {
+  background: rgba(22, 163, 74, 0.10);
+  color: #15803d;
+  border-color: rgba(22, 163, 74, 0.18);
+}
+
+.history-stat-pill--bad {
+  background: rgba(220, 38, 38, 0.10);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.18);
+}
+
+.history-stat-pill--muted {
+  background: #eef0f4;
   color: var(--text-secondary);
-  padding: 10px 0;
-  list-style: none;
+  border-color: var(--border-subtle);
 }
 
-.history-intro-summary::-webkit-details-marker {
-  display: none;
-}
-
-.history-intro-body {
-  margin: 0 0 12px;
-  padding-top: 0;
-}
-
-.history-toolbar {
-  margin-bottom: 12px;
-}
-
+/* ---- Table ---- */
 .history-table-panel {
   padding: 0;
   overflow: hidden;
@@ -396,13 +691,13 @@ onMounted(load);
 
 .history-table-scroll {
   overflow-x: auto;
-  max-height: min(70vh, 720px);
+  max-height: min(65vh, 640px);
   overflow-y: auto;
 }
 
 .history-table {
   width: 100%;
-  min-width: 1120px;
+  min-width: 820px;
   table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
@@ -412,10 +707,14 @@ onMounted(load);
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 10px 12px;
-  background: #f0f2f6;
+  padding: 8px 10px;
+  background: #f8f9fb;
   border-bottom: 1px solid var(--border-subtle);
-  box-shadow: 0 1px 0 var(--border-subtle);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .th-narrow {
@@ -423,15 +722,26 @@ onMounted(load);
   white-space: nowrap;
 }
 
+.th-checkbox,
+.history-checkbox-cell {
+  width: 36px;
+  text-align: center;
+}
+
+.th-run-id {
+  white-space: nowrap;
+  text-align: center;
+}
+
 .history-table tbody td {
-  height: 76px;
-  padding: 12px;
+  height: 48px;
+  padding: 6px 10px;
   vertical-align: middle;
   border-bottom: 1px solid var(--border-subtle);
 }
 
 .history-row:hover td {
-  background: rgba(79, 70, 229, 0.04);
+  background: rgba(79, 70, 229, 0.02);
 }
 
 .history-cell-text {
@@ -451,128 +761,162 @@ onMounted(load);
 
 .history-output {
   color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.history-run-id-cell {
+  padding: 0;
+  text-align: center;
+}
+
+.history-run-id-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  border-radius: 4px;
+  transition: all 0.15s;
+  line-height: 1.3;
+  justify-content: center;
+  width: 100%;
+}
+
+.history-run-id-btn:hover {
+  background: rgba(79, 70, 229, 0.08);
+  color: var(--accent-text, #4338ca);
+}
+
+.copy-icon {
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+
+.history-run-id-btn:hover .copy-icon {
+  opacity: 0.5;
 }
 
 .history-run-id {
   letter-spacing: 0.01em;
+  font-weight: 500;
 }
 
-.history-run-id--clickable {
-  cursor: copy;
-  user-select: none;
-}
-
-.history-run-id--clickable:hover {
-  color: var(--accent-text, #4338ca);
+.history-task {
+  font-weight: 500;
+  color: var(--text-primary);
+  font-size: 0.85rem;
 }
 
 .history-time {
-  white-space: pre-line;
-  line-height: 1.35;
+  white-space: nowrap;
   font-size: 0.8125rem;
   text-align: left;
 }
 
+/* ---- Actions ---- */
 .history-actions {
   text-align: left;
+}
+
+.history-actions-sticky {
+  position: sticky;
+  right: 0;
+  z-index: 3;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.9) 20%, #fff 40%);
+}
+
+tbody .history-actions-sticky {
+  z-index: 1;
 }
 
 .history-action-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .history-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 54px;
-  min-height: 32px;
-  padding: 6px 10px;
-  font-size: 0.8125rem;
-  font-weight: 700;
+  min-height: 26px;
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--text-primary);
   text-decoration: none;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-strong);
-  background: #fff;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
   cursor: pointer;
   font-family: inherit;
   line-height: 1;
+  white-space: nowrap;
+  gap: 3px;
 }
 
 .history-action:hover:not(:disabled) {
-  background: rgba(79, 70, 229, 0.08);
-  border-color: rgba(79, 70, 229, 0.35);
+  background: rgba(79, 70, 229, 0.06);
+  border-color: rgba(79, 70, 229, 0.2);
   color: var(--accent-text);
   text-decoration: none;
 }
 
 .history-action--primary {
-  color: var(--accent-text);
-  border-color: rgba(79, 70, 229, 0.28);
-  background: rgba(79, 70, 229, 0.08);
+  color: #fff;
+  border-color: var(--accent);
+  background: var(--accent);
 }
 
-.history-action--danger {
-  color: var(--danger);
-  border-color: rgba(220, 38, 38, 0.18);
-  background: rgba(220, 38, 38, 0.06);
+.history-action--primary:hover:not(:disabled) {
+  background: var(--accent-hover, #3730a3);
+  border-color: var(--accent-hover, #3730a3);
+  color: #fff;
 }
 
-.history-action--danger:hover:not(:disabled) {
-  background: rgba(220, 38, 38, 0.08);
-  border-color: rgba(220, 38, 38, 0.3);
-  color: var(--danger-hover);
-}
-
-.history-stats {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.history-stat strong {
-  color: var(--text-primary);
-}
-
-.history-stat-pill {
-  font-size: 0.72rem;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-}
-
-.history-stat-pill--ok {
-  background: rgba(22, 163, 74, 0.12);
-  color: #15803d;
-  border-color: rgba(22, 163, 74, 0.2);
-}
-
-.history-stat-pill--bad {
-  background: rgba(220, 38, 38, 0.12);
-  color: #b91c1c;
-  border-color: rgba(220, 38, 38, 0.2);
-}
-
-.history-stat-pill--muted {
-  background: #eef0f4;
+.history-action--secondary {
   color: var(--text-secondary);
   border-color: var(--border-subtle);
 }
 
+.history-action--secondary:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.history-action--danger {
+  color: var(--danger);
+  border-color: rgba(220, 38, 38, 0.15);
+  background: rgba(220, 38, 38, 0.04);
+  gap: 3px;
+  padding: 3px 10px;
+}
+
+.history-action--danger:hover:not(:disabled) {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+.history-action--danger svg {
+  flex-shrink: 0;
+}
+
+/* ---- Pagination ---- */
 .history-pagination {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 12px 16px;
   border-top: 1px solid var(--border-subtle);
   background: #fafbfc;
 }
@@ -589,7 +933,7 @@ onMounted(load);
 }
 
 .history-page-current {
-  font-weight: 800;
+  font-weight: 700;
   color: var(--text-primary);
 }
 
@@ -619,44 +963,27 @@ onMounted(load);
   max-height: 420px;
 }
 
-.history-filters {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(240px, 1fr) 130px 160px auto;
-  align-items: center;
-}
-
-@media (max-width: 920px) {
-  .history-filters {
-    grid-template-columns: 1fr;
-  }
-
-  .history-task,
-  .history-output {
-    max-width: none;
-  }
-}
-
+/* ---- Status Pills ---- */
 .status-pill {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 3px 9px;
+  padding: 2px 8px;
   font-size: 0.72rem;
-  font-weight: 700;
+  font-weight: 600;
   border: 1px solid transparent;
 }
 
 .status-pill--ok {
-  background: rgba(22, 163, 74, 0.12);
+  background: rgba(22, 163, 74, 0.10);
   color: #15803d;
-  border-color: rgba(22, 163, 74, 0.22);
+  border-color: rgba(22, 163, 74, 0.18);
 }
 
 .status-pill--failed {
-  background: rgba(220, 38, 38, 0.12);
+  background: rgba(220, 38, 38, 0.10);
   color: #b91c1c;
-  border-color: rgba(220, 38, 38, 0.22);
+  border-color: rgba(220, 38, 38, 0.18);
 }
 
 .status-pill--running {
@@ -664,10 +991,25 @@ onMounted(load);
   color: var(--text-secondary);
   border-color: var(--border-subtle);
 }
+
+@media (max-width: 920px) {
+  .history-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .history-filters {
+    width: 100%;
+  }
+
+  .history-task,
+  .history-output {
+    max-width: none;
+  }
+}
 </style>
 
 <style>
-/* Teleport 到 body，需非 scoped */
 .history-toast {
   position: fixed;
   bottom: 24px;
