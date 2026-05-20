@@ -44,6 +44,39 @@
     </div>
   </section>
 
+  <section class="panel autonomy-filter-panel">
+    <div class="autonomy-filter-grid">
+      <label class="autonomy-field">
+        <span>Event Type</span>
+        <select v-model="selectedEventType">
+          <option value="">全部事件类型</option>
+          <option v-for="eventType in eventTypeOptions" :key="eventType" :value="eventType">
+            {{ eventType }}
+          </option>
+        </select>
+      </label>
+      <label class="autonomy-field">
+        <span>Trigger Rule</span>
+        <select v-model="selectedTriggerRule">
+          <option value="">全部 Trigger Rules</option>
+          <option v-for="rule in triggerRuleOptions" :key="rule" :value="rule">
+            {{ rule }}
+          </option>
+        </select>
+      </label>
+      <div class="autonomy-filter-actions">
+        <button class="btn-secondary btn-sm" :disabled="!hasActiveFilters" @click="clearFilters">
+          清空过滤
+        </button>
+      </div>
+    </div>
+    <div v-if="hasActiveFilters" class="autonomy-active-filters">
+      <span class="badge">run_id: {{ shortChainId(selectedRunId) }}</span>
+      <span v-if="selectedEventType" class="badge">event_type: {{ selectedEventType }}</span>
+      <span v-if="selectedTriggerRule" class="badge">trigger_rule: {{ selectedTriggerRule }}</span>
+    </div>
+  </section>
+
   <section class="autonomy-stat-grid">
     <article v-for="card in overviewCards" :key="card.label" class="panel autonomy-stat-card">
       <span>{{ card.label }}</span>
@@ -96,6 +129,13 @@
         <div class="autonomy-highlight-list" v-if="overviewHighlights.length">
           <span v-for="item in overviewHighlights" :key="item" class="badge">{{ item }}</span>
         </div>
+        <div class="autonomy-highlight-list" v-if="demoScenarios.length" style="margin-top: 12px">
+          <span v-for="item in demoScenarios" :key="item" class="badge">{{ item }}</span>
+        </div>
+        <div class="autonomy-overview-runtime" v-if="runtimeSummary.run_mode" style="margin-top: 14px">
+          <strong>{{ runtimeSummary.run_mode.label }}</strong>
+          <p class="muted">{{ runtimeSummary.run_mode.description }}</p>
+        </div>
       </div>
       <div class="autonomy-overview-list">
         <h4>最近 V3 运行</h4>
@@ -123,6 +163,68 @@
         <p v-else class="muted">暂无 v3 运行记录。</p>
       </div>
     </div>
+    <div class="autonomy-demo-grid" style="margin-top: 18px">
+      <article v-for="demo in demoCatalog" :key="demo.title" class="planning-node-card">
+        <div class="planning-node-head">
+          <h4>{{ demo.title }}</h4>
+          <p class="muted">{{ demo.goal }}</p>
+        </div>
+        <p class="autonomy-node-summary">{{ demo.prompt }}</p>
+        <p class="planning-node-deps muted">看点：{{ demo.watch }}</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="panel" v-if="activeTab === 'runtime'">
+    <div class="autonomy-section-head">
+      <div>
+        <h3>Runtime Status</h3>
+        <p class="muted">这里优先回答这次运行到底进入了哪种 runtime 模式，以及 governance 是怎么作用的。</p>
+      </div>
+    </div>
+    <div class="autonomy-stat-grid">
+      <article v-for="card in runtimeStatusCards" :key="card.label" class="panel autonomy-stat-card">
+        <span>{{ card.label }}</span>
+        <strong>{{ card.value }}</strong>
+        <small>{{ card.help }}</small>
+      </article>
+    </div>
+    <div v-if="flowCards.length" class="planning-node-list" style="margin-top: 16px">
+      <article v-for="card in flowCards" :key="`${card.trigger_rule_id}-${card.source_event_id || card.event_type}`" class="planning-node-card">
+        <div class="planning-node-top">
+          <div class="planning-node-title">
+            <span class="planning-node-index">{{ card.event_type }}</span>
+            <strong>{{ card.trigger_rule_id }}</strong>
+          </div>
+          <span class="badge autonomy-status-badge" :class="card.result_label === 'Executed' ? 'badge-ok' : 'badge-warn'">
+            {{ card.result_label }}
+          </span>
+        </div>
+        <p class="planning-node-deps muted">follow-up: {{ card.follow_up_label }}</p>
+        <p class="planning-node-deps muted">governance: {{ card.governance_label }}</p>
+        <p class="autonomy-node-summary">{{ card.summary || card.stop_reason || "No additional summary." }}</p>
+      </article>
+    </div>
+    <table v-if="governanceExplainItems.length" style="margin-top: 16px">
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Rule</th>
+          <th>Event</th>
+          <th>Reason</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="item in governanceExplainItems" :key="`${item.rule_id || 'none'}-${item.event_type || 'event'}-${item.label}`">
+          <td>{{ item.label }}</td>
+          <td>{{ item.rule_id || "—" }}</td>
+          <td>{{ item.event_type || "—" }}</td>
+          <td>{{ item.reason }}</td>
+          <td>{{ item.detail || "—" }}</td>
+        </tr>
+      </tbody>
+    </table>
   </section>
 
   <section class="panel" v-if="activeTab === 'graph'">
@@ -177,16 +279,21 @@
         <h3>Events</h3>
         <p class="muted">从单次 run 中抽出 event 视角；点任意事件可展开它的 execution chain。</p>
       </div>
-      <span class="badge">{{ eventRows.length }} items</span>
+      <span class="badge">{{ filteredEventRows.length }}/{{ eventRows.length }} items</span>
     </div>
-    <div class="autonomy-events-layout" v-if="eventRows.length">
+    <div class="autonomy-events-layout" v-if="filteredEventRows.length">
       <div class="autonomy-events-list">
         <button
-          v-for="item in eventRows"
+          v-for="item in filteredEventRows"
           :key="item.event_id || `${item.timestamp}-${item.event_type}`"
           type="button"
           class="autonomy-event-row"
-          :class="{ 'is-selected': selectedEventId === item.event_id }"
+          :class="{
+            'is-selected': selectedEventId === item.event_id,
+            'is-disabled': !canInspectEventChain(item),
+          }"
+          :disabled="!canInspectEventChain(item)"
+          :title="canInspectEventChain(item) ? '查看 event chain' : '无法展开 event chain'"
           @click="inspectEventChain(item)"
         >
           <div class="autonomy-event-row-head">
@@ -196,6 +303,11 @@
           <div class="autonomy-event-row-meta">
             <span>{{ item.source || "unknown" }}</span>
             <span>{{ compactText(summarizeV3Event(item), 100) }}</span>
+          </div>
+          <div class="autonomy-event-row-foot">
+            <span class="badge" :class="canInspectEventChain(item) ? 'badge-enabled' : 'badge-disabled'">
+              {{ canInspectEventChain(item) ? "可展开 chain" : "无 chain" }}
+            </span>
           </div>
         </button>
       </div>
@@ -224,7 +336,7 @@
         </template>
       </aside>
     </div>
-    <p v-else class="muted">当前 run 暂无事件记录。</p>
+    <p v-else class="muted">当前过滤条件下没有事件记录。</p>
   </section>
 
   <section class="panel" v-if="activeTab === 'triggers'">
@@ -233,9 +345,9 @@
         <h3>Triggers</h3>
         <p class="muted">这里聚焦规则命中、跳过与当前启停状态，适合作为 runtime 治理视图。</p>
       </div>
-      <span class="badge">{{ triggerRules.length }} rules</span>
+      <span class="badge">{{ filteredTriggerRules.length }}/{{ triggerRules.length }} rules</span>
     </div>
-    <table v-if="triggerRules.length">
+    <table v-if="filteredTriggerRules.length">
       <thead>
         <tr>
           <th>Rule</th>
@@ -247,7 +359,7 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="rule in triggerRules" :key="rule.rule_id">
+        <tr v-for="rule in filteredTriggerRules" :key="rule.rule_id">
           <td>
             <strong>{{ rule.rule_id }}</strong>
             <p class="muted autonomy-inline-note">{{ compactText(rule.description || "", 80) }}</p>
@@ -274,7 +386,7 @@
         </tr>
       </tbody>
     </table>
-    <p v-else class="muted">当前 run 没有 planning trigger rules。</p>
+    <p v-else class="muted">当前过滤条件下没有 trigger rules。</p>
   </section>
 </template>
 
@@ -290,6 +402,7 @@ import {
   listRuns,
   setV3TriggerRuleEnabled,
 } from "../api";
+import { formatGovernanceCount, normalizeV3RuntimeSummary } from "../v3RuntimeSummary";
 
 const route = useRoute();
 const router = useRouter();
@@ -303,6 +416,8 @@ const selectedDetail = ref(null);
 const triggerStateOverrides = ref({});
 const triggerHitCounts = ref([]);
 const activeTab = ref(String(route.query.tab || "overview"));
+const selectedEventType = ref(String(route.query.event_type || "").trim());
+const selectedTriggerRule = ref(String(route.query.trigger_rule || "").trim());
 const eventLoading = ref(false);
 const eventError = ref("");
 const eventChain = ref(null);
@@ -314,18 +429,45 @@ const selectedRun = computed(() => {
   if (!selectedRunId.value) return null;
   return recentV3Runs.value.find((run) => run.run_id === selectedRunId.value) || selectedDetail.value?.run || null;
 });
+const runtimeSummary = computed(() => normalizeV3RuntimeSummary(selectedDetail.value?.runtime_summary));
 const planning = computed(() => selectedDetail.value?.planning || null);
 const report = computed(() => selectedDetail.value?.report || null);
 const executionNodes = computed(() => Array.isArray(selectedDetail.value?.execution_nodes) ? selectedDetail.value.execution_nodes : []);
 const graphNodes = computed(() => executionNodes.value.filter((node) => String(node?.kind || "graph") !== "trigger"));
 const eventRows = computed(() => Array.isArray(selectedDetail.value?.trace) ? selectedDetail.value.trace : []);
 const triggerRules = computed(() => Array.isArray(planning.value?.trigger_rules) ? planning.value.trigger_rules : []);
+const eventTypeOptions = computed(() => {
+  return [...new Set(
+    eventRows.value
+      .map((item) => String(item?.event_type || item?.type || "").trim())
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+});
+const triggerRuleOptions = computed(() => {
+  return [...new Set(
+    triggerRules.value
+      .map((item) => String(item?.rule_id || "").trim())
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+});
+const filteredEventRows = computed(() => {
+  if (!selectedEventType.value) return eventRows.value;
+  return eventRows.value.filter((item) => String(item?.event_type || item?.type || "").trim() === selectedEventType.value);
+});
+const filteredTriggerRules = computed(() => {
+  if (!selectedTriggerRule.value) return triggerRules.value;
+  return triggerRules.value.filter((item) => String(item?.rule_id || "").trim() === selectedTriggerRule.value);
+});
+const hasActiveFilters = computed(() => {
+  return Boolean(selectedEventType.value || selectedTriggerRule.value);
+});
 
 const tabs = computed(() => [
   { id: "overview", label: "Overview", hint: recentV3Runs.value.length ? `${recentV3Runs.value.length} runs` : "" },
   { id: "graph", label: "Graph", hint: graphNodes.value.length ? `${graphNodes.value.length} nodes` : "" },
-  { id: "events", label: "Events", hint: eventRows.value.length ? `${eventRows.value.length} items` : "" },
-  { id: "triggers", label: "Triggers", hint: triggerRules.value.length ? `${triggerRules.value.length} rules` : "" },
+  { id: "events", label: "Events", hint: filteredEventRows.value.length ? `${filteredEventRows.value.length} items` : "" },
+  { id: "triggers", label: "Triggers", hint: filteredTriggerRules.value.length ? `${filteredTriggerRules.value.length} rules` : "" },
+  { id: "runtime", label: "Runtime Status", hint: runtimeSummary.value.run_mode?.label || "" },
 ]);
 
 const lastUpdatedText = computed(() => {
@@ -350,13 +492,61 @@ const overviewCards = computed(() => [
   },
   {
     label: "Events",
-    value: String(eventRows.value.length),
+    value: String(filteredEventRows.value.length),
     help: planning.value?.planning_mode === "llm" ? "当前规划已走模型" : "当前规划为规则模板",
   },
   {
     label: "Trigger Rules",
-    value: String(triggerRules.value.length),
+    value: String(filteredTriggerRules.value.length),
     help: triggerRules.value.length ? `${triggerRules.value.filter((rule) => isRuleEnabled(rule.rule_id)).length} enabled` : "无 trigger rules",
+  },
+]);
+const runtimeStatusCards = computed(() => [
+  {
+    label: "Run Mode",
+    value: runtimeSummary.value.run_mode?.label || "—",
+    help: runtimeSummary.value.run_mode?.description || "",
+  },
+  {
+    label: "Allowed",
+    value: formatGovernanceCount(runtimeSummary.value.governance_summary.status_counts, "allowed"),
+    help: "进入 follow-up 的次数",
+  },
+  {
+    label: "Blocked",
+    value: formatGovernanceCount(runtimeSummary.value.governance_summary.status_counts, "blocked"),
+    help: "被治理规则拦截的次数",
+  },
+  {
+    label: "Cooled Down",
+    value: formatGovernanceCount(runtimeSummary.value.governance_summary.status_counts, "cooled_down"),
+    help: "命中 cooldown 的次数",
+  },
+]);
+const flowCards = computed(() => Array.isArray(runtimeSummary.value.flow_cards) ? runtimeSummary.value.flow_cards : []);
+const governanceExplainItems = computed(() => {
+  const summary = runtimeSummary.value.governance_summary;
+  return Array.isArray(summary?.items) ? summary.items : [];
+});
+const demoScenarios = computed(() => Array.isArray(runtimeSummary.value.demo_scenarios) ? runtimeSummary.value.demo_scenarios : []);
+const demoCatalog = computed(() => [
+  {
+    title: "Demo 1: 测试失败 -> 自动补救 -> 再测",
+    goal: "让用户看到 event -> trigger -> follow-up 的完整主路径。",
+    prompt: "在一个带失败测试的仓库里运行 `run tests`，然后观察 test_failed 如何触发 coding / tdd / test_runner。",
+    watch: "Runtime Mode、Flow Cards、Recovered / Failed 节点收敛",
+  },
+  {
+    title: "Demo 2: 代码变更 -> 自动 follow-up test",
+    goal: "让用户看到 v3 会在代码更新后继续推进，而不是停在一次结果页。",
+    prompt: "启用 autonomy follow-up 后运行一次修复型任务，观察 code_updated 之后是否进入 follow-up test。",
+    watch: "Graph + Autonomy Follow-up、Events、Flow Cards",
+  },
+  {
+    title: "Demo 3: 事件命中但被 governance 拦截",
+    goal: "让用户一眼看出 v3 有治理层，而不是任意自动扩张。",
+    prompt: "使用 cooldown / budget / propagation 限制的场景，再看 trigger_skipped 如何被翻译成用户可读解释。",
+    watch: "Governance Explain、Cooled Down / Blocked / Budget Exhausted",
   },
 ]);
 
@@ -469,6 +659,27 @@ function formatExecutionLayers(layers) {
     .join(" | ");
 }
 
+function canInspectEventChain(item) {
+  return Boolean(item && item.event_id && (item.execution_chain_id || item.event_type === "test_failed"));
+}
+
+function normalizedQueryValue(value) {
+  return String(value || "").trim();
+}
+
+function replaceQueryState() {
+  router.replace({
+    name: "autonomy",
+    query: {
+      ...route.query,
+      run_id: selectedRunId.value || undefined,
+      tab: activeTab.value || undefined,
+      event_type: selectedEventType.value || undefined,
+      trigger_rule: selectedTriggerRule.value || undefined,
+    },
+  });
+}
+
 function summarizeV3Event(item) {
   const payload = item?.payload;
   if (payload && typeof payload === "object") {
@@ -542,10 +753,18 @@ async function loadAutonomy() {
 }
 
 async function inspectEventChain(item) {
-  if (!item?.event_id || !selectedRunId.value) return;
+  if (!selectedRunId.value) return;
+  if (!canInspectEventChain(item)) {
+    selectedEventId.value = item?.event_id || "";
+    eventChain.value = null;
+    eventChainView.value = "";
+    eventError.value = "这条事件没有可展开的 event chain。请选择带 execution_chain_id 的事件，或 test_failed 根事件。";
+    return;
+  }
   eventLoading.value = true;
   eventError.value = "";
   selectedEventId.value = item.event_id;
+  selectedEventType.value = String(item.event_type || item.type || "").trim();
   try {
     const [chain, view] = await Promise.all([
       getV3EventChain(selectedRunId.value, { eventId: item.event_id }),
@@ -578,18 +797,16 @@ async function toggleRule(ruleId) {
   }
 }
 
+function clearFilters() {
+  selectedEventType.value = "";
+  selectedTriggerRule.value = "";
+}
+
 watch(
   () => selectedRunId.value,
   async (runId, previous) => {
     if (!runId || runId === previous) return;
-    router.replace({
-      name: "autonomy",
-      query: {
-        ...route.query,
-        run_id: runId,
-        tab: activeTab.value,
-      },
-    });
+    replaceQueryState();
     try {
       await loadRunDetail(runId);
       eventChain.value = null;
@@ -603,16 +820,31 @@ watch(
 );
 
 watch(
-  () => activeTab.value,
-  (value) => {
-    router.replace({
-      name: "autonomy",
-      query: {
-        ...route.query,
-        run_id: selectedRunId.value || undefined,
-        tab: value,
-      },
-    });
+  () => [activeTab.value, selectedEventType.value, selectedTriggerRule.value],
+  () => {
+    replaceQueryState();
+  }
+);
+
+watch(
+  () => route.query,
+  (query) => {
+    const nextRunId = normalizedQueryValue(query.run_id);
+    const nextTab = normalizedQueryValue(query.tab) || "overview";
+    const nextEventType = normalizedQueryValue(query.event_type);
+    const nextTriggerRule = normalizedQueryValue(query.trigger_rule);
+    if (nextRunId !== selectedRunId.value && nextRunId) {
+      selectedRunId.value = nextRunId;
+    }
+    if (nextTab !== activeTab.value) {
+      activeTab.value = nextTab;
+    }
+    if (nextEventType !== selectedEventType.value) {
+      selectedEventType.value = nextEventType;
+    }
+    if (nextTriggerRule !== selectedTriggerRule.value) {
+      selectedTriggerRule.value = nextTriggerRule;
+    }
   }
 );
 
@@ -646,16 +878,37 @@ onMounted(loadAutonomy);
   align-items: flex-end;
 }
 
+.autonomy-filter-panel {
+  padding-top: 18px;
+}
+
 .autonomy-toolbar-main,
 .autonomy-toolbar-side,
 .autonomy-toolbar-links,
 .autonomy-run-meta,
 .autonomy-highlight-list,
-.autonomy-chain-meta {
+.autonomy-chain-meta,
+.autonomy-active-filters {
   display: flex;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.autonomy-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  gap: 16px;
+  align-items: end;
+}
+
+.autonomy-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.autonomy-active-filters {
+  margin-top: 14px;
 }
 
 .autonomy-field {
@@ -796,10 +1049,25 @@ onMounted(loadAutonomy);
   background: #f8f9ff;
 }
 
+.autonomy-event-row:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 .autonomy-event-row.is-selected {
   border-color: rgba(79, 70, 229, 0.3);
   box-shadow: inset 0 0 0 1px rgba(79, 70, 229, 0.18);
   background: rgba(79, 70, 229, 0.05);
+}
+
+.autonomy-event-row.is-disabled {
+  background: #f8fafc;
+  border-style: dashed;
+}
+
+.autonomy-event-row.is-disabled:hover {
+  border-color: var(--border-subtle);
+  background: #f8fafc;
 }
 
 .autonomy-event-row-head,
@@ -814,6 +1082,12 @@ onMounted(loadAutonomy);
   margin-top: 6px;
   color: var(--text-secondary);
   font-size: 0.84rem;
+}
+
+.autonomy-event-row-foot {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-start;
 }
 
 .autonomy-chain-view {
@@ -871,6 +1145,7 @@ onMounted(loadAutonomy);
   }
 
   .autonomy-stat-grid,
+  .autonomy-filter-grid,
   .autonomy-overview-layout,
   .autonomy-events-layout {
     grid-template-columns: 1fr;

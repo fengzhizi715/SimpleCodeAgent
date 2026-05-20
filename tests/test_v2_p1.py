@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -412,3 +413,338 @@ def test_generic_run_detail_routes_v3_report(monkeypatch) -> None:
     assert response.report is not None
     assert response.planning["goal_kind"] == "testing"
     assert response.execution_nodes[0]["node_id"] == "test_runner"
+
+
+def test_generic_run_detail_restores_v3_report_from_final_output_when_trace_payload_is_thin(monkeypatch) -> None:
+    graph_finished = TraceEvent(
+        run_id="run-v3",
+        event_type="graph_finished",
+        message="v3 done",
+        payload={
+            "event_id": "evt-graph-finished",
+            "run_id": "run-v3",
+            "event_type": "graph_finished",
+            "source": "execution_kernel",
+            "payload": {
+                "run_id": "run-v3",
+                "graph_id": "graph-v3",
+                "status": "completed",
+            },
+            "execution_chain_id": None,
+        },
+    )
+
+    full_report = {
+        "run_id": "run-v3",
+        "graph_id": "graph-v3",
+        "status": "completed",
+        "completed_node_ids": ["analyze_repo", "coding", "test_runner"],
+        "failed_node_ids": [],
+        "recovered_node_ids": [],
+        "skipped_node_ids": [],
+        "node_outputs": {
+            "analyze_repo": {"repo_profile": "gradle_kotlin"},
+            "coding": {"summary": "fixed login bug"},
+            "test_runner": {"summary": "Tests passed: ./gradlew test", "exit_code": 0},
+        },
+        "shared_state": {
+            "planning": {
+                "goal_kind": "coding",
+                "template_name": "repo_fix",
+                "planning_mode": "llm",
+                "execution_layers": [["analyze_repo"], ["coding"], ["test_runner"]],
+            }
+        },
+        "execution_nodes": [
+            {"node_id": "analyze_repo", "kind": "graph", "skill_name": "analyze_repo", "status": "completed"},
+            {"node_id": "coding", "kind": "graph", "skill_name": "coding", "status": "completed"},
+            {"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "completed"},
+        ],
+        "trigger_diagnostics": [],
+        "agent_messages": [],
+    }
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-v3",
+                "session_id": "session-v3",
+                "model": "fake-model",
+                "task": "fix login",
+                "workdir": ".",
+                "status": "completed",
+                "step_count": 3,
+                "final_output": json.dumps(full_report),
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v3",
+            }
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [graph_finished] if run_id == "run-v3" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-v3")
+
+    assert response.version == "v3"
+    assert response.report is not None
+    assert response.report["graph_id"] == "graph-v3"
+    assert response.planning["goal_kind"] == "coding"
+    assert response.planning["planning_mode"] == "llm"
+    assert [node["node_id"] for node in response.execution_nodes] == ["analyze_repo", "coding", "test_runner"]
+    assert response.report["node_outputs"]["test_runner"]["exit_code"] == 0
+
+
+def test_generic_run_detail_builds_v3_runtime_summary(monkeypatch) -> None:
+    graph_finished = TraceEvent(
+        run_id="run-v3",
+        event_type="graph_finished",
+        message="v3 done",
+        payload={
+            "event_id": "evt-graph-finished",
+            "run_id": "run-v3",
+            "event_type": "graph_finished",
+            "source": "execution_kernel",
+            "payload": {
+                "run_id": "run-v3",
+                "graph_id": "graph-v3",
+                "status": "completed",
+                "shared_state": {
+                    "planning": {
+                        "goal_kind": "testing",
+                        "template_name": "fix_and_retest",
+                        "planning_mode": "llm",
+                    }
+                },
+                "execution_nodes": [
+                    {"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "failed"},
+                    {"node_id": "trigger:fix-tests:evt-1", "kind": "trigger", "skill_name": "coding", "status": "done"},
+                    {"node_id": "autonomy:req-1", "kind": "trigger", "skill_name": "test_runner", "status": "done"},
+                ],
+                "trigger_diagnostics": [
+                    {
+                        "trigger_rule_id": "fix-tests",
+                        "source_event_type": "test_failed",
+                        "target_skill_name": "coding",
+                        "status": "executed",
+                        "details": {"cooldown_seconds": 30.0, "priority": 5},
+                    },
+                    {
+                        "trigger_rule_id": "verify-code-updates",
+                        "source_event_type": "code_updated",
+                        "target_skill_name": "test_runner",
+                        "status": "skipped",
+                        "skip_reason": "cooldown",
+                        "details": {
+                            "skip_reason": "cooldown",
+                            "cooldown_seconds": 60.0,
+                            "cooldown_key": "verify-code-updates:app.py",
+                        },
+                    },
+                ],
+            },
+            "metadata": {},
+        },
+    )
+    trigger_skipped = TraceEvent(
+        run_id="run-v3",
+        event_type="trigger_skipped",
+        message="trigger skipped",
+        payload={
+            "event_id": "evt-trigger-skipped",
+            "run_id": "run-v3",
+            "event_type": "trigger_skipped",
+            "source": "test_runner",
+            "payload": {
+                "trigger_rule_id": "verify-code-updates",
+                "source_event_type": "code_updated",
+                "skip_reason": "cooldown",
+                "cooldown_key": "verify-code-updates:app.py",
+            },
+            "metadata": {
+                "governance_decision": {
+                    "skip_reason": "cooldown",
+                    "cooldown_seconds": 60.0,
+                }
+            },
+        },
+    )
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-v3",
+                "session_id": "session-v3",
+                "model": "fake-model",
+                "task": "run tests and recover",
+                "workdir": ".",
+                "status": "completed",
+                "step_count": 3,
+                "final_output": "{}",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v3",
+            }
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [trigger_skipped, graph_finished] if run_id == "run-v3" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-v3")
+
+    assert response.runtime_summary is not None
+    assert response.runtime_summary["run_mode"]["id"] == "graph_governance_intercept"
+    assert response.runtime_summary["run_mode"]["label"] == "Graph + Governance Intercept"
+    assert response.runtime_summary["governance_summary"]["status_counts"]["blocked"] == 1
+    assert response.runtime_summary["governance_summary"]["status_counts"]["allowed"] == 1
+    assert response.runtime_summary["flow_cards"][0]["event_type"] == "test_failed"
+    assert response.runtime_summary["flow_cards"][0]["trigger_rule_id"] == "fix-tests"
+    assert response.runtime_summary["flow_cards"][0]["follow_up_label"] == "coding"
+    assert response.runtime_summary["flow_cards"][1]["governance_label"] == "Cooled Down"
+    assert response.runtime_summary["demo_scenarios"] == [
+        "测试失败 -> 自动补救 -> 再测",
+        "代码变更 -> 自动 follow-up test",
+        "事件命中但被 governance 拦截",
+    ]
+
+
+def test_generic_run_detail_infers_runtime_mode_from_trace_when_report_is_thin(monkeypatch) -> None:
+    graph_finished = TraceEvent(
+        run_id="run-v3-thin",
+        event_type="graph_finished",
+        message="v3 done",
+        payload={
+            "event_id": "evt-graph-finished",
+            "run_id": "run-v3-thin",
+            "event_type": "graph_finished",
+            "source": "execution_kernel",
+            "payload": {
+                "run_id": "run-v3-thin",
+                "graph_id": "graph-v3-thin",
+                "status": "completed",
+                "shared_state": {
+                    "planning": {
+                        "goal_kind": "testing",
+                        "template_name": "default",
+                    }
+                },
+                "execution_nodes": [
+                    {"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "failed"},
+                ],
+                "trigger_diagnostics": [],
+            },
+        },
+    )
+    trigger_skipped = TraceEvent(
+        run_id="run-v3-thin",
+        event_type="trigger_skipped",
+        message="trigger skipped",
+        payload={
+            "event_id": "evt-trigger-skipped",
+            "run_id": "run-v3-thin",
+            "event_type": "trigger_skipped",
+            "source": "test_runner",
+            "parent_event_id": "evt-test-failed",
+            "trigger_rule_id": "trigger-test-failed",
+            "payload": {
+                "trigger_rule_id": "trigger-test-failed",
+                "source_event_type": "test_failed",
+                "skip_reason": "cooldown",
+            },
+            "metadata": {
+                "governance_decision": {
+                    "skip_reason": "cooldown",
+                    "cooldown_seconds": 30.0,
+                }
+            },
+        },
+    )
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-v3-thin",
+                "session_id": "session-v3",
+                "model": "fake-model",
+                "task": "run tests",
+                "workdir": ".",
+                "status": "partial_completed",
+                "step_count": 1,
+                "final_output": "{}",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v3",
+            }
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [trigger_skipped, graph_finished] if run_id == "run-v3-thin" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-v3-thin")
+
+    assert response.runtime_summary is not None
+    assert response.runtime_summary["run_mode"]["id"] == "graph_governance_intercept"
+    assert response.runtime_summary["flow_cards"][0]["event_type"] == "test_failed"
+    assert response.runtime_summary["flow_cards"][0]["trigger_rule_id"] == "trigger-test-failed"
+    assert response.runtime_summary["governance_summary"]["items"][0]["label"] == "Cooled Down"
+
+
+def test_generic_run_detail_does_not_guess_demo_scenarios_without_runtime_follow_up(monkeypatch) -> None:
+    graph_finished = TraceEvent(
+        run_id="run-v3-plain",
+        event_type="graph_finished",
+        message="v3 done",
+        payload={
+            "run_id": "run-v3-plain",
+            "graph_id": "graph-v3-plain",
+            "status": "partial_completed",
+            "shared_state": {
+                "planning": {
+                    "goal_kind": "testing",
+                    "template_name": "default",
+                }
+            },
+            "execution_nodes": [
+                {"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "failed"},
+            ],
+            "trigger_diagnostics": [],
+        },
+    )
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-v3-plain",
+                "session_id": "session-v3",
+                "model": "fake-model",
+                "task": "run tests",
+                "workdir": ".",
+                "status": "partial_completed",
+                "step_count": 1,
+                "final_output": "{}",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v3",
+            }
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [graph_finished] if run_id == "run-v3-plain" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-v3-plain")
+
+    assert response.runtime_summary is not None
+    assert response.runtime_summary["run_mode"]["id"] == "graph_only"
+    assert response.runtime_summary["demo_scenarios"] == []

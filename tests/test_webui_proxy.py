@@ -39,6 +39,18 @@ def test_v3_execution_page_surfaces_outcome_next_step_and_risks() -> None:
     assert "Risks" in page
 
 
+def test_v3_execution_page_surfaces_runtime_mode_flow_cards_and_governance_explain() -> None:
+    page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
+
+    assert "v3RuntimeSummary" in page
+    assert "v3RunModeCard" in page
+    assert "v3FlowCards" in page
+    assert "v3GovernanceExplainItems" in page
+    assert "Runtime Mode" in page
+    assert "Flow Cards" in page
+    assert "Governance Explain" in page
+
+
 def test_v3_execution_page_composes_task_aware_primary_answer() -> None:
     page = Path("webui/src/pages/RunExecutionPage.vue").read_text(encoding="utf-8")
 
@@ -94,3 +106,48 @@ def test_autonomy_page_includes_graph_events_and_triggers_tabs() -> None:
     assert "Triggers" in page
     assert "getV3EventChain" in page
     assert "listRuns" in page
+
+
+def test_autonomy_page_surfaces_runtime_status_and_demo_scenarios() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "runtimeSummary" in page
+    assert "runtimeStatusCards" in page
+    assert "flowCards" in page
+    assert "governanceExplainItems" in page
+    assert "demoScenarios" in page
+    assert "demoCatalog" in page
+    assert "Runtime Status" in page
+
+
+def test_autonomy_page_reads_url_filters() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "route.query.run_id" in page
+    assert "route.query.event_type" in page
+    assert "route.query.trigger_rule" in page
+
+
+def test_autonomy_page_writes_url_filters_back_to_router() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "event_type: selectedEventType.value || undefined" in page
+    assert "trigger_rule: selectedTriggerRule.value || undefined" in page
+    assert "run_id: selectedRunId.value || undefined" in page
+
+
+def test_autonomy_page_filters_events_and_trigger_rules() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "filteredEventRows" in page
+    assert "filteredTriggerRules" in page
+    assert "selectedEventType" in page
+    assert "selectedTriggerRule" in page
+
+
+def test_autonomy_page_only_opens_event_chain_for_inspectable_events() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "canInspectEventChain" in page
+    assert "无法展开 event chain" in page
+    assert ":disabled=\"!canInspectEventChain(item)\"" in page

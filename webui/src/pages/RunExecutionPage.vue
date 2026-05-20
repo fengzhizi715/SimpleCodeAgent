@@ -45,6 +45,40 @@
       </div>
     </section>
 
+    <section class="panel" v-if="v3RuntimeSummary.run_mode">
+      <div class="v3-section-head">
+        <div>
+          <h3>Runtime Mode</h3>
+          <p class="muted">先明确本次 v3 到底只是 graph，还是已经进入 trigger、autonomy 或 governance 路径。</p>
+        </div>
+      </div>
+      <div class="v3-key-findings">
+        <article class="v3-key-card">
+          <span>Mode</span>
+          <strong>{{ v3RunModeCard.value }}</strong>
+          <small>{{ v3RunModeCard.help }}</small>
+        </article>
+        <article class="v3-key-card">
+          <span>Allowed</span>
+          <strong>{{ formatGovernanceCount(v3RuntimeSummary.governance_summary.status_counts, "allowed") }}</strong>
+          <small>已进入 follow-up</small>
+        </article>
+        <article class="v3-key-card">
+          <span>Blocked</span>
+          <strong>{{ formatGovernanceCount(v3RuntimeSummary.governance_summary.status_counts, "blocked") }}</strong>
+          <small>被 governance 拦截</small>
+        </article>
+        <article class="v3-key-card">
+          <span>Cooled Down</span>
+          <strong>{{ formatGovernanceCount(v3RuntimeSummary.governance_summary.status_counts, "cooled_down") }}</strong>
+          <small>进入 cooldown</small>
+        </article>
+      </div>
+      <div v-if="v3RuntimeSummary.demo_scenarios.length" class="autonomy-highlight-list" style="margin-top: 14px">
+        <span v-for="item in v3RuntimeSummary.demo_scenarios" :key="item" class="badge">{{ item }}</span>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="v3-primary-answer-head">
         <div>
@@ -76,6 +110,60 @@
           <small v-if="item.help">{{ item.help }}</small>
         </article>
       </div>
+    </section>
+
+    <section class="panel" v-if="v3FlowCards.length">
+      <div class="v3-section-head">
+        <div>
+          <h3>Flow Cards</h3>
+          <p class="muted">把 event -> trigger -> follow-up 做成显式流程卡，而不是只读 trace 表格。</p>
+        </div>
+      </div>
+      <div class="planning-node-list v3-layer-grid">
+        <article v-for="card in v3FlowCards" :key="`${card.trigger_rule_id}-${card.source_event_id || card.event_type}`" class="planning-node-card">
+          <div class="planning-node-top">
+            <div class="planning-node-title">
+              <span class="planning-node-index">{{ card.event_type }}</span>
+              <strong>{{ card.trigger_rule_id }}</strong>
+            </div>
+            <span class="badge autonomy-status-badge" :class="card.result_label === 'Executed' ? 'badge-ok' : 'badge-warn'">
+              {{ card.result_label }}
+            </span>
+          </div>
+          <p class="planning-node-deps muted">follow-up: {{ card.follow_up_label }}</p>
+          <p class="planning-node-deps muted">governance: {{ card.governance_label }}</p>
+          <pre class="flow-detail-pre">{{ card.summary || card.stop_reason || "No additional summary." }}</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" v-if="v3GovernanceExplainItems.length">
+      <div class="v3-section-head">
+        <div>
+          <h3>Governance Explain</h3>
+          <p class="muted">把允许、拦截、cooldown 和预算限制翻译成用户可读说明。</p>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Rule</th>
+            <th>Event</th>
+            <th>Reason</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in v3GovernanceExplainItems" :key="`${item.rule_id || 'none'}-${item.event_type || 'event'}-${item.label}`">
+            <td>{{ item.label }}</td>
+            <td>{{ item.rule_id || "—" }}</td>
+            <td>{{ item.event_type || "—" }}</td>
+            <td>{{ item.reason }}</td>
+            <td>{{ item.detail || "—" }}</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <section class="panel" v-if="v3GraphExecutionNodes.length">
@@ -711,6 +799,7 @@ import {
 import { useRoute, useRouter } from "vue-router";
 import { getRunDetail, getV3EventChain, getV3EventChainView, replayV3EventChain } from "../api";
 import JsonBlock from "../components/JsonBlock.vue";
+import { formatGovernanceCount, normalizeV3RuntimeSummary } from "../v3RuntimeSummary";
 
 const props = defineProps({
   runId: { type: String, required: true },
@@ -736,6 +825,7 @@ const v3Report = ref(null);
 const v3Planning = ref(null);
 const v3TriggerDiagnostics = ref([]);
 const v3ExecutionNodes = ref([]);
+const v3RuntimeSummary = ref(normalizeV3RuntimeSummary(null));
 const v3TriggerRuleStates = ref({});
 const eventChain = ref(null);
 const eventChainView = ref("");
@@ -843,6 +933,23 @@ const v3GraphLayerSections = computed(() => {
 });
 const v3EventRows = computed(() => {
   return Array.isArray(trace.value) ? trace.value : [];
+});
+const v3RunModeCard = computed(() => {
+  const runMode = v3RuntimeSummary.value.run_mode;
+  if (!runMode) {
+    return { value: "—", help: "" };
+  }
+  return {
+    value: runMode.label || runMode.id || "—",
+    help: runMode.description || "",
+  };
+});
+const v3FlowCards = computed(() => {
+  return Array.isArray(v3RuntimeSummary.value.flow_cards) ? v3RuntimeSummary.value.flow_cards : [];
+});
+const v3GovernanceExplainItems = computed(() => {
+  const summary = v3RuntimeSummary.value.governance_summary;
+  return Array.isArray(summary?.items) ? summary.items : [];
 });
 const v3FinalSummary = computed(() => {
   const graphNodes = v3GraphExecutionNodes.value;
@@ -1347,6 +1454,7 @@ async function fetchReplay() {
     v3Planning.value = data.planning || null;
     v3TriggerDiagnostics.value = Array.isArray(data.trigger_diagnostics) ? data.trigger_diagnostics : [];
     v3ExecutionNodes.value = Array.isArray(data.execution_nodes) ? data.execution_nodes : [];
+    v3RuntimeSummary.value = normalizeV3RuntimeSummary(data.runtime_summary);
     if (detailVersion.value === "v3" && Array.isArray(v3ExecutionNodes.value) && v3ExecutionNodes.value.length) {
       const graphNode = v3ExecutionNodes.value.find((node) => String(node?.kind || "graph") !== "trigger");
       selectedV3NodeId.value = graphNode?.node_id || "";
