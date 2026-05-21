@@ -66,7 +66,7 @@ class TDDSkill(Skill):
                     success=False,
                     summary="TDD skill stopped because coding produced no file changes",
                     error="no_code_changes",
-                    data={"coding_result": coding_result.data, "rounds": rounds},
+                    data={"coding_result": coding_result.data, "rounds": rounds, "error": "no_code_changes"},
                 )
 
             verification_result = await self._run_verification_sequence(
@@ -173,7 +173,12 @@ class TDDSkill(Skill):
                     success=False,
                     summary="TDD skill stopped because coding produced no file changes",
                     error="no_code_changes",
-                    data={"test_result": test_result.data, "coding_result": coding_result.data, "rounds": rounds},
+                    data={
+                        "test_result": test_result.data,
+                        "coding_result": coding_result.data,
+                        "rounds": rounds,
+                        "error": "no_code_changes",
+                    },
                 )
 
         return SkillOutput(

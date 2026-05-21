@@ -52,6 +52,21 @@ class V3GovernanceSummary(BaseModel):
     items: list[V3GovernanceExplainItem] = Field(default_factory=list)
 
 
+class V3RecoverySummary(BaseModel):
+    """User-facing recovery summary for one V3 run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str
+    label: str
+    trigger_skill_name: str | None = None
+    parent_node_id: str | None = None
+    patch_summary: str = ""
+    verification_summary: str = ""
+    stop_reason: str | None = None
+    recovered_node_ids: list[str] = Field(default_factory=list)
+
+
 class V3RuntimeSummary(BaseModel):
     """Product-facing V3 runtime summary for detail and autonomy views."""
 
@@ -60,4 +75,5 @@ class V3RuntimeSummary(BaseModel):
     run_mode: V3RunModeView
     flow_cards: list[V3FlowCardView] = Field(default_factory=list)
     governance_summary: V3GovernanceSummary = Field(default_factory=V3GovernanceSummary)
+    recovery_summary: V3RecoverySummary
     demo_scenarios: list[str] = Field(default_factory=list)

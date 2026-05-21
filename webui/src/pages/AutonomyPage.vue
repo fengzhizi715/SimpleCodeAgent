@@ -164,15 +164,60 @@
       </div>
     </div>
     <div class="autonomy-demo-grid" style="margin-top: 18px">
-      <article v-for="demo in demoCatalog" :key="demo.title" class="planning-node-card">
+      <article v-for="demo in demoCatalog" :key="demo.id" class="planning-node-card">
         <div class="planning-node-head">
           <h4>{{ demo.title }}</h4>
           <p class="muted">{{ demo.goal }}</p>
         </div>
         <p class="autonomy-node-summary">{{ demo.prompt }}</p>
         <p class="planning-node-deps muted">看点：{{ demo.watch }}</p>
+        <div class="autonomy-demo-actions">
+          <button class="btn-secondary btn-sm" :disabled="demoLaunchingId === demo.id" @click="launchRecoveryDemo(demo)">
+            {{ demoLaunchingId === demo.id ? "启动中…" : demo.actionLabel }}
+          </button>
+          <button class="btn-secondary btn-sm" :disabled="!demo.latestRunId" @click="openDemoRun(demo)">
+            打开最近一次 Run
+          </button>
+          <button class="btn-secondary btn-sm" :disabled="!demo.latestRunId || replayCompareLoading" @click="openReplayCompare(demo)">
+            {{ replayCompareLoading && replayCompareDemoId === demo.id ? "对照中…" : "Replay Compare" }}
+          </button>
+        </div>
+        <p v-if="demo.latestRunId" class="muted autonomy-inline-note">
+          最近运行：{{ shortChainId(demo.latestRunId) }} · {{ demo.latestStatusLabel }}
+        </p>
       </article>
     </div>
+    <section class="autonomy-replay-panel" style="margin-top: 18px">
+      <div class="autonomy-section-head">
+        <div>
+          <h3>Recovery Demos</h3>
+          <p class="muted">固定展示 recovery success / failure demo 的最近状态，并保留 replay 对照入口。</p>
+        </div>
+      </div>
+      <div class="autonomy-stat-grid" v-if="recoveryStatusCards.length">
+        <article v-for="card in recoveryStatusCards" :key="card.label" class="panel autonomy-stat-card">
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+          <small>{{ card.help }}</small>
+        </article>
+      </div>
+      <div class="planning-node-card" v-if="replayCompareState.runId || replayCompareError">
+        <div class="planning-node-head">
+          <h4>Replay Compare</h4>
+          <p class="muted">{{ replayCompareState.demoTitle || "对 demo recovery 链执行 replay，并和原始 run 做最小对照。" }}</p>
+        </div>
+        <p v-if="replayCompareError" class="error">{{ replayCompareError }}</p>
+        <template v-else-if="replayCompareState.runId">
+          <p class="planning-node-deps muted">
+            run: {{ shortChainId(replayCompareState.runId) }} ·
+            target: {{ replayCompareState.targetSkillName || "—" }} ·
+            replay: {{ replayCompareState.replaySuccess ? "success" : "failed" }}
+          </p>
+          <p class="autonomy-node-summary">{{ replayCompareState.summary || "暂无 replay 结果。" }}</p>
+          <p class="muted autonomy-inline-note">{{ replayCompareState.originalSummary || "—" }}</p>
+        </template>
+      </div>
+    </section>
   </section>
 
   <section class="panel" v-if="activeTab === 'runtime'">
@@ -397,9 +442,12 @@ import {
   getRunDetail,
   getV3EventChain,
   getV3EventChainView,
+  getV3RunReplayPlan,
   getV3TriggerHitCounts,
   getV3TriggerRuleStates,
   listRuns,
+  replayV3EventChain,
+  runV3RecoveryDemo,
   setV3TriggerRuleEnabled,
 } from "../api";
 import { formatGovernanceCount, normalizeV3RuntimeSummary } from "../v3RuntimeSummary";
@@ -424,6 +472,19 @@ const eventChain = ref(null);
 const eventChainView = ref("");
 const selectedEventId = ref("");
 const togglingRuleId = ref("");
+const demoRunDetails = ref({});
+const demoLaunchingId = ref("");
+const replayCompareLoading = ref(false);
+const replayCompareDemoId = ref("");
+const replayCompareError = ref("");
+const replayCompareState = ref({
+  runId: "",
+  demoTitle: "",
+  targetSkillName: "",
+  summary: "",
+  originalSummary: "",
+  replaySuccess: false,
+});
 
 const selectedRun = computed(() => {
   if (!selectedRunId.value) return null;
@@ -529,26 +590,72 @@ const governanceExplainItems = computed(() => {
   return Array.isArray(summary?.items) ? summary.items : [];
 });
 const demoScenarios = computed(() => Array.isArray(runtimeSummary.value.demo_scenarios) ? runtimeSummary.value.demo_scenarios : []);
+const recentDemoRunsByScenario = computed(() => {
+  const entries = Object.values(demoRunDetails.value || {}).filter(Boolean);
+  return entries.reduce((acc, detail) => {
+    const recoveryStatus = detail?.runtime_summary?.recovery_summary?.status;
+    if (recoveryStatus === "recovered" && !acc.success) {
+      acc.success = detail;
+    }
+    if (recoveryStatus === "recovery_failed" && !acc.no_code_changes) {
+      acc.no_code_changes = detail;
+    }
+    return acc;
+  }, { success: null, no_code_changes: null });
+});
 const demoCatalog = computed(() => [
   {
+    id: "success",
     title: "Demo 1: 测试失败 -> 自动补救 -> 再测",
     goal: "让用户看到 event -> trigger -> follow-up 的完整主路径。",
     prompt: "在一个带失败测试的仓库里运行 `run tests`，然后观察 test_failed 如何触发 coding / tdd / test_runner。",
     watch: "Runtime Mode、Flow Cards、Recovered / Failed 节点收敛",
+    actionLabel: "启动成功恢复 Demo",
+    latestRunId: recentDemoRunsByScenario.value.success?.run?.run_id || "",
+    latestStatusLabel: recentDemoRunsByScenario.value.success?.runtime_summary?.recovery_summary?.label || "Recovered",
   },
   {
-    title: "Demo 2: 代码变更 -> 自动 follow-up test",
-    goal: "让用户看到 v3 会在代码更新后继续推进，而不是停在一次结果页。",
-    prompt: "启用 autonomy follow-up 后运行一次修复型任务，观察 code_updated 之后是否进入 follow-up test。",
-    watch: "Graph + Autonomy Follow-up、Events、Flow Cards",
+    id: "no_code_changes",
+    title: "Demo 2: 失败收敛 / 无代码变更",
+    goal: "让用户看到 recovery 已触发，但会在 no-op patch 处受控收敛，而不是假装成功。",
+    prompt: "运行 no_code_changes demo，观察 test_failed 之后虽然进入 tdd，但会明确停在 no_code_changes。",
+    watch: "Recovery Failed、Flow Cards、stop reason、partial_completed",
+    actionLabel: "启动失败收敛 Demo",
+    latestRunId: recentDemoRunsByScenario.value.no_code_changes?.run?.run_id || "",
+    latestStatusLabel: recentDemoRunsByScenario.value.no_code_changes?.runtime_summary?.recovery_summary?.label || "Recovery Failed",
   },
   {
-    title: "Demo 3: 事件命中但被 governance 拦截",
-    goal: "让用户一眼看出 v3 有治理层，而不是任意自动扩张。",
-    prompt: "使用 cooldown / budget / propagation 限制的场景，再看 trigger_skipped 如何被翻译成用户可读解释。",
-    watch: "Governance Explain、Cooled Down / Blocked / Budget Exhausted",
+    id: "replay_compare",
+    title: "Demo 3: Replay Compare",
+    goal: "让用户对照 recovery 主链的原始 run 和 replay 结果，确认它不是页面上的静态说明。",
+    prompt: "对最近一次 recovery demo 执行 replay，直接比较 target skill、summary 和 replay success。",
+    watch: "Replay Plan、Replay Result、source run / replay run 对照",
+    actionLabel: "优先运行成功 Demo",
+    latestRunId: recentDemoRunsByScenario.value.success?.run?.run_id || recentDemoRunsByScenario.value.no_code_changes?.run?.run_id || "",
+    latestStatusLabel: replayCompareState.value.runId ? "Replay Ready" : "等待 demo run",
   },
 ]);
+const recoveryStatusCards = computed(() => {
+  const successRun = recentDemoRunsByScenario.value.success;
+  const failureRun = recentDemoRunsByScenario.value.no_code_changes;
+  return [
+    {
+      label: "Success Demo",
+      value: successRun?.runtime_summary?.recovery_summary?.label || "Not Run",
+      help: successRun?.run?.run_id ? shortChainId(successRun.run.run_id) : "还没有成功恢复 demo run",
+    },
+    {
+      label: "Failure Demo",
+      value: failureRun?.runtime_summary?.recovery_summary?.label || "Not Run",
+      help: failureRun?.runtime_summary?.recovery_summary?.stop_reason || "还没有失败收敛 demo run",
+    },
+    {
+      label: "Replay Compare",
+      value: replayCompareState.value.runId ? (replayCompareState.value.replaySuccess ? "Replay Passed" : "Replay Failed") : "Not Run",
+      help: replayCompareState.value.targetSkillName || "先运行一个 demo，再做 replay 对照",
+    },
+  ];
+});
 
 const overviewHighlights = computed(() => {
   const analyzeRepo = report.value?.shared_state?.analyze_repo || report.value?.node_outputs?.analyze_repo || {};
@@ -724,12 +831,33 @@ async function loadRunDetail(runId) {
   );
 }
 
+async function loadDemoRunDetails(runs) {
+  const candidates = (Array.isArray(runs) ? runs : [])
+    .filter((run) => String(run?.task || "").trim() === "run tests and recover")
+    .slice(0, 6);
+  const details = await Promise.all(
+    candidates.map(async (run) => {
+      try {
+        return await getRunDetail(run.run_id);
+      } catch {
+        return null;
+      }
+    })
+  );
+  demoRunDetails.value = Object.fromEntries(
+    details
+      .filter((item) => item?.run?.run_id)
+      .map((item) => [item.run.run_id, item])
+  );
+}
+
 async function loadAutonomy() {
   loading.value = true;
   error.value = "";
   try {
     const runs = await listRuns({ limit: 40, offset: 0 });
     recentV3Runs.value = normalizeV3Runs(runs?.runs);
+    await loadDemoRunDetails(recentV3Runs.value);
     if (!recentV3Runs.value.length) {
       selectedRunId.value = "";
       selectedDetail.value = null;
@@ -749,6 +877,75 @@ async function loadAutonomy() {
     error.value = err instanceof Error ? err.message : "加载 autonomy runtime 失败";
   } finally {
     loading.value = false;
+  }
+}
+
+async function launchRecoveryDemo(demo) {
+  const scenario = demo?.id === "no_code_changes" ? "no_code_changes" : "success";
+  demoLaunchingId.value = demo?.id || scenario;
+  error.value = "";
+  try {
+    const result = await runV3RecoveryDemo(scenario);
+    if (result?.run_id) {
+      await loadAutonomy();
+      selectedRunId.value = result.run_id;
+      activeTab.value = "overview";
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "启动 recovery demo 失败";
+  } finally {
+    demoLaunchingId.value = "";
+  }
+}
+
+function openDemoRun(demo) {
+  if (!demo?.latestRunId) return;
+  router.push({
+    name: "execution",
+    params: { runId: demo.latestRunId },
+    query: { version: "v3" },
+  });
+}
+
+async function openReplayCompare(demo) {
+  const runId = demo?.latestRunId;
+  if (!runId) return;
+  replayCompareLoading.value = true;
+  replayCompareDemoId.value = demo.id || "";
+  replayCompareError.value = "";
+  try {
+    const [plan, detail] = await Promise.all([
+      getV3RunReplayPlan(runId),
+      demoRunDetails.value[runId] ? Promise.resolve(demoRunDetails.value[runId]) : getRunDetail(runId),
+    ]);
+    const firstTarget = Array.isArray(plan?.available_targets) ? plan.available_targets[0] : null;
+    if (!firstTarget?.event_id) {
+      throw new Error("当前 demo run 没有可 replay 的 recovery target。");
+    }
+    const replayResult = await replayV3EventChain(runId, { eventId: firstTarget.event_id });
+    replayCompareState.value = {
+      runId,
+      demoTitle: demo.title || "",
+      targetSkillName: replayResult?.metadata?.target_skill_name || firstTarget.target_skill_name || "",
+      summary: replayResult?.summary || "",
+      originalSummary: detail?.runtime_summary?.recovery_summary?.label
+        ? `原始 recovery：${detail.runtime_summary.recovery_summary.label} · ${detail.runtime_summary.recovery_summary.patch_summary || detail.runtime_summary.recovery_summary.stop_reason || "无额外摘要"}`
+        : "原始 run 未记录 recovery summary。",
+      replaySuccess: Boolean(replayResult?.success),
+    };
+  } catch (err) {
+    replayCompareState.value = {
+      runId: "",
+      demoTitle: "",
+      targetSkillName: "",
+      summary: "",
+      originalSummary: "",
+      replaySuccess: false,
+    };
+    replayCompareError.value = err instanceof Error ? err.message : "读取 replay compare 失败";
+  } finally {
+    replayCompareLoading.value = false;
+    replayCompareDemoId.value = "";
   }
 }
 

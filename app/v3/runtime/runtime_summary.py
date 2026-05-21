@@ -9,6 +9,7 @@ from app.v3.contracts.runtime_view_contracts import (
     V3FlowCardView,
     V3GovernanceExplainItem,
     V3GovernanceSummary,
+    V3RecoverySummary,
     V3RunModeView,
     V3RuntimeSummary,
 )
@@ -63,6 +64,12 @@ def build_v3_runtime_summary(
     governance_items = _build_governance_items(diagnostics=diagnostics)
     if not governance_items:
         governance_items = _build_governance_items_from_trace(trace_items)
+    recovery_summary = _build_recovery_summary(
+        report=report,
+        execution_nodes=execution_nodes,
+        diagnostics=diagnostics,
+        trace_items=trace_items,
+    )
     run_mode_id = _resolve_run_mode_id(
         execution_nodes=execution_nodes,
         flow_cards=flow_cards,
@@ -79,6 +86,7 @@ def build_v3_runtime_summary(
             status_counts=_build_status_counts(governance_items),
             items=governance_items,
         ),
+        recovery_summary=recovery_summary,
         demo_scenarios=_build_demo_scenarios(
             flow_cards=flow_cards,
             governance_items=governance_items,
@@ -155,6 +163,179 @@ def _build_governance_items(*, diagnostics: list[dict[str, Any]]) -> list[V3Gove
             )
         )
     return items
+
+
+def _build_recovery_summary(
+    *,
+    report: dict[str, Any],
+    execution_nodes: list[dict[str, Any]],
+    diagnostics: list[dict[str, Any]],
+    trace_items: list[dict[str, Any]],
+) -> V3RecoverySummary:
+    recovered_node_ids = [
+        str(item) for item in report.get("recovered_node_ids", [])
+        if str(item).strip()
+    ]
+    recovery_trigger_nodes = [
+        item for item in execution_nodes
+        if str(item.get("kind") or "") == "trigger" and bool(item.get("recovery_on_success"))
+    ]
+    trigger_nodes = [
+        item for item in execution_nodes
+        if str(item.get("kind") or "") == "trigger"
+    ]
+    recovery_follow_up_node = next(
+        (
+            item for item in trigger_nodes
+            if str(item.get("skill_name") or "").strip() in {"test_runner", "tester", "verify"}
+            and str(item.get("status") or "").strip().lower() not in {"failed", "error"}
+        ),
+        None,
+    )
+    recovery_action_node = next(
+        (
+            item for item in trigger_nodes
+            if _has_recovery_payload(item) or str(item.get("skill_name") or "").strip() in {"coding", "tdd"}
+        ),
+        None,
+    )
+    primary_node = recovery_action_node or recovery_follow_up_node or (recovery_trigger_nodes or trigger_nodes or [{}])[0]
+    if _looks_like_recovered_without_explicit_ids(
+        report=report,
+        diagnostics=diagnostics,
+        recovery_action_node=recovery_action_node,
+        recovery_follow_up_node=recovery_follow_up_node,
+    ):
+        recovered_node_ids = [str(recovery_follow_up_node.get("node_id") or "retest").strip()]
+    if recovered_node_ids:
+        node = primary_node
+        output_data = node.get("output_data") if isinstance(node, dict) else {}
+        if not isinstance(output_data, dict):
+            output_data = {}
+        coding_result = output_data.get("coding_result")
+        if not isinstance(coding_result, dict):
+            coding_result = {}
+        test_result = output_data.get("test_result")
+        if not isinstance(test_result, dict):
+            test_result = {}
+        return V3RecoverySummary(
+            status="recovered",
+            label="Recovered",
+            trigger_skill_name=_resolve_recovery_skill_name(node=node, diagnostics=diagnostics),
+            parent_node_id=str(node.get("parent_node_id") or "") or None,
+            patch_summary=str(coding_result.get("patch_summary") or output_data.get("patch_summary") or "").strip(),
+            verification_summary=_resolve_recovery_verification_summary(
+                node=node,
+                follow_up_node=recovery_follow_up_node,
+            ),
+            recovered_node_ids=recovered_node_ids,
+        )
+    if recovery_trigger_nodes or trigger_nodes:
+        node = primary_node
+        output_data = node.get("output_data") if isinstance(node, dict) else {}
+        if not isinstance(output_data, dict):
+            output_data = {}
+        stop_reason = str(output_data.get("error") or node.get("summary") or "").strip() or None
+        coding_result = output_data.get("coding_result")
+        if not isinstance(coding_result, dict):
+            coding_result = {}
+        test_result = output_data.get("test_result")
+        if not isinstance(test_result, dict):
+            test_result = {}
+        return V3RecoverySummary(
+            status="recovery_failed",
+            label="Recovery Failed",
+            trigger_skill_name=_resolve_recovery_skill_name(node=node, diagnostics=diagnostics),
+            parent_node_id=str(node.get("parent_node_id") or "") or None,
+            patch_summary=str(coding_result.get("patch_summary") or output_data.get("patch_summary") or "").strip(),
+            verification_summary=_resolve_recovery_verification_summary(
+                node=node,
+                follow_up_node=recovery_follow_up_node,
+            ),
+            stop_reason=stop_reason,
+            recovered_node_ids=[],
+        )
+    if any(_is_recovery_trace_item(item) for item in trace_items):
+        return V3RecoverySummary(
+            status="recovery_failed",
+            label="Recovery Failed",
+            stop_reason="recovery was gated before a follow-up node executed",
+            recovered_node_ids=[],
+        )
+    return V3RecoverySummary(
+        status="not_triggered",
+        label="No Recovery Triggered",
+        recovered_node_ids=[],
+    )
+
+
+def _has_recovery_payload(node: dict[str, Any]) -> bool:
+    output_data = node.get("output_data")
+    if not isinstance(output_data, dict):
+        return False
+    if isinstance(output_data.get("coding_result"), dict):
+        return True
+    if isinstance(output_data.get("test_result"), dict):
+        return True
+    return bool(output_data.get("patch_summary") or output_data.get("error"))
+
+
+def _looks_like_recovered_without_explicit_ids(
+    *,
+    report: dict[str, Any],
+    diagnostics: list[dict[str, Any]],
+    recovery_action_node: dict[str, Any] | None,
+    recovery_follow_up_node: dict[str, Any] | None,
+) -> bool:
+    if recovery_action_node is None or recovery_follow_up_node is None:
+        return False
+    status = str(report.get("status") or "").strip().lower()
+    if status not in {"completed", "success"}:
+        return False
+    return any(
+        str(item.get("source_event_type") or "").strip() == "test_failed"
+        and str(item.get("status") or "").strip().lower() == "executed"
+        for item in diagnostics
+    )
+
+
+def _resolve_recovery_skill_name(*, node: dict[str, Any], diagnostics: list[dict[str, Any]]) -> str | None:
+    output_data = node.get("output_data")
+    if isinstance(output_data, dict) and isinstance(output_data.get("coding_result"), dict):
+        return "coding"
+    for item in diagnostics:
+        if str(item.get("source_event_type") or "").strip() == "test_failed":
+            target = str(item.get("target_skill_name") or "").strip()
+            if target:
+                return target
+    skill_name = str(node.get("skill_name") or "").strip()
+    return skill_name or None
+
+
+def _resolve_recovery_verification_summary(
+    *,
+    node: dict[str, Any],
+    follow_up_node: dict[str, Any] | None,
+) -> str:
+    output_data = node.get("output_data")
+    if isinstance(output_data, dict):
+        test_result = output_data.get("test_result")
+        if isinstance(test_result, dict) and str(test_result.get("summary") or "").strip():
+            return str(test_result.get("summary") or "").strip()
+    if isinstance(follow_up_node, dict) and str(follow_up_node.get("summary") or "").strip():
+        return str(follow_up_node.get("summary") or "").strip()
+    return str(node.get("summary") or "").strip()
+
+
+def _is_recovery_trace_item(item: dict[str, Any]) -> bool:
+    event_type = str(item.get("event_type") or "").strip().lower()
+    if event_type == "trigger_skipped":
+        payload = item.get("payload")
+        if isinstance(payload, dict) and str(payload.get("source_event_type") or "").strip() == "test_failed":
+            return True
+    if event_type == "test_failed":
+        return True
+    return False
 
 
 def _build_governance_items_from_trace(trace_items: list[dict[str, Any]]) -> list[V3GovernanceExplainItem]:

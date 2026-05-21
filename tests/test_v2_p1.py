@@ -603,6 +603,8 @@ def test_generic_run_detail_builds_v3_runtime_summary(monkeypatch) -> None:
     assert response.runtime_summary["run_mode"]["label"] == "Graph + Governance Intercept"
     assert response.runtime_summary["governance_summary"]["status_counts"]["blocked"] == 1
     assert response.runtime_summary["governance_summary"]["status_counts"]["allowed"] == 1
+    assert response.runtime_summary["recovery_summary"]["status"] == "recovered"
+    assert response.runtime_summary["recovery_summary"]["trigger_skill_name"] == "coding"
     assert response.runtime_summary["flow_cards"][0]["event_type"] == "test_failed"
     assert response.runtime_summary["flow_cards"][0]["trigger_rule_id"] == "fix-tests"
     assert response.runtime_summary["flow_cards"][0]["follow_up_label"] == "coding"
@@ -696,6 +698,7 @@ def test_generic_run_detail_infers_runtime_mode_from_trace_when_report_is_thin(m
     assert response.runtime_summary["flow_cards"][0]["event_type"] == "test_failed"
     assert response.runtime_summary["flow_cards"][0]["trigger_rule_id"] == "trigger-test-failed"
     assert response.runtime_summary["governance_summary"]["items"][0]["label"] == "Cooled Down"
+    assert response.runtime_summary["recovery_summary"]["status"] == "recovery_failed"
 
 
 def test_generic_run_detail_does_not_guess_demo_scenarios_without_runtime_follow_up(monkeypatch) -> None:
@@ -748,3 +751,4 @@ def test_generic_run_detail_does_not_guess_demo_scenarios_without_runtime_follow
     assert response.runtime_summary is not None
     assert response.runtime_summary["run_mode"]["id"] == "graph_only"
     assert response.runtime_summary["demo_scenarios"] == []
+    assert response.runtime_summary["recovery_summary"]["status"] == "not_triggered"

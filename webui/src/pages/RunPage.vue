@@ -204,6 +204,20 @@
       <p class="muted" style="margin: 10px 0 0">
         当前页面主要覆盖 v3 MVP：<code>Skill + TaskGraph + ExecutionKernel + Basic Event/Trigger</code>，也就是一套更偏图执行节点能力的运行内核。
       </p>
+      <div class="reviewer-config-card" style="margin-top: 12px">
+        <label>Recovery Demo</label>
+        <p class="muted" style="margin: 6px 0 0">
+          一键创建可稳定复现的 <code>test_failed -> recover -> retest</code> 演示运行，适合直接打开详情页讲解 v3 trigger recovery 主路径。
+        </p>
+        <div class="row" style="margin-top: 10px">
+          <button class="btn-secondary btn-sm" :disabled="loading" @click="launchV3RecoveryDemo('success')">
+            {{ loading ? "准备中..." : "成功恢复 Demo" }}
+          </button>
+          <button class="btn-secondary btn-sm" :disabled="loading" @click="launchV3RecoveryDemo('no_code_changes')">
+            {{ loading ? "准备中..." : "失败收敛 Demo" }}
+          </button>
+        </div>
+      </div>
     </div>
 
     <div v-else class="v2-agent-config">
@@ -505,7 +519,7 @@
 import { onMounted, reactive, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import JsonBlock from "../components/JsonBlock.vue";
-import { listRagCollections, runAgent } from "../api";
+import { listRagCollections, runAgent, runV3RecoveryDemo } from "../api";
 import { loadReviewStrategy } from "../reviewerConfig";
 
 const router = useRouter();
@@ -745,6 +759,27 @@ async function submitRun() {
     v1Result.value = result;
   } catch (err) {
     error.value = err instanceof Error ? err.message : "运行失败";
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function launchV3RecoveryDemo(scenario) {
+  error.value = "";
+  v1Result.value = null;
+  v3Result.value = null;
+  loading.value = true;
+  try {
+    const result = await runV3RecoveryDemo(scenario);
+    if (result?.run_id) {
+      await router.push({
+        name: "execution",
+        params: { runId: result.run_id },
+        query: { version: "v3" },
+      });
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Recovery demo 启动失败";
   } finally {
     loading.value = false;
   }

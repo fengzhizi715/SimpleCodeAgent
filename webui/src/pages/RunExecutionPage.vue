@@ -79,6 +79,32 @@
       </div>
     </section>
 
+    <section class="panel" v-if="v3RecoverySummary.status !== 'not_triggered'">
+      <div class="v3-section-head">
+        <div>
+          <h3>Recovery Path</h3>
+          <p class="muted">把 test failure 之后是否真的进入补救、是否补救成功，直接翻译成第一屏能读懂的结果。</p>
+        </div>
+      </div>
+      <div class="v3-key-findings">
+        <article class="v3-key-card">
+          <span>Status</span>
+          <strong>{{ v3RecoverySummary.label }}</strong>
+          <small>{{ v3RecoverySummary.trigger_skill_name ? `skill: ${v3RecoverySummary.trigger_skill_name}` : "未记录触发 skill" }}</small>
+        </article>
+        <article class="v3-key-card">
+          <span>Patch</span>
+          <strong>{{ v3RecoverySummary.patch_summary || "No patch summary" }}</strong>
+          <small>{{ v3RecoverySummary.parent_node_id ? `parent: ${v3RecoverySummary.parent_node_id}` : "未记录 parent node" }}</small>
+        </article>
+        <article class="v3-key-card">
+          <span>Verification</span>
+          <strong>{{ v3RecoverySummary.verification_summary || "No verification summary" }}</strong>
+          <small>{{ v3RecoverySummary.recovered_node_ids.length ? `recovered: ${v3RecoverySummary.recovered_node_ids.join(", ")}` : (v3RecoverySummary.stop_reason || "尚未记录 recovered node") }}</small>
+        </article>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="v3-primary-answer-head">
         <div>
@@ -951,6 +977,18 @@ const v3GovernanceExplainItems = computed(() => {
   const summary = v3RuntimeSummary.value.governance_summary;
   return Array.isArray(summary?.items) ? summary.items : [];
 });
+const v3RecoverySummary = computed(() => {
+  return v3RuntimeSummary.value.recovery_summary || {
+    status: "not_triggered",
+    label: "No Recovery Triggered",
+    trigger_skill_name: null,
+    parent_node_id: null,
+    patch_summary: "",
+    verification_summary: "",
+    stop_reason: null,
+    recovered_node_ids: [],
+  };
+});
 const v3FinalSummary = computed(() => {
   const graphNodes = v3GraphExecutionNodes.value;
   const meaningfulNodeSummary = graphNodes
@@ -1001,6 +1039,7 @@ const v3PrimaryAnswer = computed(() => {
     return composeV3TestingAnswer({
       planning,
       report,
+      recoverySummary: v3RecoverySummary.value,
     });
   }
   return v3AnalysisSummary.value || v3FinalSummary.value;
@@ -1060,6 +1099,13 @@ const v3KeyFindings = computed(() => {
   const rows = [
     planning.goal_kind ? { label: "任务类型", value: planning.goal_kind, help: planning.template_reason || "" } : null,
     planning.repo_profile ? { label: "仓库画像", value: planning.repo_profile, help: "" } : null,
+    v3RecoverySummary.value.status !== "not_triggered"
+      ? {
+          label: "Recovery",
+          value: v3RecoverySummary.value.label,
+          help: v3RecoverySummary.value.patch_summary || v3RecoverySummary.value.stop_reason || "",
+        }
+      : null,
     Array.isArray(analyzeRepo.root_entries) && analyzeRepo.root_entries.length
       ? { label: "根目录规模", value: `${analyzeRepo.root_entries.length} 个入口`, help: compactText(analyzeRepo.root_entries.slice(0, 6).join(", "), 120) }
       : null,
@@ -1087,6 +1133,12 @@ const v3OutcomeCards = computed(() => {
     if (planning.goal_kind === "analysis") {
       return `Completed repository analysis for ${planning.repo_profile || "generic"} workspace`;
     }
+    if (planning.goal_kind === "testing" && v3RecoverySummary.value.status === "recovered") {
+      return "Recovery path completed and retest passed";
+    }
+    if (planning.goal_kind === "testing" && v3RecoverySummary.value.status === "recovery_failed") {
+      return "Recovery triggered but did not converge";
+    }
     if (replay.run?.status) {
       return `Run ${String(replay.run.status).toLowerCase()}`;
     }
@@ -1105,6 +1157,12 @@ const v3OutcomeCards = computed(() => {
         ? `Verify the patch with ${candidateCommands[0]}`
         : "Review the changed area and define a verification step";
     }
+    if (planning.goal_kind === "testing" && v3RecoverySummary.value.status === "recovered") {
+      return "Use this run as the stable trigger recovery demo, then walk through flow cards and trigger follow-ups";
+    }
+    if (planning.goal_kind === "testing" && v3RecoverySummary.value.status === "recovery_failed") {
+      return "Inspect why the recovery step stopped, then compare it with the successful recovery demo";
+    }
     return "Continue with the next concrete task based on this output";
   })();
 
@@ -1115,6 +1173,9 @@ const v3OutcomeCards = computed(() => {
     }
     if (!candidateCommands.length) {
       risks.push("no candidate test command");
+    }
+    if (v3RecoverySummary.value.status === "recovery_failed") {
+      risks.push(v3RecoverySummary.value.stop_reason || "recovery did not converge");
     }
     if ((planning.repo_profile || "") === "generic") {
       risks.push("repo profile is generic");
@@ -1784,7 +1845,7 @@ function composeV3CodingAnswer({ planning, report, codingSummary }) {
   return lines.join("\n");
 }
 
-function composeV3TestingAnswer({ planning, report }) {
+function composeV3TestingAnswer({ planning, report, recoverySummary }) {
   const testRunner = report?.node_outputs?.test_runner || {};
   const command = testRunner.executed_command
     || (Array.isArray(planning?.candidate_test_commands) && planning.candidate_test_commands.length ? planning.candidate_test_commands[0] : "");
@@ -1795,6 +1856,15 @@ function composeV3TestingAnswer({ planning, report }) {
   const observation = stdout
     ? compactText(stdout.split("\n").filter(Boolean).slice(-3).join(" | "), 180)
     : "未记录额外输出摘要。";
+  const recoveryStatus = recoverySummary?.status || "not_triggered";
+  const recoveryLine = recoveryStatus === "recovered"
+    ? (recoverySummary.verification_summary || "已完成自动补救并重新验证。")
+    : recoveryStatus === "recovery_failed"
+      ? (recoverySummary.stop_reason || "已触发 recovery，但当前未收敛。")
+      : "本次运行没有进入 recovery follow-up。";
+  const recoveryPatch = recoverySummary?.patch_summary
+    ? `- patch: ${recoverySummary.patch_summary}`
+    : null;
   return [
     "### 结果",
     summary,
@@ -1804,9 +1874,11 @@ function composeV3TestingAnswer({ planning, report }) {
     "",
     "### 观察",
     `- ${observation}`,
+    `- recovery: ${recoveryLine}`,
+    ...(recoveryPatch ? [recoveryPatch] : []),
     "",
     "### 建议下一步",
-    summary.toLowerCase().includes("passed")
+    recoveryStatus === "recovered" || summary.toLowerCase().includes("passed")
       ? "- 当前验证已通过；如果这是一次修复任务，可以继续做手工回归或提交结果。"
       : "- 当前结果需要继续排查失败原因，并决定是否进入修复流程。",
   ].join("\n");

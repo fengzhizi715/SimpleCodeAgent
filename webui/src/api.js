@@ -76,6 +76,13 @@ export async function getRunDetail(runId) {
   return requestJson(`/debug/runs/${encodeURIComponent(runId)}/detail`);
 }
 
+export async function runV3RecoveryDemo(scenario = "success") {
+  return requestJson("/debug/v3/demo/recovery-run", {
+    method: "POST",
+    body: JSON.stringify({ scenario }),
+  });
+}
+
 export async function getRunTrace(runId) {
   return requestJson(`/debug/traces/${encodeURIComponent(runId)}`);
 }
@@ -123,6 +130,10 @@ export async function replayV3EventChain(runId, { eventId = "" } = {}) {
   return requestJson(`/debug/v3/runs/${encodeURIComponent(runId)}/event-chain/replay?${params.toString()}`, {
     method: "POST",
   });
+}
+
+export async function getV3RunReplayPlan(runId) {
+  return requestJson(`/debug/v3/runs/${encodeURIComponent(runId)}/replay-plan`);
 }
 
 export async function getV3TriggerRuleStates() {

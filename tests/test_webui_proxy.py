@@ -49,6 +49,8 @@ def test_v3_execution_page_surfaces_runtime_mode_flow_cards_and_governance_expla
     assert "Runtime Mode" in page
     assert "Flow Cards" in page
     assert "Governance Explain" in page
+    assert "v3RecoverySummary" in page
+    assert "Recovery Path" in page
 
 
 def test_v3_execution_page_composes_task_aware_primary_answer() -> None:
@@ -81,6 +83,8 @@ def test_run_page_exposes_v3_planning_mode() -> None:
 
     assert "v3_planning_mode" in page
     assert 'payload.v3_planning_mode = form.v3_planning_mode' in page
+    assert "runV3RecoveryDemo" in page
+    assert "Recovery Demo" in page
 
 
 def test_router_registers_autonomy_page() -> None:
@@ -113,11 +117,25 @@ def test_autonomy_page_surfaces_runtime_status_and_demo_scenarios() -> None:
 
     assert "runtimeSummary" in page
     assert "runtimeStatusCards" in page
+    assert "recoveryStatusCards" in page
     assert "flowCards" in page
     assert "governanceExplainItems" in page
     assert "demoScenarios" in page
     assert "demoCatalog" in page
     assert "Runtime Status" in page
+    assert "Recovery Demos" in page
+    assert "Replay Compare" in page
+
+
+def test_autonomy_page_can_launch_recovery_demos_and_open_replay_compare() -> None:
+    page = Path("webui/src/pages/AutonomyPage.vue").read_text(encoding="utf-8")
+
+    assert "launchRecoveryDemo" in page
+    assert "openReplayCompare" in page
+    assert "runV3RecoveryDemo" in page
+    assert "getV3RunReplayPlan" in page
+    assert "replayV3EventChain" in page
+    assert "recentDemoRunsByScenario" in page
 
 
 def test_autonomy_page_reads_url_filters() -> None:

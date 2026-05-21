@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 from time import perf_counter
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
@@ -36,6 +38,7 @@ from app.v1.rag.vector_store import ChromaVectorStore
 from app.v3 import build_default_skill_registry
 from app.v3.contracts.event_contracts import V3Event
 from app.v3.contracts.replay_contracts import ReplayMode, ReplayPlan, ReplayResult
+from app.v3.demo.recovery_demo import run_v3_recovery_demo
 from app.v3.events.event_history import EventChainItem, EventChainTrace, build_event_chain_trace, format_event_chain_trace
 from app.v3.replay import replay_by_chain, replay_by_event, replay_by_run, replay_event_chain
 from app.v3.runtime.runtime_summary import build_v3_runtime_summary
@@ -363,6 +366,27 @@ class RunDetailResponse(BaseModel):
     planning: dict[str, object] | None = None
     trigger_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     runtime_summary: dict[str, object] | None = None
+
+
+class V3RecoveryDemoRunRequest(BaseModel):
+    """Stable V3 recovery demo request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: Literal["success", "no_code_changes"] = "success"
+
+
+class V3RecoveryDemoRunResponse(BaseModel):
+    """Stable V3 recovery demo response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: Literal["success", "no_code_changes"]
+    task: str
+    workdir: str
+    run_id: str
+    status: str
+    detail_url: str
 
 
 class SessionReplayResponse(BaseModel):
@@ -1143,6 +1167,21 @@ def get_run_detail(run_id: str) -> RunDetailResponse:
             )
             detail.runtime_summary = runtime_summary.model_dump(mode="json") if runtime_summary is not None else None
     return detail
+
+
+@router.post("/debug/v3/demo/recovery-run", response_model=V3RecoveryDemoRunResponse, status_code=status.HTTP_200_OK)
+def run_v3_recovery_demo_route(request: V3RecoveryDemoRunRequest) -> V3RecoveryDemoRunResponse:
+    """Run a stable, deterministic V3 recovery demo."""
+    result = asyncio.run(run_v3_recovery_demo(scenario=request.scenario))
+    report = result["report"]
+    return V3RecoveryDemoRunResponse(
+        scenario=request.scenario,
+        task=str(result.get("task") or "run tests and recover"),
+        workdir=str(result.get("workdir") or ""),
+        run_id=report.run_id,
+        status=report.status.value,
+        detail_url=f"/runs/{report.run_id}?version=v3",
+    )
 
 
 @router.get("/debug/v2/runs/{run_id}/replay", response_model=RunReplayResponse, status_code=status.HTTP_200_OK)
