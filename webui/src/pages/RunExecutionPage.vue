@@ -537,6 +537,118 @@
       <h3>Trace Snapshot</h3>
       <JsonBlock :data="trace" />
     </section>
+
+    <section class="panel" v-if="v3ActiveTab === 'audit' && v3AuditData">
+      <h3>Audit & Replay</h3>
+      <div v-if="v3AuditSummary" class="v3-audit-summary">
+        <div class="v3-audit-grid">
+          <div class="v3-audit-stat">
+            <strong>{{ v3AuditSummary.totalRecords }}</strong>
+            <span class="muted">Audit Records</span>
+          </div>
+          <div class="v3-audit-stat">
+            <strong>{{ v3AuditSummary.approved }} / {{ v3AuditSummary.totalDecisions }}</strong>
+            <span class="muted">Approved Decisions</span>
+          </div>
+          <div class="v3-audit-stat">
+            <strong>{{ v3AuditSummary.governanceActions }}</strong>
+            <span class="muted">Governance Actions</span>
+          </div>
+          <div class="v3-audit-stat">
+            <strong>{{ v3AuditSummary.stopReasons }}</strong>
+            <span class="muted">Stop Reasons</span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="v3AuditData.decision_traces?.length" class="v3-audit-section">
+        <h4>Decision Traces</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>decision</th>
+              <th>approved</th>
+              <th>reason</th>
+              <th>summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="dec in v3AuditData.decision_traces" :key="dec.trace_id">
+              <td>{{ dec.decision_type }}</td>
+              <td>
+                <span class="badge" :class="dec.approved ? 'badge-ok' : 'badge-bad'">
+                  {{ dec.approved ? "Approved" : "Rejected" }}
+                </span>
+              </td>
+              <td>{{ dec.reason }}</td>
+              <td>{{ dec.summary }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="v3AuditData.governance_actions?.length" class="v3-audit-section">
+        <h4>Governance Actions</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>type</th>
+              <th>target</th>
+              <th>reason</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="action in v3AuditData.governance_actions" :key="action.action_id">
+              <td>{{ action.action_type }}</td>
+              <td>{{ action.target_type }}:{{ action.target_id }}</td>
+              <td>{{ action.reason }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="v3AuditData.stop_reasons?.length" class="v3-audit-section">
+        <h4>Stop Reasons</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>type</th>
+              <th>actor</th>
+              <th>summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="sr in v3AuditData.stop_reasons" :key="sr.stop_id">
+              <td><span class="badge badge-warn">{{ sr.reason_type }}</span></td>
+              <td>{{ sr.actor }}</td>
+              <td>{{ sr.summary }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="v3AuditData.records?.length" class="v3-audit-section">
+        <h4>Audit Records</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>action</th>
+              <th>actor</th>
+              <th>target</th>
+              <th>summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rec in v3AuditData.records" :key="rec.record_id">
+              <td>{{ rec.action }}</td>
+              <td>{{ rec.actor }}</td>
+              <td>{{ rec.target }}</td>
+              <td>{{ rec.summary }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </template>
 
   <nav v-else class="run-tabs" aria-label="Run detail tabs">
@@ -845,6 +957,7 @@ const replay = reactive({
   execution_log: [],
   teaching_view: null,
   artifacts: [],
+  audit: null,
 });
 const trace = ref([]);
 const v3Report = ref(null);
@@ -989,6 +1102,59 @@ const v3RecoverySummary = computed(() => {
     recovered_node_ids: [],
   };
 });
+const v3RuntimeExplanation = computed(() => {
+  const runMode = v3RuntimeSummary.value.run_mode;
+  const flowCards = v3FlowCards.value;
+  const governanceItems = v3GovernanceExplainItems.value;
+  const recovery = v3RecoverySummary.value;
+
+  const lines = [];
+
+  if (runMode && runMode.id !== "graph_only") {
+    lines.push(`### Runtime Mode`);
+    lines.push(`- **${runMode.label}**: ${runMode.description || ""}`);
+    lines.push("");
+  }
+
+  if (flowCards.length > 0) {
+    lines.push(`### Event -> Trigger -> Follow-up`);
+    for (const card of flowCards) {
+      const eventType = card.event_type || "unknown";
+      const triggerRule = card.trigger_rule_id || "—";
+      const followUp = card.follow_up_label || "no follow-up";
+      const govLabel = card.governance_label || "allowed";
+      lines.push(`- event: ${eventType} → trigger: ${triggerRule} → follow-up: ${followUp} → governance: ${govLabel}`);
+    }
+    lines.push("");
+  }
+
+  if (governanceItems.length > 0) {
+    lines.push(`### Governance Decisions`);
+    for (const item of governanceItems) {
+      const status = item.status || "unknown";
+      const reason = item.reason || "—";
+      lines.push(`- ${status}: ${reason}`);
+    }
+    lines.push("");
+  }
+
+  if (recovery.status !== "not_triggered") {
+    lines.push(`### Recovery Path`);
+    lines.push(`- **Status**: ${recovery.label || recovery.status}`);
+    if (recovery.patch_summary) {
+      lines.push(`- **Patch**: ${recovery.patch_summary}`);
+    }
+    if (recovery.verification_summary) {
+      lines.push(`- **Verification**: ${recovery.verification_summary}`);
+    }
+    if (recovery.stop_reason) {
+      lines.push(`- **Stop Reason**: ${recovery.stop_reason}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
+});
 const v3FinalSummary = computed(() => {
   const graphNodes = v3GraphExecutionNodes.value;
   const meaningfulNodeSummary = graphNodes
@@ -1021,28 +1187,35 @@ const v3FinalSummary = computed(() => {
 const v3PrimaryAnswer = computed(() => {
   const planning = v3Planning.value || {};
   const report = v3Report.value || {};
+  let answer = "";
   if (planning.goal_kind === "analysis") {
-    return composeV3AnalysisAnswer({
+    answer = composeV3AnalysisAnswer({
       planning,
       report,
       analysisSummary: v3AnalysisSummary.value,
     });
-  }
-  if (planning.goal_kind === "coding") {
-    return composeV3CodingAnswer({
+  } else if (planning.goal_kind === "coding") {
+    answer = composeV3CodingAnswer({
       planning,
       report,
       codingSummary: v3GraphExecutionNodes.value.find((node) => node?.skill_name === "coding")?.summary || "",
     });
-  }
-  if (planning.goal_kind === "testing") {
-    return composeV3TestingAnswer({
+  } else if (planning.goal_kind === "testing") {
+    answer = composeV3TestingAnswer({
       planning,
       report,
       recoverySummary: v3RecoverySummary.value,
     });
+  } else {
+    answer = v3AnalysisSummary.value || v3FinalSummary.value;
   }
-  return v3AnalysisSummary.value || v3FinalSummary.value;
+
+  const runtimeExplanation = v3RuntimeExplanation.value;
+  if (runtimeExplanation && runtimeExplanation.trim()) {
+    answer += "\n\n---\n\n" + runtimeExplanation;
+  }
+
+  return answer;
 });
 const v3SummaryHighlights = computed(() => {
   const planning = v3Planning.value || {};
@@ -1219,6 +1392,32 @@ const v3AnalysisSummary = computed(() => {
   }
   return null;
 });
+const v3AuditData = computed(() => {
+  const audit = replay.audit;
+  if (!audit || typeof audit !== "object") {
+    return null;
+  }
+  return {
+    summary: audit.summary || null,
+    records: Array.isArray(audit.records) ? audit.records : [],
+    decision_traces: Array.isArray(audit.decision_traces) ? audit.decision_traces : [],
+    governance_actions: Array.isArray(audit.governance_actions) ? audit.governance_actions : [],
+    stop_reasons: Array.isArray(audit.stop_reasons) ? audit.stop_reasons : [],
+  };
+});
+const v3AuditSummary = computed(() => {
+  const summary = v3AuditData.value?.summary;
+  if (!summary || typeof summary !== "object") {
+    return null;
+  }
+  return {
+    totalRecords: summary.total_audit_records || 0,
+    totalDecisions: summary.total_decisions || 0,
+    approved: summary.approved_decisions || 0,
+    governanceActions: summary.total_governance_actions || 0,
+    stopReasons: summary.total_stop_reasons || 0,
+  };
+});
 const v3SelectedGraphNode = computed(() => {
   if (!v3GraphExecutionNodes.value.length) {
     return null;
@@ -1283,6 +1482,11 @@ const v3Tabs = computed(() => [
     id: "events",
     label: "Events",
     hint: v3EventRows.value.length ? `${v3EventRows.value.length} items` : "",
+  },
+  {
+    id: "audit",
+    label: "Audit",
+    hint: v3AuditData.value ? "replay & explain" : "",
   },
   {
     id: "trace",
@@ -1510,6 +1714,7 @@ async function fetchReplay() {
     replay.execution_log = data.execution_log || [];
     replay.teaching_view = data.teaching_view || null;
     replay.artifacts = data.artifacts || [];
+    replay.audit = data.audit || null;
     trace.value = Array.isArray(data.trace) ? data.trace : [];
     v3Report.value = data.report || null;
     v3Planning.value = data.planning || null;
@@ -3020,6 +3225,63 @@ onBeforeUnmount(() => {
 
   .v3-flow-detail {
     position: static;
+  }
+}
+
+.v3-audit-summary {
+  margin-bottom: 16px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.04);
+  border: 1px solid rgba(79, 70, 229, 0.12);
+}
+
+.v3-audit-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.v3-audit-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.v3-audit-stat strong {
+  font-size: 1.2rem;
+  color: var(--text-primary, #111827);
+}
+
+.v3-audit-stat .muted {
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
+.v3-audit-section {
+  margin-top: 16px;
+}
+
+.v3-audit-section h4 {
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+  color: var(--text-primary, #111827);
+}
+
+.badge-enabled {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.badge-disabled {
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+}
+
+@media (max-width: 640px) {
+  .v3-audit-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

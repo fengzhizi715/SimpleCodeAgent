@@ -39,6 +39,7 @@ from app.v3 import build_default_skill_registry
 from app.v3.contracts.event_contracts import V3Event
 from app.v3.contracts.replay_contracts import ReplayMode, ReplayPlan, ReplayResult
 from app.v3.demo.recovery_demo import run_v3_recovery_demo
+from app.v3.demo.code_changed_demo import run_v3_code_changed_demo
 from app.v3.events.event_history import EventChainItem, EventChainTrace, build_event_chain_trace, format_event_chain_trace
 from app.v3.replay import replay_by_chain, replay_by_event, replay_by_run, replay_event_chain
 from app.v3.runtime.runtime_summary import build_v3_runtime_summary
@@ -91,6 +92,9 @@ def _apply_v3_report_to_detail(*, detail: "RunDetailResponse", report: dict[str,
     trigger_diagnostics = report.get("trigger_diagnostics")
     if isinstance(trigger_diagnostics, list):
         detail.trigger_diagnostics = trigger_diagnostics
+    audit = report.get("audit")
+    if isinstance(audit, dict):
+        detail.audit = audit
 
 
 def _normalize_debug_rag_id(rag_id: str | None) -> str:
@@ -366,6 +370,7 @@ class RunDetailResponse(BaseModel):
     planning: dict[str, object] | None = None
     trigger_diagnostics: list[dict[str, object]] = Field(default_factory=list)
     runtime_summary: dict[str, object] | None = None
+    audit: dict[str, object] | None = None
 
 
 class V3RecoveryDemoRunRequest(BaseModel):
@@ -387,6 +392,46 @@ class V3RecoveryDemoRunResponse(BaseModel):
     run_id: str
     status: str
     detail_url: str
+
+
+class V3CodeChangedDemoRunRequest(BaseModel):
+    """V3 code changed demo request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: Literal["follow_up_test", "governance_intercept"] = "follow_up_test"
+
+
+class V3CodeChangedDemoRunResponse(BaseModel):
+    """V3 code changed demo response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenario: str
+    task: str
+    workdir: str
+    run_id: str
+    status: str
+    detail_url: str
+
+
+class V3AuditAnalyticsResponse(BaseModel):
+    """跨运行 audit 分析响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_runs: int
+    trigger_hits: int
+    trigger_executed: int
+    governance_allowed: int
+    governance_blocked: int
+    governance_cooled_down: int
+    recovery_attempts: int
+    recovery_success: int
+    stop_reasons: dict[str, int]
+    trigger_rule_stats: dict[str, dict[str, int]]
+    runs_with_recovery: list[str]
+    runs_with_governance_intercept: list[str]
 
 
 class SessionReplayResponse(BaseModel):
@@ -836,13 +881,13 @@ async def replay_v3_event_chain(
             )
         else:
             result = await replay_by_event(
-            repository=repository,
-            run_id=run_id,
-            event_id=event_id,
-            workspace_root=workdir,
-            registry=build_default_skill_registry(workspace_root=workdir),
-            mode=mode,
-        )
+                repository=repository,
+                run_id=run_id,
+                event_id=event_id,
+                workspace_root=workdir,
+                registry=build_default_skill_registry(workspace_root=workdir),
+                mode=mode,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return V3ReplayResponse(
@@ -1181,6 +1226,170 @@ def run_v3_recovery_demo_route(request: V3RecoveryDemoRunRequest) -> V3RecoveryD
         run_id=report.run_id,
         status=report.status.value,
         detail_url=f"/runs/{report.run_id}?version=v3",
+    )
+
+
+@router.post("/debug/v3/demo/code-changed-run", response_model=V3CodeChangedDemoRunResponse, status_code=status.HTTP_200_OK)
+def run_v3_code_changed_demo_route(request: V3CodeChangedDemoRunRequest) -> V3CodeChangedDemoRunResponse:
+    """Run a V3 code changed -> follow-up test demo."""
+    result = asyncio.run(run_v3_code_changed_demo(scenario=request.scenario))
+    report = result["report"]
+    return V3CodeChangedDemoRunResponse(
+        scenario=request.scenario,
+        task=str(result.get("task") or "code change -> follow-up test"),
+        workdir=str(result.get("workdir") or ""),
+        run_id=report.run_id,
+        status=report.status.value,
+        detail_url=f"/runs/{report.run_id}?version=v3",
+    )
+
+
+@router.get("/debug/v3/audit/analytics", response_model=V3AuditAnalyticsResponse, status_code=status.HTTP_200_OK)
+def get_v3_audit_analytics(
+    limit: int = Query(default=50, ge=1, le=200, description="最多分析最近多少条 v3 run"),
+) -> V3AuditAnalyticsResponse:
+    """跨运行 audit 分析：trigger 命中率、governance 拦截率、recovery 成功率等。"""
+    db = SQLiteDB()
+    rows = db.fetchall(
+        """
+        SELECT run_id, task, status, final_output, created_at
+        FROM runs
+        WHERE agent_version = 'v3' AND status IN ('completed', 'failed', 'partial_completed')
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+
+    total_runs = len(rows)
+    trigger_hits = 0
+    trigger_executed = 0
+    governance_allowed = 0
+    governance_blocked = 0
+    governance_cooled_down = 0
+    recovery_attempts = 0
+    recovery_success = 0
+    stop_reasons: dict[str, int] = {}
+    trigger_rule_stats: dict[str, dict[str, int]] = {}
+    runs_with_recovery: list[str] = []
+    runs_with_governance_intercept: list[str] = []
+
+    for row in rows:
+        run_id = str(row["run_id"])
+        final_output = str(row["final_output"] or "")
+        if not final_output.strip():
+            continue
+
+        try:
+            report = json.loads(final_output)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(report, dict):
+            continue
+
+        audit = report.get("audit")
+        if not isinstance(audit, dict):
+            continue
+
+        records = audit.get("records", [])
+        if isinstance(records, list):
+            for rec in records:
+                if isinstance(rec, dict):
+                    action = str(rec.get("action", ""))
+                    if "trigger" in action.lower():
+                        trigger_hits += 1
+                    rule_id = rec.get("rule_id")
+                    if rule_id:
+                        rule_id = str(rule_id)
+                        if rule_id not in trigger_rule_stats:
+                            trigger_rule_stats[rule_id] = {"executed": 0, "skipped": 0, "cooldown": 0}
+                        if action == "trigger_executed":
+                            trigger_rule_stats[rule_id]["executed"] += 1
+                            trigger_executed += 1
+
+        decisions = audit.get("decision_traces", [])
+        if isinstance(decisions, list):
+            for dec in decisions:
+                if isinstance(dec, dict):
+                    if dec.get("approved"):
+                        governance_allowed += 1
+                    else:
+                        governance_blocked += 1
+
+        gov_actions = audit.get("governance_actions", [])
+        if isinstance(gov_actions, list):
+            for gov in gov_actions:
+                if isinstance(gov, dict):
+                    action_type = str(gov.get("action_type", "")).lower()
+                    if "cooldown" in action_type:
+                        governance_cooled_down += 1
+
+        stop_reasons_list = audit.get("stop_reasons", [])
+        if isinstance(stop_reasons_list, list):
+            for sr in stop_reasons_list:
+                if isinstance(sr, dict):
+                    reason_type = str(sr.get("reason_type", "unknown"))
+                    stop_reasons[reason_type] = stop_reasons.get(reason_type, 0) + 1
+
+        runtime_summary = report.get("runtime_summary")
+        if not isinstance(runtime_summary, dict):
+            derived_summary = build_v3_runtime_summary(
+                report=report,
+                trace_events=None,
+                task=str(row.get("task") or ""),
+            )
+            runtime_summary = derived_summary.model_dump(mode="json") if derived_summary is not None else None
+
+        if isinstance(runtime_summary, dict):
+            recovery = runtime_summary.get("recovery_summary")
+            if isinstance(recovery, dict):
+                recovery_status = str(recovery.get("status") or "").strip()
+                if recovery_status and recovery_status != "not_triggered":
+                    recovery_attempts += 1
+                    runs_with_recovery.append(run_id)
+                    if recovery_status == "recovered":
+                        recovery_success += 1
+
+            flow_cards = runtime_summary.get("flow_cards", [])
+            if isinstance(flow_cards, list):
+                for card in flow_cards:
+                    if isinstance(card, dict):
+                        gov_label = str(card.get("governance_label", "")).lower()
+                        if gov_label and gov_label != "allowed":
+                            if run_id not in runs_with_governance_intercept:
+                                runs_with_governance_intercept.append(run_id)
+
+        diagnostics = report.get("trigger_diagnostics")
+        if isinstance(diagnostics, list):
+            for item in diagnostics:
+                if not isinstance(item, dict):
+                    continue
+                rule_id = str(item.get("trigger_rule_id") or "").strip()
+                if not rule_id:
+                    continue
+                if rule_id not in trigger_rule_stats:
+                    trigger_rule_stats[rule_id] = {"executed": 0, "skipped": 0, "cooldown": 0}
+                status_value = str(item.get("status") or "").strip().lower()
+                skip_reason = str(item.get("skip_reason") or "").strip().lower()
+                if status_value == "skipped":
+                    trigger_rule_stats[rule_id]["skipped"] += 1
+                if skip_reason == "cooldown":
+                    trigger_rule_stats[rule_id]["cooldown"] += 1
+
+    return V3AuditAnalyticsResponse(
+        total_runs=total_runs,
+        trigger_hits=trigger_hits,
+        trigger_executed=trigger_executed,
+        governance_allowed=governance_allowed,
+        governance_blocked=governance_blocked,
+        governance_cooled_down=governance_cooled_down,
+        recovery_attempts=recovery_attempts,
+        recovery_success=recovery_success,
+        stop_reasons=stop_reasons,
+        trigger_rule_stats=trigger_rule_stats,
+        runs_with_recovery=runs_with_recovery[:10],
+        runs_with_governance_intercept=runs_with_governance_intercept[:10],
     )
 
 

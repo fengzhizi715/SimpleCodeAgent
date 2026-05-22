@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from app.api.routes.debug import get_run_detail, get_v2_run_replay, get_v2_session_replay
+from app.api.routes.debug import get_run_detail, get_v2_run_replay, get_v2_session_replay, get_v3_audit_analytics
 from app.contracts.agent import AgentResult, AgentSpec, AgentTask, SharedWorkspace, TestReport
 from app.contracts.planner import Plan, PlanStep
 from app.contracts.run import RunRequest, RunResult
@@ -752,3 +752,99 @@ def test_generic_run_detail_does_not_guess_demo_scenarios_without_runtime_follow
     assert response.runtime_summary["run_mode"]["id"] == "graph_only"
     assert response.runtime_summary["demo_scenarios"] == []
     assert response.runtime_summary["recovery_summary"]["status"] == "not_triggered"
+
+
+def test_v3_audit_analytics_uses_runtime_summary_status_and_runtime_derivation(monkeypatch) -> None:
+    recovered_report = {
+        "run_id": "run-recovered",
+        "graph_id": "graph-recovered",
+        "status": "completed",
+        "recovered_node_ids": ["test_runner"],
+        "execution_nodes": [
+            {"node_id": "test_runner", "kind": "graph", "skill_name": "test_runner", "status": "recovered", "summary": "Tests failed: pytest -q"},
+            {
+                "node_id": "trigger:tdd:1",
+                "kind": "trigger",
+                "skill_name": "tdd",
+                "status": "done",
+                "source_event_type": "test_failed",
+                "trigger_rule_id": "template_fix_and_retest_after_test_failed",
+                "parent_node_id": "test_runner",
+                "recovery_on_success": True,
+                "summary": "TDD recovery finished after triggered fix and re-test",
+                "output_data": {
+                    "coding_result": {"patch_summary": "Updated add() to use addition"},
+                    "test_result": {"summary": "Tests passed: pytest -q"},
+                },
+            },
+        ],
+        "trigger_diagnostics": [
+            {
+                "trigger_rule_id": "template_fix_and_retest_after_test_failed",
+                "source_event_type": "test_failed",
+                "target_skill_name": "tdd",
+                "status": "executed",
+            }
+        ],
+        "audit": {
+            "records": [{"action": "trigger_executed", "rule_id": "template_fix_and_retest_after_test_failed"}],
+            "decision_traces": [{"approved": True}],
+            "governance_actions": [],
+            "stop_reasons": [],
+        },
+    }
+    intercepted_report = {
+        "run_id": "run-intercept",
+        "graph_id": "graph-intercept",
+        "status": "partial_completed",
+        "recovered_node_ids": [],
+        "execution_nodes": [
+            {"node_id": "coding", "kind": "graph", "skill_name": "coding", "status": "done", "summary": "calc.py updated"},
+        ],
+        "trigger_diagnostics": [
+            {
+                "trigger_rule_id": "code_updated_follow_up_test",
+                "source_event_type": "code_updated",
+                "target_skill_name": "test_runner",
+                "status": "skipped",
+                "skip_reason": "cooldown",
+                "cooldown_seconds": 60.0,
+            }
+        ],
+        "audit": {
+            "records": [{"action": "trigger_skipped", "rule_id": "code_updated_follow_up_test"}],
+            "decision_traces": [{"approved": False}],
+            "governance_actions": [{"action_type": "cooldown_applied"}],
+            "stop_reasons": [{"reason_type": "cooldown"}],
+        },
+    }
+
+    class FakeDB:
+        def fetchall(self, _sql: str, _params: tuple[int]) -> list[dict[str, object]]:
+            return [
+                {
+                    "run_id": "run-recovered",
+                    "task": "run tests and recover",
+                    "status": "completed",
+                    "final_output": json.dumps(recovered_report),
+                    "created_at": "2025-01-01T00:00:00+00:00",
+                },
+                {
+                    "run_id": "run-intercept",
+                    "task": "code changed follow-up",
+                    "status": "partial_completed",
+                    "final_output": json.dumps(intercepted_report),
+                    "created_at": "2025-01-01T00:00:01+00:00",
+                },
+            ]
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+
+    response = get_v3_audit_analytics(limit=10)
+
+    assert response.total_runs == 2
+    assert response.recovery_attempts == 1
+    assert response.recovery_success == 1
+    assert response.runs_with_recovery == ["run-recovered"]
+    assert response.governance_cooled_down == 1
+    assert response.runs_with_governance_intercept == ["run-intercept"]

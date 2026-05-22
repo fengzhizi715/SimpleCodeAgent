@@ -49,6 +49,7 @@ from app.v3.runtime.graph_executor import GraphExecutor
 from app.v3.runtime.skill_executor import SkillExecutor
 from app.v3.replay.replay_engine import replay_by_event, replay_event_chain
 from app.v3.runner import run_v3
+from app.v3.demo.code_changed_demo import run_v3_code_changed_demo
 from app.v3.demo.recovery_demo import run_v3_recovery_demo
 from app.v3.skills.base import Skill
 from app.v3.skills.registry import SkillRegistry
@@ -2259,6 +2260,33 @@ def test_run_v3_recovery_demo_failure_records_stop_reason() -> None:
     assert len(trigger_nodes) == 1
     assert trigger_nodes[0].status == "failed"
     assert trigger_nodes[0].output_data["error"] == "no_code_changes"
+
+
+def test_run_v3_code_changed_demo_follow_up_test_executes_trigger_path() -> None:
+    result = asyncio.run(run_v3_code_changed_demo(scenario="follow_up_test"))
+
+    assert result["scenario"] == "follow_up_test"
+    assert result["report"].status.value == "completed"
+    trigger_nodes = [node for node in result["report"].execution_nodes if node.kind == "trigger"]
+    assert len(trigger_nodes) == 1
+    assert trigger_nodes[0].skill_name == "test_runner"
+    assert trigger_nodes[0].source_event_type == EventType.CODE_UPDATED.value
+    assert result["report"].trigger_diagnostics[0].status == "executed"
+
+
+def test_run_v3_code_changed_demo_governance_intercept_skips_follow_up() -> None:
+    result = asyncio.run(run_v3_code_changed_demo(scenario="governance_intercept"))
+
+    assert result["scenario"] == "governance_intercept"
+    assert result["report"].status.value in {"completed", "partial_completed"}
+    assert result["report"].trigger_diagnostics
+    assert result["report"].trigger_diagnostics[0].status == "skipped"
+    assert result["report"].trigger_diagnostics[0].skip_reason in {
+        "budget_exhausted",
+        "budget_triggers_exhausted",
+        "cooldown",
+        "blocked",
+    }
 
 
 def test_run_v3_can_enable_phase2_snapshot_messaging_and_scheduler() -> None:

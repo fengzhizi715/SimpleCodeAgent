@@ -172,13 +172,13 @@
         <p class="autonomy-node-summary">{{ demo.prompt }}</p>
         <p class="planning-node-deps muted">看点：{{ demo.watch }}</p>
         <div class="autonomy-demo-actions">
-          <button class="btn-secondary btn-sm" :disabled="demoLaunchingId === demo.id" @click="launchRecoveryDemo(demo)">
+          <button class="btn-secondary btn-sm" :disabled="demoLaunchingId === demo.id" @click="demo.id === 'code_changed_follow_up' ? launchCodeChangedDemo(demo) : launchRecoveryDemo(demo)">
             {{ demoLaunchingId === demo.id ? "启动中…" : demo.actionLabel }}
           </button>
           <button class="btn-secondary btn-sm" :disabled="!demo.latestRunId" @click="openDemoRun(demo)">
             打开最近一次 Run
           </button>
-          <button class="btn-secondary btn-sm" :disabled="!demo.latestRunId || replayCompareLoading" @click="openReplayCompare(demo)">
+          <button v-if="demo.id !== 'code_changed_follow_up'" class="btn-secondary btn-sm" :disabled="!demo.latestRunId || replayCompareLoading" @click="openReplayCompare(demo)">
             {{ replayCompareLoading && replayCompareDemoId === demo.id ? "对照中…" : "Replay Compare" }}
           </button>
         </div>
@@ -433,6 +433,105 @@
     </table>
     <p v-else class="muted">当前过滤条件下没有 trigger rules。</p>
   </section>
+
+  <section class="panel" v-if="activeTab === 'analytics'">
+    <div class="autonomy-section-head">
+      <div>
+        <h3>Cross-Run Analytics</h3>
+        <p class="muted">跨运行观察 trigger 与 governance 规律，从单次 run 跳出来看系统行为。</p>
+      </div>
+    </div>
+
+    <div v-if="v3AuditAnalytics" class="v3-analytics">
+      <div class="v3-analytics-overview">
+        <div class="v3-analytics-stat">
+          <strong>{{ v3AuditAnalytics.total_runs }}</strong>
+          <span class="muted">Total Runs</span>
+        </div>
+        <div class="v3-analytics-stat">
+          <strong>{{ v3AuditAnalytics.trigger_executed }}</strong>
+          <span class="muted">Trigger Executed</span>
+        </div>
+        <div class="v3-analytics-stat">
+          <strong>{{ v3AuditAnalytics.governance_allowed }}</strong>
+          <span class="muted">Governance Allowed</span>
+        </div>
+        <div class="v3-analytics-stat">
+          <strong>{{ v3AuditAnalytics.governance_blocked }}</strong>
+          <span class="muted">Governance Blocked</span>
+        </div>
+        <div class="v3-analytics-stat">
+          <strong>{{ v3AuditAnalytics.recovery_success }} / {{ v3AuditAnalytics.recovery_attempts }}</strong>
+          <span class="muted">Recovery Success</span>
+        </div>
+      </div>
+
+      <div v-if="Object.keys(v3AuditAnalytics.stop_reasons).length" class="v3-analytics-section">
+        <h4>Stop Reasons Distribution</h4>
+        <div class="v3-analytics-bar-chart">
+          <div v-for="(count, reason) in v3AuditAnalytics.stop_reasons" :key="reason" class="v3-analytics-bar-item">
+            <div class="v3-analytics-bar-label">{{ reason }}</div>
+            <div class="v3-analytics-bar-track">
+              <div class="v3-analytics-bar-fill" :style="{ width: `${(count / v3AuditAnalytics.total_runs) * 100}%` }"></div>
+            </div>
+            <div class="v3-analytics-bar-count">{{ count }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="Object.keys(v3AuditAnalytics.trigger_rule_stats).length" class="v3-analytics-section">
+        <h4>Trigger Rule Stats</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Executed</th>
+              <th>Skipped</th>
+              <th>Cooldown</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(stats, ruleId) in v3AuditAnalytics.trigger_rule_stats" :key="ruleId">
+              <td><strong>{{ ruleId }}</strong></td>
+              <td>{{ stats.executed }}</td>
+              <td>{{ stats.skipped }}</td>
+              <td>{{ stats.cooldown }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div v-if="v3AuditAnalytics.runs_with_recovery.length" class="v3-analytics-section">
+        <h4>Runs with Recovery</h4>
+        <div class="v3-analytics-run-list">
+          <RouterLink
+            v-for="runId in v3AuditAnalytics.runs_with_recovery"
+            :key="runId"
+            :to="{ name: 'execution', params: { runId }, query: { version: 'v3' } }"
+            class="v3-analytics-run-link"
+          >
+            {{ shortChainId(runId) }}
+          </RouterLink>
+        </div>
+      </div>
+
+      <div v-if="v3AuditAnalytics.runs_with_governance_intercept.length" class="v3-analytics-section">
+        <h4>Runs with Governance Intercept</h4>
+        <div class="v3-analytics-run-list">
+          <RouterLink
+            v-for="runId in v3AuditAnalytics.runs_with_governance_intercept"
+            :key="runId"
+            :to="{ name: 'execution', params: { runId }, query: { version: 'v3' } }"
+            class="v3-analytics-run-link"
+          >
+            {{ shortChainId(runId) }}
+          </RouterLink>
+        </div>
+      </div>
+    </div>
+
+    <p v-else class="muted">加载中或暂无数据。</p>
+  </section>
 </template>
 
 <script setup>
@@ -442,12 +541,14 @@ import {
   getRunDetail,
   getV3EventChain,
   getV3EventChainView,
+  getV3AuditAnalytics,
   getV3RunReplayPlan,
   getV3TriggerHitCounts,
   getV3TriggerRuleStates,
   listRuns,
   replayV3EventChain,
   runV3RecoveryDemo,
+  runV3CodeChangedDemo,
   setV3TriggerRuleEnabled,
 } from "../api";
 import { formatGovernanceCount, normalizeV3RuntimeSummary } from "../v3RuntimeSummary";
@@ -481,10 +582,11 @@ const replayCompareState = ref({
   runId: "",
   demoTitle: "",
   targetSkillName: "",
-  summary: "",
-  originalSummary: "",
   replaySuccess: false,
+  replayResult: null,
 });
+const v3AuditAnalytics = ref(null);
+const analyticsLoading = ref(false);
 
 const selectedRun = computed(() => {
   if (!selectedRunId.value) return null;
@@ -529,6 +631,7 @@ const tabs = computed(() => [
   { id: "events", label: "Events", hint: filteredEventRows.value.length ? `${filteredEventRows.value.length} items` : "" },
   { id: "triggers", label: "Triggers", hint: filteredTriggerRules.value.length ? `${filteredTriggerRules.value.length} rules` : "" },
   { id: "runtime", label: "Runtime Status", hint: runtimeSummary.value.run_mode?.label || "" },
+  { id: "analytics", label: "Analytics", hint: "cross-run" },
 ]);
 
 const lastUpdatedText = computed(() => {
@@ -623,6 +726,16 @@ const demoCatalog = computed(() => [
     actionLabel: "启动失败收敛 Demo",
     latestRunId: recentDemoRunsByScenario.value.no_code_changes?.run?.run_id || "",
     latestStatusLabel: recentDemoRunsByScenario.value.no_code_changes?.runtime_summary?.recovery_summary?.label || "Recovery Failed",
+  },
+  {
+    id: "code_changed_follow_up",
+    title: "Demo 4: 代码变更 -> 自动 follow-up test",
+    goal: "让用户看到 code_updated 事件如何自动触发 test_runner 验证。",
+    prompt: "运行 code_changed demo，观察 coding 修改文件后，code_updated 事件如何触发 test_runner follow-up。",
+    watch: "Runtime Mode (Graph + Trigger)、Flow Cards、event -> trigger -> follow-up 链路",
+    actionLabel: "启动代码变更监控 Demo",
+    latestRunId: "",
+    latestStatusLabel: "Not Run",
   },
   {
     id: "replay_compare",
@@ -898,6 +1011,24 @@ async function launchRecoveryDemo(demo) {
   }
 }
 
+async function launchCodeChangedDemo(demo) {
+  const scenario = demo?.id === "code_changed_governance_intercept" ? "governance_intercept" : "follow_up_test";
+  demoLaunchingId.value = demo?.id || scenario;
+  error.value = "";
+  try {
+    const result = await runV3CodeChangedDemo(scenario);
+    if (result?.run_id) {
+      await loadAutonomy();
+      selectedRunId.value = result.run_id;
+      activeTab.value = "overview";
+    }
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "启动 code changed demo 失败";
+  } finally {
+    demoLaunchingId.value = "";
+  }
+}
+
 function openDemoRun(demo) {
   if (!demo?.latestRunId) return;
   router.push({
@@ -1045,7 +1176,21 @@ watch(
   }
 );
 
-onMounted(loadAutonomy);
+onMounted(async () => {
+  await loadAutonomy();
+  await loadAnalytics();
+});
+
+async function loadAnalytics() {
+  analyticsLoading.value = true;
+  try {
+    v3AuditAnalytics.value = await getV3AuditAnalytics({ limit: 50 });
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "加载 analytics 失败";
+  } finally {
+    analyticsLoading.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -1350,6 +1495,136 @@ onMounted(loadAutonomy);
 
   .autonomy-field {
     min-width: 0;
+  }
+}
+
+.v3-analytics {
+  margin-top: 16px;
+}
+
+.v3-analytics-overview {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px;
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.04);
+  border: 1px solid rgba(79, 70, 229, 0.12);
+}
+
+.v3-analytics-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.v3-analytics-stat strong {
+  font-size: 1.3rem;
+  color: var(--text-primary, #111827);
+}
+
+.v3-analytics-stat .muted {
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
+.v3-analytics-section {
+  margin-top: 20px;
+}
+
+.v3-analytics-section h4 {
+  margin-bottom: 10px;
+  font-size: 0.95rem;
+  color: var(--text-primary, #111827);
+}
+
+.v3-analytics-bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.v3-analytics-bar-item {
+  display: grid;
+  grid-template-columns: 140px 1fr 40px;
+  gap: 10px;
+  align-items: center;
+}
+
+.v3-analytics-bar-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary, #5c6370);
+}
+
+.v3-analytics-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.1);
+  overflow: hidden;
+}
+
+.v3-analytics-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed);
+  transition: width 0.3s ease;
+}
+
+.v3-analytics-bar-count {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary, #111827);
+  text-align: right;
+}
+
+.v3-analytics-run-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.v3-analytics-run-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(79, 70, 229, 0.06);
+  border: 1px solid rgba(79, 70, 229, 0.15);
+  color: var(--accent-text, #4f46e5);
+  font-size: 0.82rem;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  text-decoration: none;
+}
+
+.v3-analytics-run-link:hover {
+  background: rgba(79, 70, 229, 0.12);
+}
+
+@media (max-width: 980px) {
+  .v3-analytics-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .v3-analytics-bar-item {
+    grid-template-columns: 100px 1fr 30px;
+  }
+}
+
+@media (max-width: 640px) {
+  .v3-analytics-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .v3-analytics-bar-item {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .v3-analytics-bar-count {
+    text-align: left;
   }
 }
 </style>

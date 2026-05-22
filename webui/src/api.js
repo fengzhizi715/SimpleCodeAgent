@@ -158,6 +158,17 @@ export async function getV3TriggerHitCounts({ runId = "", ruleId = "" } = {}) {
   return requestJson(`/debug/v3/trigger-rules/hit-counts${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
+export async function getV3AuditAnalytics({ limit = 50 } = {}) {
+  return requestJson(`/debug/v3/audit/analytics?limit=${limit}`);
+}
+
+export async function runV3CodeChangedDemo(scenario = "follow_up_test") {
+  return requestJson("/debug/v3/demo/code-changed-run", {
+    method: "POST",
+    body: JSON.stringify({ scenario }),
+  });
+}
+
 export async function listRuns({ limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
