@@ -430,7 +430,6 @@ app/v3/demo/                           # recovery / code-changed 等演示场景
 - Tool 总览：[`docs/tooling.md`](docs/tooling.md)
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - V1 教学路线：[`docs/v1/teaching_roadmap.md`](docs/v1/teaching_roadmap.md)
-- V3 产品化路线：[`docs/v3_productization_p0_p1_roadmap.md`](docs/v3_productization_p0_p1_roadmap.md)
 
 ---
 
