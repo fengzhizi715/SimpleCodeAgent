@@ -2,13 +2,13 @@
 
 一个用于教学和演示的 **编程智能体工程化演进项目**。
 
-这个仓库不是“大而全”的 Agent 框架，而是一套可运行、可观察、可逐步扩展的 Code Agent 样例工程。它重点展示：如何从一个轻量单 Agent Runtime，演进到一个中心化、多角色、可回放、可配置的多 Agent 编程系统，再继续演进到一个 `Graph + Skill + Trigger` 驱动的结构化 Runtime。
+这个仓库不是“大而全”的 Agent 框架，而是一套可运行、可观察、可逐步扩展的 Code Agent 样例工程。它重点展示：如何从一个轻量单 Agent Runtime，演进到一个中心化、多角色、可回放、可配置的多 Agent 编程系统，再继续演进到一个带有限自治能力的结构化 Runtime。
 
 你可以把它理解为三段连续演进的配套工程：
 
 - `v1` 基础课：从零实现一个可运行的单 Agent CodeAgent。
 - `v2` 高级课：在不破坏 v1 的前提下，演进出中心化多 Agent 编排、共享上下文、失败回流、External Coder 与 WebUI 可观测能力。
-- `v3` Runtime 演进课：继续从多 Agent 编排升级到结构化执行内核，重点展示 `Task Graph`、`Skill Registry`、`Event / Trigger`、`Governance`、`Replay / Audit` 的产品化表达。
+- `v3` Runtime 演进课：继续从多 Agent 编排升级到带有限自治能力的结构化执行内核，重点展示 `Task Graph`、`Skill Registry`、`Event / Trigger`、`Governance`、`Replay / Audit` 的产品化表达。
 
 ---
 
@@ -100,9 +100,9 @@ V2 的关键能力包括：
 - Multi-RAG 与运行级 RAG 开关
 - WebUI 运行、历史、回放、Workspace、Memory、Trace、Agent 配置、RAG 管理、Token Dashboard
 
-### V3：Graph + Skill + Trigger Runtime
+### V3：带有限自治能力的结构化 Runtime
 
-`app/v3` 是结构化运行时版本，重点不是“再增加几个 Agent”，而是把系统升级到新的抽象层：
+`app/v3` 是一个带有限自治能力的结构化运行时版本，重点不是“再增加几个 Agent”，而是把系统升级到新的抽象层：
 
 - `Task Graph`：把任务拆成结构化节点，而不是只依赖自由文本步骤
 - `Skill Registry`：以 `planning / analyze_repo / coding / test_runner / tdd` 等受控 Skill 作为执行单元
@@ -183,7 +183,7 @@ V2 支持把 `Coder` 的执行模式切换为外部 CLI：
 | --- | --- | --- | --- |
 | v1 | `app/v1` | 单 Agent Runtime | Agent Loop、Tools、Memory、RAG、Planner、Trace |
 | v2 | `app/v2` | 中心化多 Agent Runtime | Orchestrator、Delegation、Workspace、RePlan、External Coder |
-| v3 | `app/v3` | Graph + Skill + Trigger Runtime | Task Graph、Skill Registry、Event / Trigger、Governance、Replay / Audit |
+| v3 | `app/v3` | 带有限自治能力的结构化 Runtime | Task Graph、Skill Registry、Event / Trigger、Governance、Replay / Audit |
 
 ### RAG 策略
 
