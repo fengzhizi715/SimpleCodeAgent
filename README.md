@@ -2,12 +2,13 @@
 
 一个用于教学和演示的 **编程智能体工程化演进项目**。
 
-这个仓库不是“大而全”的 Agent 框架，而是一套可运行、可观察、可逐步扩展的 Code Agent 样例工程。它重点展示：如何从一个轻量单 Agent Runtime，演进到一个中心化、多角色、可回放、可配置的多 Agent 编程系统。
+这个仓库不是“大而全”的 Agent 框架，而是一套可运行、可观察、可逐步扩展的 Code Agent 样例工程。它重点展示：如何从一个轻量单 Agent Runtime，演进到一个中心化、多角色、可回放、可配置的多 Agent 编程系统，再继续演进到一个 `Graph + Skill + Trigger` 驱动的结构化 Runtime。
 
-你可以把它理解为两门课程的配套工程：
+你可以把它理解为三段连续演进的配套工程：
 
 - `v1` 基础课：从零实现一个可运行的单 Agent CodeAgent。
 - `v2` 高级课：在不破坏 v1 的前提下，演进出中心化多 Agent 编排、共享上下文、失败回流、External Coder 与 WebUI 可观测能力。
+- `v3` Runtime 演进课：继续从多 Agent 编排升级到结构化执行内核，重点展示 `Task Graph`、`Skill Registry`、`Event / Trigger`、`Governance`、`Replay / Audit` 的产品化表达。
 
 ---
 
@@ -25,7 +26,9 @@
 - 想系统学习 Code Agent 内部实现的开发者
 - 想理解 Tool Calling、Memory、RAG、Trace、Runtime Loop 的工程师
 - 想从单 Agent 过渡到多 Agent 编排的工程师
+- 想理解为什么系统会继续从多 Agent 演进到 `Graph Runtime` 的工程师
 - 想学习 Orchestrator / Planner / Specialist Agent 分工的人
+- 想看 `event -> trigger -> follow-up`、治理拦截与 replay 如何被产品化表达的人
 - 想看一个教学友好、边界清晰、可运行的 Agent 工程样例，而不只是调用 LangChain / LangGraph 等框架的人
 
 ---
@@ -97,6 +100,40 @@ V2 的关键能力包括：
 - Multi-RAG 与运行级 RAG 开关
 - WebUI 运行、历史、回放、Workspace、Memory、Trace、Agent 配置、RAG 管理、Token Dashboard
 
+### V3：Graph + Skill + Trigger Runtime
+
+`app/v3` 是结构化运行时版本，重点不是“再增加几个 Agent”，而是把系统升级到新的抽象层：
+
+- `Task Graph`：把任务拆成结构化节点，而不是只依赖自由文本步骤
+- `Skill Registry`：以 `planning / analyze_repo / coding / test_runner / tdd` 等受控 Skill 作为执行单元
+- `Execution Kernel`：先校验 graph，再执行节点，再收敛成结构化 `ExecutionReport`
+- `Event / Trigger`：把 `test_failed`、`code_updated` 等事件显式记录，并由 Trigger Rule 决定是否进入 follow-up
+- `Governance`：对 trigger / autonomy 路径做允许、拦截、cooldown、传播限制和预算控制
+- `Replay / Audit`：为运行时链路提供可重放、可审计的基础能力
+
+V3 当前的关键价值是让用户明显感知：
+
+- `v2` 在做协作编排
+- `v3` 在做 runtime 推进
+
+也就是说，用户不只看到“任务执行完了”，还会看到：
+
+- 这次运行到底是 `Graph Only`，还是 `Graph + Trigger`
+- 哪个 `event` 命中了哪条 `trigger`
+- follow-up skill 是继续执行、还是被 `governance` 拦截
+- recovery 是真的完成了，还是在 `no_code_changes` 处受控收敛
+
+当前 `v3` 已经有几条适合教学演示的典型场景：
+
+1. `测试失败 -> 自动补救 -> 再测`
+2. `代码变更 -> 自动 follow-up test`
+3. `事件命中但被 governance 拦截`
+
+对应到 WebUI，`v3` 的重点页面不是另一个“结果页”，而是：
+
+- `Run Detail`：结果优先，第一屏直接解释 `Runtime Mode`、`Flow Cards`、`Recovery Path`
+- `Autonomy`：运行时优先，集中看 `Overview / Graph / Events / Triggers / Runtime Status / Analytics`
+
 ---
 
 ## External Coder
@@ -126,12 +163,15 @@ V2 支持把 `Coder` 的执行模式切换为外部 CLI：
 
 ## 项目亮点
 
-- 双版本并行：`v1` 保持单 Agent 教学稳定性，`v2` 承载多 Agent 演进。
+- 三版本并行：`v1` 保持单 Agent 教学稳定性，`v2` 承载多 Agent 编排演进，`v3` 承载结构化 Runtime 演进。
 - 边界清晰：`v2` 复用共享底座，但不反向污染 `v1`。
+- 运行时升级路径清晰：从 Agent Loop，到 Orchestrator，再到 Graph + Skill + Trigger。
 - 中心化调度：只有 Orchestrator 拥有调度权，子 Agent 不做自由互聊。
+- Runtime 可感知：`v3` 把 `event / trigger / governance / recovery` 做成用户可读视图，而不只是原始 trace。
 - 可运行闭环：支持 CLI、FastAPI、WebUI 三种入口。
 - 可观测：运行历史、Trace、Execution Log、Replay、Workspace / Memory Tab。
 - 可配置：V2 Agent、RAG、Reviewer、External Coder 都支持运行级配置。
+- 可演示：`v3` 具备 recovery demo、code-changed demo、governance intercept demo 等教学场景。
 - 可统计：Dashboard 支持 Token 消耗与近期运行统计。
 - 可教学：模块职责明确，适合逐节讲解和局部闭环演示。
 
@@ -143,6 +183,7 @@ V2 支持把 `Coder` 的执行模式切换为外部 CLI：
 | --- | --- | --- | --- |
 | v1 | `app/v1` | 单 Agent Runtime | Agent Loop、Tools、Memory、RAG、Planner、Trace |
 | v2 | `app/v2` | 中心化多 Agent Runtime | Orchestrator、Delegation、Workspace、RePlan、External Coder |
+| v3 | `app/v3` | Graph + Skill + Trigger Runtime | Task Graph、Skill Registry、Event / Trigger、Governance、Replay / Audit |
 
 ### RAG 策略
 
@@ -154,6 +195,7 @@ V2 支持把 `Coder` 的执行模式切换为外部 CLI：
 
 - v1：以 session memory 为主，服务单 Agent 上下文延续。
 - v2：使用 shared workspace + private memory。
+- v3：使用 graph execution context + event / trigger diagnostics + structured execution report。
 - Context Builder 会按 Agent 类型选择性注入上下文，避免所有 Agent 共享全量历史。
 
 ---
@@ -236,6 +278,12 @@ http://localhost:5173
 .venv/bin/python scripts/run_cli.py "先分析项目结构，再给出一个小范围优化建议" --version v2
 ```
 
+### 运行 v3
+
+```bash
+.venv/bin/python scripts/run_cli.py "run tests and recover if needed" --version v3
+```
+
 ### 指定工作目录
 
 ```bash
@@ -245,7 +293,7 @@ http://localhost:5173
   --max-steps 5
 ```
 
-### 使用 WebUI 运行 V2
+### 使用 WebUI 运行 V2 / V3
 
 打开：
 
@@ -260,6 +308,11 @@ http://localhost:5173/run
 - Coder 可选择内置 Coder 或外部 CLI
 - Tester / Reviewer 可按任务需要启用
 - 复杂外部 CLI 任务可以把运行超时调大，当前 API / WebUI 支持到 `1800` 秒
+
+如果你要体验 `v3`，推荐优先看两类页面：
+
+- `Run Detail`：看这次运行到底是 `Graph Only`、`Graph + Trigger` 还是 `Graph + Governance Intercept`
+- `Autonomy`：看跨运行的 graph、event、trigger、recovery demo 和 analytics
 
 ### 导入 RAG 文档
 
@@ -276,14 +329,15 @@ WebUI 主要用于教学演示、调试和回放。
 | 页面 | 路径 | 说明 |
 | --- | --- | --- |
 | Overview | `/overview` | 系统概况与 LLM 配置入口 |
-| Run | `/run` | 新建 v1 / v2 运行任务，配置 Agent、RAG、External Coder |
+| Run | `/run` | 新建 v1 / v2 / v3 运行任务，配置 Agent、RAG、External Coder 或 Runtime Demo |
+| Autonomy | `/autonomy` | `v3` Runtime 入口，查看 Overview、Graph、Events、Triggers、Runtime Status、Analytics |
 | History | `/history` | v1 / v2 顶层运行历史列表 |
 | Dashboard | `/dashboard` | Token 消耗与近期运行统计 |
 | Agents | `/agents` | Agent 列表与 Reviewer 策略配置 |
 | RAG | `/rag` | RAG 知识库列表 |
 | New RAG | `/rag/new` | 新建知识库 |
 | RAG Detail | `/rag/:ragId` | 指定知识库上传、重建、删除、概览 |
-| Run Detail | `/runs/:runId` | 执行详情、Workspace、Memory、Delegation |
+| Run Detail | `/runs/:runId` | 执行详情；`v2` 偏协作结果视图，`v3` 偏 Runtime / Flow / Recovery 视图 |
 | Trace | `/runs/:runId/trace` | Trace Timeline 与 Raw Trace JSON |
 
 ---
@@ -294,9 +348,13 @@ WebUI 主要用于教学演示、调试和回放。
 
 常用接口：
 
-- `POST /agent/run`：运行任务，支持 `version: v1 | v2`
+- `POST /agent/run`：运行任务，支持 `version: v1 | v2 | v3`
 - `GET /debug/runs`：运行历史
 - `GET /debug/v2/runs/{run_id}/replay`：V2 执行回放
+- `GET /debug/runs/{run_id}/detail`：统一执行详情，`v3` 会附带 runtime summary
+- `GET /debug/v3/audit/analytics`：V3 跨运行 analytics / audit 汇总
+- `POST /debug/v3/demo/recovery-run`：运行 `v3` recovery demo
+- `POST /debug/v3/demo/code-changed-run`：运行 `v3` code-changed demo
 - `GET /debug/traces/{run_id}`：Trace 时间线
 - `GET /debug/agents`：Agent 列表
 - `GET /debug/usage/summary`：Token / Usage Dashboard 数据
@@ -323,6 +381,7 @@ app/
   trace/        # Trace 记录与查询
   v1/           # 单 Agent 实现
   v2/           # 中心化多 Agent 实现
+  v3/           # Graph + Skill + Trigger 结构化 Runtime
 docs/           # 架构、使用、课程路线与 API 文档
 scripts/        # 本地脚本入口
 webui/          # Vue3 + Vite 前端
@@ -345,6 +404,21 @@ app/v2/replay.py                       # Run Replay / Execution Nodes
 app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 ```
 
+V3 核心文件：
+
+```text
+app/v3/runner.py                       # V3 运行入口
+app/v3/contracts/                      # TaskGraph / TriggerRule / ExecutionReport 等协议
+app/v3/runtime/                        # Execution Kernel / Runtime Summary
+app/v3/graph/                          # Graph Builder / Validator
+app/v3/skills/                         # Skill Registry 与内建 Skill
+app/v3/events/                         # Event Bus / Event Store
+app/v3/trigger/                        # Trigger Rule / Trigger Engine
+app/v3/governance/                     # Governance / Budget / Cooldown / Propagation
+app/v3/replay/                         # Replay / Audit 基础能力
+app/v3/demo/                           # recovery / code-changed 等演示场景
+```
+
 ---
 
 ## 文档导航
@@ -356,6 +430,7 @@ app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 - Tool 总览：[`docs/tooling.md`](docs/tooling.md)
 - RAG 使用：[`docs/rag_usage.md`](docs/rag_usage.md)
 - V1 教学路线：[`docs/v1/teaching_roadmap.md`](docs/v1/teaching_roadmap.md)
+- V3 产品化路线：[`docs/v3_productization_p0_p1_roadmap.md`](docs/v3_productization_p0_p1_roadmap.md)
 
 ---
 
@@ -373,5 +448,6 @@ app/v2/external_command_templates.py   # Codex / Cursor 命令模板
 
 - v1：稳定教学版，适合讲单 Agent 基础闭环。
 - v2：可用增强版，适合讲中心化多 Agent 编排、External Coder、Workspace、Trace 与 WebUI。
-- WebUI：已具备运行、历史、回放、Agent 配置、RAG 管理、Workspace / Memory、Trace 与 Dashboard。
+- v3：已具备结构化 Runtime 演示能力，适合讲 Graph、Skill、Trigger、Governance、Recovery Path 与 Runtime 可观测性。
+- WebUI：已具备运行、历史、回放、Autonomy Runtime、Agent 配置、RAG 管理、Workspace / Memory、Trace 与 Dashboard。
 - Reviewer / Memory / Multi-RAG / External Coder 仍会继续增强，但已经可以用于课程演示和局部真实任务闭环。
