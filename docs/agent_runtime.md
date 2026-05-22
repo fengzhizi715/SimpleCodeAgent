@@ -1,20 +1,27 @@
 # Agent Runtime
 
-本文档说明 `SimpleCodeAgent` 当前两条运行时主线：
+本文档说明 `SimpleCodeAgent` 当前三条运行时主线：
 
 - `v1`：单 Agent、工具驱动、稳定可演示
 - `v2`：中心化多 Agent 编排（MVP）
+- `v3`：`Graph + Skill + Trigger` 驱动的结构化 Runtime
 
 目标是帮助你快速理解“谁负责调度、谁负责执行、如何收敛失败、如何追踪执行链路”。
 
 ---
 
-## 1. 统一运行时约束（v1 / v2 共用）
+## 1. 统一运行时约束（v1 / v2 / v3 共用）
 
 - Agent 不直接执行外部动作；所有文件、Shell、检索行为都经由 Tool。
 - Runtime 负责循环控制、状态管理、失败收敛和 trace 记录。
 - 跨模块数据交换优先使用结构化 contract（Pydantic 模型）。
 - 高风险行为必须可审计、可追踪，不依赖隐式副作用。
+
+对 `v3` 还需要额外强调：
+
+- graph 必须先校验再执行
+- trigger 必须显式注册、显式映射、显式可关
+- governance 必须先于 autonomy
 
 ---
 
@@ -163,20 +170,179 @@ flowchart TB
 
 ---
 
-## 4. Runtime 与可观测性
+## 4. v3 Runtime（Graph + Skill + Trigger）
+
+`v3` 的重点不是“再增加几个 Agent”，而是把运行时提升到新的抽象层：
+
+- 先有 `TaskGraph`
+- 再由 `Skill` 执行节点
+- 再根据 `Event / Trigger / Governance` 决定是否进入 follow-up
+
+### 4.1 角色分工
+
+- `run_v3`
+  - 总装配入口，负责把 planning、graph、trigger、governance、trace、audit 串起来
+- `PlanningSkill / plan_v3_graph`
+  - 负责生成 `TaskGraph` 与默认 trigger 模板
+- `GraphValidator`
+  - 负责节点、依赖、技能引用和 graph 结构校验
+- `GraphExecutor`
+  - 负责按照依赖关系推进节点执行
+- `SkillExecutor`
+  - 负责调用具体 Skill
+- `ExecutionKernel`
+  - 负责收敛执行上下文、事件结果、trigger diagnostics 和最终 `ExecutionReport`
+- `EventBus / EventStore`
+  - 负责显式发布和记录 `V3Event`
+- `TriggerEngine / TriggerRegistry`
+  - 负责匹配事件与 trigger rule
+- `TriggerGuard / Governance`
+  - 负责 allow / block / cooldown / budget exhausted / propagation limited 的治理判断
+- `AutonomyRuntime`
+  - 负责受控 follow-up task，而不是无边界自治
+
+### 4.2 主流程
+
+1. 接收任务，准备 `SkillRegistry`、`EventBus`、`EventStore`、Governance 状态。
+2. 如果没有显式传入 graph，则先用 `PlanningSkill` 生成 `TaskGraph`。
+3. 用 `GraphValidator` 校验 graph；非法 graph 直接失败收敛。
+4. `GraphExecutor` 顺序推进可执行节点。
+5. `SkillExecutor` 运行节点 Skill，并把结果写回 `ExecutionContext`。
+6. 节点执行过程中发布 `V3Event`，由 `TriggerEngine` 判断是否命中 `TriggerRule`。
+7. 如果命中 trigger，再由 Governance 判断：
+   - `Allowed`
+   - `Blocked`
+   - `Cooled Down`
+   - `Propagation Limited`
+   - `Budget Exhausted`
+8. 如果允许，再执行 follow-up skill 或受控 autonomy task。
+9. `ExecutionKernel` 收敛出 `ExecutionReport`、`TriggerDiagnostic` 和运行时摘要。
+10. 持久化 trace、event history、runtime summary、audit 数据。
+
+### 4.3 v3 运行时分层图
+
+```mermaid
+flowchart TB
+  Entry["CLI / API · version=v3"] --> RV3["run_v3()"]
+
+  subgraph GraphLayer["Graph Layer"]
+    PLAN["plan_v3_graph() / PlanningSkill"]
+    GV["GraphValidator"]
+    TG["TaskGraph"]
+  end
+
+  subgraph ExecLayer["Execution Layer"]
+    GE["GraphExecutor"]
+    SE["SkillExecutor"]
+    EK["ExecutionKernel"]
+    EC["ExecutionContext"]
+    ER["ExecutionReport"]
+  end
+
+  subgraph EventLayer["Event / Trigger Layer"]
+    EB["EventBus"]
+    ES["EventStore"]
+    TR["TriggerRegistry"]
+    TE["TriggerEngine"]
+  end
+
+  subgraph GovLayer["Governance Layer"]
+    GUARD["TriggerGuard"]
+    BUD["ExecutionBudgetState"]
+    COOL["CooldownManager"]
+    PROP["PropagationState"]
+    AUTO["AutonomyRuntime"]
+  end
+
+  subgraph Reuse["Adapters"]
+    V1["v1_tool_adapter"]
+    V2["v2_agent_adapter"]
+  end
+
+  RV3 --> PLAN --> TG --> GV --> GE
+  GE --> SE
+  GE --> EB --> ES
+  EB --> TE --> GUARD
+  GUARD --> BUD
+  GUARD --> COOL
+  GUARD --> PROP
+  TE --> AUTO
+  SE --> V1
+  SE --> V2
+  GE --> EK --> EC --> ER
+```
+
+### 4.4 失败收敛与恢复语义
+
+`v3` 的失败收敛不只看“这个任务最终成没成功”，还要看：
+
+- 哪个节点失败了
+- 是否发出了关键 event
+- 是否命中了 trigger
+- follow-up 是真的执行了，还是被 governance 拦截
+- recovery 是真的补救成功，还是在 `no_code_changes` 之类的 stop reason 处收敛
+
+这也是为什么 `v3` 的结果页里会强调：
+
+- `Runtime Mode`
+- `Event -> Trigger -> Follow-up`
+- `Recovery Path`
+- `Governance Explain`
+
+### 4.5 关键实现位置
+
+- 运行入口：`app/v3/runner.py`
+- graph 校验：`app/v3/graph/graph_validator.py`
+- 图执行：`app/v3/runtime/graph_executor.py`
+- Skill 执行：`app/v3/runtime/skill_executor.py`
+- 执行上下文与 report：`app/v3/runtime/execution_context.py`
+- 运行时收敛：`app/v3/runtime/execution_kernel.py`
+- 事件系统：`app/v3/events/*`
+- trigger 系统：`app/v3/trigger/*`
+- governance：`app/v3/governance/*`
+- 运行时摘要：`app/v3/runtime/runtime_summary.py`
+
+---
+
+## 5. v2 与 v3 的运行时差异
+
+这两个版本都已经不是简单单 Agent，但复杂度来源不同：
+
+| 维度 | v2 | v3 |
+| --- | --- | --- |
+| 核心抽象 | Orchestrator + Specialist Agents | Task Graph + Skills + Triggers |
+| 调度中心 | `OrchestratorRuntime` | `GraphExecutor` + `ExecutionKernel` |
+| 执行单元 | Agent | Skill / Graph Node |
+| 失败收敛 | replan / 回流 / fail-fast | event / trigger / governance / recovery path |
+| 用户感知 | 协作编排 | runtime 推进 |
+| 典型页面 | History / Run Detail / Replay | Run Detail / Autonomy / Runtime Status |
+
+可以把两者简单理解成：
+
+- `v2` 在回答“多个角色怎么协作完成任务”
+- `v3` 在回答“一个结构化运行时如何推进 graph、处理 event、治理 follow-up”
+
+---
+
+## 6. Runtime 与可观测性
 
 运行时至少应保证：
 
 - 可识别 run/session 维度
 - 可追踪关键事件（调用、委派、工具、失败、完成）
-- 可重放主要执行过程（尤其是 v2 的 delegation 链路）
+- 可重放主要执行过程（尤其是 `v2` 的 delegation 链路和 `v3` 的 event / trigger 链路）
 
 当前建议把 trace 当作“调试与教学的一等产物”，而不是附属日志。
 
 ---
 
-## 5. 教学建议
+## 7. 教学建议
 
 - 先讲 `v1` 的单循环与工具回填，再引入 `v2` 的中心化委派。
 - 对比说明：`v2` 的复杂度来自“角色协作编排”，不是“让每个 Agent 更智能”。
+- 再继续引入 `v3`，强调复杂度已经从“谁来做”转向“runtime 如何推进、治理和收敛”。
 - 演示时优先展示可收敛场景：`plan -> code -> test -> (optional review)`。
+- `v3` 演示时优先展示：
+  - `测试失败 -> 自动补救 -> 再测`
+  - `代码变更 -> 自动 follow-up test`
+  - `事件命中但被 governance 拦截`

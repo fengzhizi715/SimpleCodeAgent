@@ -1,6 +1,6 @@
 # 架构说明
 
-本文档面向准备继续维护或扩展本项目的开发者，重点说明当前 `v1` 的主链路、模块边界，以及后续 `v2` 应如何接入。
+本文档面向准备继续维护或扩展本项目的开发者，重点说明当前仓库的三版本并行结构、共享底座边界，以及 `v1 / v2 / v3` 分别承担什么职责。
 
 ## 1. 当前架构概览
 
@@ -21,13 +21,16 @@
 - `app/v1`
   - 当前单 Agent 版本实现
 - `app/v2`
-  - 中心化多 Agent MVP 实现目录（持续演进）
+  - 中心化多 Agent 实现目录（持续演进）
+- `app/v3`
+  - `Graph + Skill + Trigger` 结构化 Runtime 实现目录（持续演进）
 
 这套结构的核心意图是：
 
 - 共享协议和基础设施保持稳定
 - `v1` 作为可运行、可演示的单 Agent 版本持续可用
-- `v2` 在不破坏 `v1` 的前提下逐步演进为多 Agent 实现
+- `v2` 在不破坏 `v1` 的前提下逐步演进为中心化多 Agent 实现
+- `v3` 在不破坏 `v1 / v2` 的前提下继续演进为结构化 Runtime
 
 ### 架构分层图（共享底座 + 版本实现）
 
@@ -35,7 +38,8 @@
 flowchart TB
   U[CLI / API 输入] --> A[app/api + app/main]
   A --> R1[app/v1 运行时]
-  A --> R2[app/v2 多 Agent MVP]
+  A --> R2[app/v2 多 Agent Runtime]
+  A --> R3[app/v3 Graph Runtime]
 
   subgraph Shared[共享底座]
     C[app/contracts]
@@ -56,7 +60,21 @@ flowchart TB
   R2 -.未来复用.-> L
   R2 -.未来复用.-> D
   R2 -.未来复用.-> T
+
+  R3 --> C
+  R3 --> K
+  R3 --> L
+  R3 --> D
+  R3 --> T
 ```
+
+### 三个版本的架构定位
+
+| 版本 | 核心抽象 | 主要目标 | 不应该演变成 |
+| --- | --- | --- | --- |
+| `v1` | Agent Loop + Tools | 讲清单 Agent 的最小可运行闭环 | 复杂多 Agent 编排器 |
+| `v2` | Orchestrator + Specialist Agents | 讲清中心化协作编排、回流和收敛 | 无边界事件驱动系统 |
+| `v3` | Task Graph + Skills + Triggers | 讲清结构化执行内核、事件链路和治理 | 通用自治平台 / 去中心化 Agent 网络 |
 
 ## 2. v1 主链路
 
@@ -191,7 +209,137 @@ flowchart TD
   RP -->|否| FF[fail fast / fallback]
 ```
 
-## 4. Planner 与普通单轮运行的关系
+## 4. v3 主链路（Graph + Skill + Trigger Runtime）
+
+`v3` 的重点不是再增加几个角色，而是把系统提升到新的运行时抽象层。一次典型的 `v3` 运行包含三层语义：
+
+1. `Task Graph`
+   - 任务先被组织成结构化节点与依赖关系
+2. `Skill Execution`
+   - 每个节点由受控 Skill 执行，而不是自由文本对话驱动
+3. `Event -> Trigger -> Follow-up`
+   - 节点执行过程中产生事件，再由 Trigger Rule 和 Governance 决定是否继续推进 follow-up
+
+### v3 组件关系图
+
+```mermaid
+flowchart TB
+  U[用户任务 / Demo 请求] --> V3[run_v3]
+
+  subgraph Planning["Planning & Graph"]
+    PLAN[PlanningSkill / plan_v3_graph]
+    GB[GraphBuilder]
+    GV[GraphValidator]
+    TG[TaskGraph]
+  end
+
+  subgraph Runtime["Execution Runtime"]
+    GE[GraphExecutor]
+    SE[SkillExecutor]
+    EK[ExecutionKernel]
+    EC[ExecutionContext]
+    ER[ExecutionReport]
+  end
+
+  subgraph Events["Event & Trigger"]
+    EB[EventBus]
+    ES[EventStore]
+    TR[TriggerRegistry]
+    TE[TriggerEngine]
+  end
+
+  subgraph Gov["Governance & Autonomy"]
+    TGD[TriggerGuard]
+    BUD[ExecutionBudgetState]
+    COOL[CooldownManager]
+    PROP[PropagationState]
+    AUTO[AutonomyRuntime]
+  end
+
+  subgraph Reuse["复用稳定能力"]
+    V1A[v1_tool_adapter]
+    V2A[v2_agent_adapter]
+  end
+
+  subgraph View["Replay / Audit / Runtime View"]
+    RP[Replay / Audit]
+    SUM[Runtime Summary]
+  end
+
+  V3 --> PLAN --> GB --> TG --> GV --> GE
+  GE --> SE
+  GE --> EB
+  EB --> ES
+  EB --> TE
+  TE --> TGD
+  TGD --> BUD
+  TGD --> COOL
+  TGD --> PROP
+  TE --> AUTO
+  GE --> EK --> EC --> ER
+  SE --> V1A
+  SE --> V2A
+  ER --> RP
+  ER --> SUM
+```
+
+### v3 执行流程图
+
+```mermaid
+flowchart TD
+  S[接收任务 / Demo 输入] --> P{是否显式提供 graph}
+  P -->|否| PLAN[PlanningSkill 生成 graph 与默认 trigger 模板]
+  P -->|是| G0[使用传入 graph]
+  PLAN --> GV[GraphValidator 校验 graph]
+  G0 --> GV
+
+  GV --> Q{graph 是否有效}
+  Q -->|否| F0[构造失败 report 并持久化]
+  Q -->|是| GEX[GraphExecutor 顺序推进节点]
+
+  GEX --> SK[SkillExecutor 执行节点 skill]
+  SK --> EVT[发布 V3Event]
+  EVT --> TRI{TriggerEngine 是否命中规则}
+
+  TRI -->|否| NEXT[继续原 graph]
+  TRI -->|是| GOV{Governance 是否允许 follow-up}
+
+  GOV -->|允许| FU[执行 follow-up skill / autonomy task]
+  GOV -->|拦截| DIAG[记录 TriggerDiagnostic]
+  GOV -->|cooldown / budget exhausted| DIAG
+
+  FU --> NEXT
+  DIAG --> NEXT
+  NEXT --> DONE{是否还有可执行节点}
+  DONE -->|是| GEX
+  DONE -->|否| R[ExecutionKernel 收敛 ExecutionReport]
+  R --> O[持久化 trace / events / runtime summary / audit]
+```
+
+### v3 的关键设计点
+
+- `GraphValidator` 先于执行，避免把非法 graph 带入运行时
+- `Skill` 是受控执行单元；外部文件、shell、测试能力仍通过 adapter 间接访问
+- `TriggerRule` 必须显式注册和显式映射，不允许无边界自动扩张
+- `Governance` 先于 `Autonomy`，所有 follow-up 都先做 allow / block / cooldown / budget 判断
+- `ExecutionReport`、`TriggerDiagnostic`、`Runtime Summary` 共同决定用户最终在 WebUI 中看到什么
+
+### v3 与旧版本的复用关系
+
+`v3` 不是把 `v1` 或 `v2` 直接包一层新皮，而是通过 adapter 复用已经稳定的执行能力：
+
+- `v1_tool_adapter`
+  - 复用文件、shell、测试等 Tool 能力
+- `v2_agent_adapter`
+  - 复用更真实的 coding / agent 执行能力
+
+这样做的目标是：
+
+- 保持 `v3` 的运行时边界独立
+- 复用稳定能力，而不是重复实现
+- 避免 `v3` 退化成“把旧版本流程重新拼一遍”的集成层
+
+## 5. Planner 与普通单轮运行的关系
 
 `v1` 不做复杂 workflow runtime，但已经把“主循环”和“规划步骤执行”拆成了不同职责：
 
@@ -215,7 +363,7 @@ flowchart TD
 
 这样做的目标不是把 `v1` 变复杂，而是避免把规划、写入解析和主循环全部堆在一个文件里，降低调试成本。
 
-## 5. Tool 系统设计
+## 6. Tool 系统设计
 
 本项目的 Agent 是 Tool 驱动的。
 
