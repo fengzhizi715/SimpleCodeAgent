@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from threading import Lock
+from threading import RLock
+
+from app.db.sqlite import SQLiteDB
 
 
 class TriggerRuleStateStore:
@@ -14,36 +16,59 @@ class TriggerRuleStateStore:
     when building execution kernels.
     """
 
-    def __init__(self) -> None:
-        self._enabled: dict[str, bool] = {}
-        self._lock = Lock()
+    def __init__(self, db: SQLiteDB | None = None) -> None:
+        self._db = db or SQLiteDB()
+        self._lock = RLock()
 
     def is_enabled(self, rule_id: str) -> bool:
         """Return whether a rule is enabled. Defaults to True."""
         with self._lock:
-            return self._enabled.get(rule_id, True)
+            row = self._db.fetchone(
+                "SELECT enabled FROM trigger_rule_states WHERE rule_id = ?",
+                (rule_id,),
+            )
+            if row is None:
+                return True
+            return bool(row["enabled"])
 
     def set_enabled(self, rule_id: str, enabled: bool) -> None:
         """Set the enabled state for a rule."""
         with self._lock:
-            self._enabled[rule_id] = enabled
+            timestamp = self._db.now()
+            self._db.execute(
+                """
+                INSERT INTO trigger_rule_states (rule_id, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(rule_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (rule_id, 1 if enabled else 0, timestamp, timestamp),
+            )
 
     def toggle(self, rule_id: str) -> bool:
         """Toggle the enabled state and return the new value."""
         with self._lock:
-            current = self._enabled.get(rule_id, True)
-            self._enabled[rule_id] = not current
-            return self._enabled[rule_id]
+            current = self.is_enabled(rule_id)
+            new_state = not current
+            self.set_enabled(rule_id, new_state)
+            return new_state
 
     def get_all(self) -> dict[str, bool]:
         """Return a snapshot of all overridden states."""
         with self._lock:
-            return dict(self._enabled)
+            rows = self._db.fetchall(
+                "SELECT rule_id, enabled FROM trigger_rule_states ORDER BY rule_id ASC"
+            )
+            return {str(row["rule_id"]): bool(row["enabled"]) for row in rows}
 
     def reset(self, rule_id: str | None = None) -> None:
         """Reset state for one rule or all rules back to default (enabled)."""
         with self._lock:
             if rule_id is not None:
-                self._enabled.pop(rule_id, None)
+                self._db.execute(
+                    "DELETE FROM trigger_rule_states WHERE rule_id = ?",
+                    (rule_id,),
+                )
             else:
-                self._enabled.clear()
+                self._db.execute("DELETE FROM trigger_rule_states")

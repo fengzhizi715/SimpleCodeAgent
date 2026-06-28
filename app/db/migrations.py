@@ -127,6 +127,23 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS trigger_hit_counts (
+        run_id TEXT NOT NULL,
+        rule_id TEXT NOT NULL,
+        executed_count INTEGER NOT NULL DEFAULT 0,
+        skipped_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (run_id, rule_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS trigger_rule_states (
+        rule_id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_messages_session_id_id
     ON messages(session_id, id)
     """,
@@ -161,5 +178,9 @@ SCHEMA_STATEMENTS = [
     """
     CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
     ON sessions(updated_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_trigger_hit_counts_rule_id
+    ON trigger_hit_counts(rule_id)
     """,
 ]

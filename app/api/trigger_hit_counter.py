@@ -14,22 +14,9 @@ class TriggerHitCounter:
     within a specific run.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db: SQLiteDB | None = None) -> None:
+        self._db = db or SQLiteDB()
         self._lock = Lock()
-        self._init_table()
-
-    def _init_table(self) -> None:
-        SQLiteDB().execute(
-            """
-            CREATE TABLE IF NOT EXISTS trigger_hit_counts (
-                run_id TEXT NOT NULL,
-                rule_id TEXT NOT NULL,
-                executed_count INTEGER DEFAULT 0,
-                skipped_count INTEGER DEFAULT 0,
-                PRIMARY KEY (run_id, rule_id)
-            )
-            """
-        )
 
     def increment(self, run_id: str, rule_id: str, status: str) -> None:
         """Increment the hit count for a rule in a run."""
@@ -37,7 +24,7 @@ class TriggerHitCounter:
             return
         with self._lock:
             if status == "executed":
-                SQLiteDB().execute(
+                self._db.execute(
                     """
                     INSERT INTO trigger_hit_counts (run_id, rule_id, executed_count)
                     VALUES (?, ?, 1)
@@ -46,7 +33,7 @@ class TriggerHitCounter:
                     (run_id, rule_id),
                 )
             else:
-                SQLiteDB().execute(
+                self._db.execute(
                     """
                     INSERT INTO trigger_hit_counts (run_id, rule_id, skipped_count)
                     VALUES (?, ?, 1)
@@ -57,7 +44,7 @@ class TriggerHitCounter:
 
     def get_by_run(self, run_id: str) -> list[dict[str, object]]:
         """Return hit counts for all rules in a run."""
-        rows = SQLiteDB().fetchall(
+        rows = self._db.fetchall(
             "SELECT rule_id, executed_count, skipped_count FROM trigger_hit_counts WHERE run_id = ?",
             (run_id,),
         )
@@ -65,7 +52,7 @@ class TriggerHitCounter:
 
     def get_by_rule(self, rule_id: str) -> list[dict[str, object]]:
         """Return hit counts for a rule across all runs."""
-        rows = SQLiteDB().fetchall(
+        rows = self._db.fetchall(
             "SELECT run_id, executed_count, skipped_count FROM trigger_hit_counts WHERE rule_id = ? ORDER BY run_id DESC",
             (rule_id,),
         )
@@ -73,7 +60,7 @@ class TriggerHitCounter:
 
     def get_total(self, rule_id: str) -> dict[str, int]:
         """Return total executed/skipped counts for a rule across all runs."""
-        row = SQLiteDB().fetchone(
+        row = self._db.fetchone(
             "SELECT SUM(executed_count) as total_executed, SUM(skipped_count) as total_skipped FROM trigger_hit_counts WHERE rule_id = ?",
             (rule_id,),
         )
@@ -88,10 +75,10 @@ class TriggerHitCounter:
         """Reset hit counts. If both None, reset all."""
         with self._lock:
             if run_id is not None and rule_id is not None:
-                SQLiteDB().execute("DELETE FROM trigger_hit_counts WHERE run_id = ? AND rule_id = ?", (run_id, rule_id))
+                self._db.execute("DELETE FROM trigger_hit_counts WHERE run_id = ? AND rule_id = ?", (run_id, rule_id))
             elif run_id is not None:
-                SQLiteDB().execute("DELETE FROM trigger_hit_counts WHERE run_id = ?", (run_id,))
+                self._db.execute("DELETE FROM trigger_hit_counts WHERE run_id = ?", (run_id,))
             elif rule_id is not None:
-                SQLiteDB().execute("DELETE FROM trigger_hit_counts WHERE rule_id = ?", (rule_id,))
+                self._db.execute("DELETE FROM trigger_hit_counts WHERE rule_id = ?", (rule_id,))
             else:
-                SQLiteDB().execute("DELETE FROM trigger_hit_counts")
+                self._db.execute("DELETE FROM trigger_hit_counts")
