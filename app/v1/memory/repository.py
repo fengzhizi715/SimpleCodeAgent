@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from app.contracts.message import ChatMessage
@@ -188,7 +189,7 @@ class SQLiteMemoryRepository(MemoryRepository):
     def cleanup_old_sessions(self, max_age_days: int = 30) -> int:
         """清理超过指定天数的会话及其关联数据。
 
-        按级联顺序删除：trace_index → runs → messages → summaries → sessions，
+        按级联顺序删除：trace_index / 版本子表 → runs → messages → summaries → sessions，
         最后执行 VACUUM 压缩数据库文件。
 
         Args:
@@ -212,10 +213,30 @@ class SQLiteMemoryRepository(MemoryRepository):
         session_ids = [row["id"] for row in old_sessions]
 
         # 批量删除关联数据（使用子查询避免逐条循环）
-        # 1. 删除 trace_index（通过 runs 关联）
         placeholders = ",".join("?" for _ in session_ids)
+        # 1. 删除通过 runs 关联的共享 / 版本子表
         self.db.execute(
             f"DELETE FROM trace_index WHERE run_id IN "
+            f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
+            tuple(session_ids),
+        )
+        self.db.execute(
+            f"DELETE FROM trigger_hit_counts WHERE run_id IN "
+            f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
+            tuple(session_ids),
+        )
+        self.db.execute(
+            f"DELETE FROM v2_artifacts WHERE run_id IN "
+            f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
+            tuple(session_ids),
+        )
+        self.db.execute(
+            f"DELETE FROM v2_delegations WHERE run_id IN "
+            f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
+            tuple(session_ids),
+        )
+        self.db.execute(
+            f"DELETE FROM v2_workspaces WHERE run_id IN "
             f"(SELECT run_id FROM runs WHERE session_id IN ({placeholders}))",
             tuple(session_ids),
         )
@@ -256,14 +277,39 @@ class SQLiteMemoryRepository(MemoryRepository):
         return len(session_ids)
 
     def _maybe_cleanup_old_sessions(self) -> None:
-        """在仓储初始化时执行一次默认清理，形成基础保留策略。"""
+        """按显式配置执行一次会话保留清理。
+
+        默认不在仓储初始化时删除历史数据，避免 API 首次访问产生隐式破坏性行为。
+        如需启用，可设置 SQLITE_AUTO_CLEANUP_MAX_AGE_DAYS 为正整数。
+        """
         if self.__class__._cleanup_ran:
             return
+        raw_max_age_days = (os.getenv("SQLITE_AUTO_CLEANUP_MAX_AGE_DAYS") or "").strip()
+        if not raw_max_age_days:
+            logger.info("Default session retention cleanup skipped: auto cleanup is disabled.")
+            self.__class__._cleanup_ran = True
+            return
         try:
-            cleaned = self.cleanup_old_sessions(max_age_days=30)
+            max_age_days = int(raw_max_age_days)
+        except ValueError:
+            logger.warning(
+                "Default session retention cleanup skipped: invalid SQLITE_AUTO_CLEANUP_MAX_AGE_DAYS=%s",
+                raw_max_age_days,
+            )
+            self.__class__._cleanup_ran = True
+            return
+        if max_age_days <= 0:
+            logger.warning(
+                "Default session retention cleanup skipped: SQLITE_AUTO_CLEANUP_MAX_AGE_DAYS must be positive."
+            )
+            self.__class__._cleanup_ran = True
+            return
+        try:
+            cleaned = self.cleanup_old_sessions(max_age_days=max_age_days)
             logger.info(
-                "Applied default session retention policy: cleaned=%s max_age_days=30",
+                "Applied default session retention policy: cleaned=%s max_age_days=%s",
                 cleaned,
+                max_age_days,
             )
         finally:
             self.__class__._cleanup_ran = True

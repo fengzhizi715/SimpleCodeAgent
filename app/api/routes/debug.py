@@ -1179,7 +1179,12 @@ def get_run_detail(run_id: str) -> RunDetailResponse:
     if version == "v2":
         replay = get_v2_runtime().get_run_replay(run_id)
         if not replay or not replay.get("run"):
-            raise HTTPException(status_code=404, detail=f"未找到 run_id={run_id} 的 v2 replay。")
+            trace_events = [event.model_dump() for event in get_trace_repository().query_timeline(run_id)]
+            return RunDetailResponse(
+                version="v2",
+                run=dict(row),
+                trace=trace_events,
+            )
         return RunDetailResponse(version="v2", **replay)
 
     run_data = dict(row)

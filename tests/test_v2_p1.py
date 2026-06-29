@@ -363,6 +363,53 @@ def test_generic_run_detail_routes_v2_replay(monkeypatch) -> None:
     assert response.run["run_id"] == "run-1"
 
 
+def test_generic_run_detail_falls_back_to_trace_only_v2_detail(monkeypatch) -> None:
+    trace_event = TraceEvent(
+        run_id="run-1",
+        session_id="session-1",
+        event_type="run_started",
+        message="v2 started",
+        input_summary="task",
+        payload={},
+        created_at="2025-01-01T00:00:00+00:00",
+    )
+
+    class FakeDB:
+        def fetchone(self, _sql: str, _params: tuple[str, ...]) -> dict[str, object]:
+            return {
+                "run_id": "run-1",
+                "session_id": "session-1",
+                "model": "fake-model",
+                "task": "task",
+                "workdir": ".",
+                "status": "completed",
+                "step_count": 0,
+                "final_output": "done",
+                "created_at": "2025-01-01T00:00:00+00:00",
+                "updated_at": "2025-01-01T00:00:01+00:00",
+                "agent_version": "v2",
+            }
+
+    class FakeRuntime:
+        def get_run_replay(self, _run_id: str) -> dict[str, object]:
+            return {}
+
+    class FakeTraceRepository:
+        def query_timeline(self, run_id: str) -> list[TraceEvent]:
+            return [trace_event] if run_id == "run-1" else []
+
+    monkeypatch.setattr("app.api.routes.debug.SQLiteDB", lambda: FakeDB())
+    monkeypatch.setattr("app.api.routes.debug.get_v2_runtime", lambda: FakeRuntime())
+    monkeypatch.setattr("app.api.routes.debug.get_trace_repository", lambda: FakeTraceRepository())
+
+    response = get_run_detail("run-1")
+
+    assert response.version == "v2"
+    assert response.run["run_id"] == "run-1"
+    assert response.workspace is None
+    assert response.trace[0]["event_type"] == "run_started"
+
+
 def test_generic_run_detail_routes_v3_report(monkeypatch) -> None:
     graph_finished = TraceEvent(
         run_id="run-v3",
